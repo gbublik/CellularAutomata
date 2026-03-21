@@ -1,0 +1,95 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "WebBrowserWidget/Public/WebBrowser.h"
+#include "Blueprint/UserWidget.h"
+#include "CellularAutomata/Public/Ui/UiController.h"
+#include "GameFramework/PlayerController.h"
+#include "AutomataOrchestrator.generated.h"
+
+UCLASS()
+class CELLULARAUTOMATA_API AAutomataOrchestrator : public AActor
+{
+	GENERATED_BODY()
+
+public:
+	AAutomataOrchestrator();
+
+protected:
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void PostActorCreated() override;
+
+public:
+	virtual void Tick(float DeltaTime) override;
+	
+	//==========================================================================
+	// MAIN CATEGORY - AUTOMATA
+	//==========================================================================
+	// Все кнопки и свойства в одной корневой категории с подгруппами
+	
+	/** Запустить непрерывную симуляцию */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void Start();
+
+	/** Поставить симуляцию на паузу */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void Pause();
+
+	/** Остановить и сбросить симуляцию */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void Stop();
+
+	/** Выполнить один шаг симуляции */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void Next();
+	
+	/** Сгенерировать новое случайное состояние */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void Clear();
+	
+	/** Сгенерировать новое случайное состояние */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void GenerateRandom();
+
+	/** Сгенерировать новое случайное состояние с новым сидом */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void NewSeed();
+
+	/** Скорость симуляции (шагов в секунду) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata", 
+			  meta = (ClampMin = "0.1", UIMin = "0.1", UIMax = "10.0"))
+	float Speed = 1.0f;
+
+	/** Размер сетки в клетках по осям X, Y, Z */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid", 
+			  meta = (ClampMin = "1", UIMin = "10", UIMax = "500"))
+	FIntVector GridSize = FIntVector(100, 100, 100);
+
+	/** Количество живых клеток при генерации */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random", 
+			  meta = (ClampMin = "1"))
+	int32 Amount = 1000;
+
+	/** Сид для генератора случайных чисел */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random", 
+			  meta = (DisplayName = "Random Seed"))
+	int32 Seed = 0;
+
+	/** Фактор кластеризации (0 - равномерно, 1 - максимальная кластеризация) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random", 
+			  meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	float ClusterFactor = 0.7f;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
+	TSubclassOf<UUserWidget> HUDWidgetClass;
+	
+private:
+	TUniquePtr<FUiController> UiController;
+	
+	void InitializeHUD();
+	void InitializePlayerController();
+};
