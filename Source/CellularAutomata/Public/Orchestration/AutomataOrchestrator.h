@@ -15,6 +15,14 @@ class UInstancedStaticMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
 
+/** Стратегия хранения клеток сетки автомата. */
+UENUM(BlueprintType)
+enum class EGridStorageStrategy : uint8
+{
+	Sparse,
+	Dense
+};
+
 UCLASS()
 class CELLULARAUTOMATA_API AAutomataOrchestrator : public AActor
 {
@@ -73,6 +81,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid",
 			  meta = (ClampMin = "1", UIMin = "10", UIMax = "500"))
 	FIntVector GridSize = FIntVector(100, 100, 100);
+
+	/** Стратегия хранения живых клеток: Sparse (TSet, эффективна при
+	 *  малой плотности) или Dense (чанками, эффективна при высокой
+	 *  плотности / больших локальных скоплениях клеток) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid")
+	EGridStorageStrategy GridStorageStrategy = EGridStorageStrategy::Sparse;
+
+	/** Размер стороны чанка (в клетках) для Dense-сетки: чанк хранит
+	 *  ChunkSize^3 клеток как плотный битовый массив. Актуально только
+	 *  при GridStorageStrategy == Dense. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid",
+			  meta = (ClampMin = "1", UIMin = "4", UIMax = "64",
+					  EditCondition = "GridStorageStrategy == EGridStorageStrategy::Dense",
+					  EditConditionHides))
+	int32 ChunkSize = 16;
 
 	/** Меш, используемый для отрисовки одной клетки автомата (инстансированный) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")

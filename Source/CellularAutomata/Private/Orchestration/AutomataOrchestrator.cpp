@@ -6,6 +6,7 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Core/PlayerController/GamePlayerController.h"
 #include "Automata/Grid/SparseCellGrid.h"
+#include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 
 
@@ -110,7 +111,16 @@ void AAutomataOrchestrator::GenerateRandom()
 
 	// GenerateRandom() всегда генерирует новое состояние с нуля и подхватывает
 	// актуальный CellSize, если его поменяли в Details panel
-	Grid = MakeUnique<FSparseCellGrid>(CellSize);
+	switch (GridStorageStrategy)
+	{
+	case EGridStorageStrategy::Dense:
+		Grid = MakeUnique<FDenseCellGrid>(CellSize, ChunkSize);
+		break;
+	case EGridStorageStrategy::Sparse:
+	default:
+		Grid = MakeUnique<FSparseCellGrid>(CellSize);
+		break;
+	}
 
 	// Инициализируем ГСЧ фиксированным сидом для воспроизводимости
 	FRandomStream RandomStream(Seed);
