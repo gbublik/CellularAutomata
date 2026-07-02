@@ -3,7 +3,10 @@
 
 #include "CellularAutomata/Public/Orchestration/AutomataOrchestrator.h"
 
-#include "Orchestration/GamePlayerController.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Core/PlayerController/GamePlayerController.h"
+#include "Automata/Grid/SparseCellGrid.h"
+#include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 
 
 // Sets default values
@@ -11,14 +14,18 @@ AAutomataOrchestrator::AAutomataOrchestrator()
 {
 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = false;
+
+	// Инстансированный меш для отрисовки клеток автомата - корневой компонент
+	CellsMesh = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("CellsMesh"));
+	RootComponent = CellsMesh;
 }
 
 // Called when the game starts or when spawned
 void AAutomataOrchestrator::BeginPlay()
 {
 	Super::BeginPlay();
-	InitializeHUD();
 	InitializePlayerController();
+	GenerateRandom();
 }
 
 // Called every frame
@@ -39,11 +46,12 @@ void AAutomataOrchestrator::OnConstruction(const FTransform& Transform)
 
 void AAutomataOrchestrator::NewSeed()
 {
-	
+	Seed = FMath::Rand();
+	GenerateRandom();
 }
 
 void AAutomataOrchestrator::InitializeHUD()
-{
+{	
 	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
 	{
 		UiController = MakeUnique<FUiController>(PC);
@@ -57,30 +65,10 @@ void AAutomataOrchestrator::InitializePlayerController()
 {
 	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
 	{
-		if (AGamePlayerController* GamePC = Cast<AGamePlayerController>(PC))
+		GamePC = Cast<AGamePlayerController>(PC);
+		if (GamePC)
 		{
-			// Получаем WebBrowser из UiController
-			if (UiController && UiController->WebInterface)
-			{
-				UWebBrowser* Browser = UiController->WebInterface->GetWebBrowser();
-				if (Browser)
-				{
-					// Используем специальный метод для WebBrowser
-					GamePC->SetWebBrowserInputMode(Browser);
-					//GamePC->SetUIInputMode(UiController->NewWidget);
-					UE_LOG(LogTemp, Warning, TEXT("WebBrowser input mode set"));
-				}
-				else
-				{
-					// Fallback на обычный UI режим
-				}
-			}
-			else
-			{
-				// Если нет WebInterface, используем обычный режим
-				GamePC->SetUIInputMode(UiController->NewWidget);
-			}
-            
+			GamePC->SetCameraControlEnabled(false);
 			UE_LOG(LogTemp, Warning, TEXT("GamePlayerController setup complete"));
 		}
 		else
@@ -96,12 +84,66 @@ void AAutomataOrchestrator::PostActorCreated()
 	InitializeHUD();
 }
 
+void AAutomataOrchestrator::InitializeRenderer()
+{
+	if (!Renderer)
+	{
+		Renderer = MakeUnique<FInstancedMeshCellGridRenderer>(CellsMesh);
+	}
+}
+
 void AAutomataOrchestrator::GenerateRandom()
 {
-	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+	if (!CellMesh)
 	{
-		
+		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: CellMesh не задан - назначьте StaticMesh в Details panel"));
+		return;
 	}
+
+	if (!CellsMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: CellsMesh компонент отсутствует"));
+		return;
+	}
+
+	InitializeRenderer();
+
+	// GenerateRandom() всегда генерирует новое состояние с нуля и подхватывает
+	// актуальный CellSize, если его поменяли в Details panel
+	Grid = MakeUnique<FSparseCellGrid>(CellSize);
+
+	// Инициализируем ГСЧ фиксированным сидом для воспроизводимости
+	FRandomStream RandomStream(Seed);
+
+	const float RadiusInCells = static_cast<float>(SpawnRadius);
+
+	for (int32 i = 0; i < Amount; ++i)
+	{
+		// Reject-sampling: точка в кубе [-Radius, +Radius], отбрасываем если вне сферы
+		FVector SamplePoint;
+		do
+		{
+			SamplePoint = FVector(
+				RandomStream.FRandRange(-RadiusInCells, RadiusInCells),
+				RandomStream.FRandRange(-RadiusInCells, RadiusInCells),
+				RandomStream.FRandRange(-RadiusInCells, RadiusInCells));
+		}
+		while (SamplePoint.SizeSquared() > FMath::Square(RadiusInCells));
+
+		// Округляем до ближайшей целой клетки сетки
+		const FIntVector GridCell(
+			FMath::RoundToInt(SamplePoint.X),
+			FMath::RoundToInt(SamplePoint.Y),
+			FMath::RoundToInt(SamplePoint.Z));
+
+		Grid->SetAlive(GridCell, true);
+	}
+
+	Renderer->SetMesh(CellMesh);
+	Renderer->SetMaterial(CellMaterial);
+	Renderer->Render(*Grid);
+
+	UE_LOG(LogTemp, Log, TEXT("GenerateRandom: заспавнено %d клеток в радиусе %d"), Grid->Num(), SpawnRadius);
 }
 
 void AAutomataOrchestrator::Next()
@@ -111,12 +153,18 @@ void AAutomataOrchestrator::Next()
 
 void AAutomataOrchestrator::Start()
 {
-	
+	UE_LOG(LogTemp, Log, TEXT("Start game"));
+	Resume();
+	//UiController->HideHUD();
 }
 
 void AAutomataOrchestrator::Pause()
 {
-	
+	GamePC->SetCameraControlEnabled(false);
+}
+void AAutomataOrchestrator::Resume()
+{
+	GamePC->SetCameraControlEnabled(true);
 }
 
 void AAutomataOrchestrator::Stop()

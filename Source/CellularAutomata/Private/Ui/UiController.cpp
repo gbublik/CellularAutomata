@@ -55,29 +55,13 @@ void FUiController::CreateHUDIfNeeded()
     if (!HUDWidgetClass)
     {
         UE_LOG(LogTemp, Error, TEXT("FUiController: Cannot create HUD - HUDWidgetClass not set"));
-        return;
     }
     
-    // Создаем виджет
     NewWidget = CreateWidget<UUserWidget>(PlayerController.Get(), HUDWidgetClass);
     
     if (NewWidget)
     {
         HUDWidget = NewWidget;
-        
-        // Ищем WebBrowser в виджете
-        UWebBrowser* Browser = Cast<UWebBrowser>(HUDWidget->GetWidgetFromName(FName("WebBrowser")));
-
-        if (Browser)
-        {
-            WebInterface = NewObject<UWebInterface>();
-            WebInterface->BindToBrowser(Browser);   
-            UE_LOG(LogTemp, Log, TEXT("FUiController: HUD created and WebInterface bound successfully"));
-        }
-        else
-        {
-            UE_LOG(LogTemp, Error, TEXT("FUiController: WebBrowser not found in HUD"));
-        }
     }
     else
     {

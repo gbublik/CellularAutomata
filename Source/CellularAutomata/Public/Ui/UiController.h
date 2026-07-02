@@ -1,10 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "WebBrowser.h"
-#include "WebInterface.h"
-// Добавляем необходимые инклюды
-#include "CellularAutomata/Public/Ui/WebInterface.h" // Ваш класс из прошлого примера
 
 class APlayerController;
 class UUserWidget;
@@ -35,19 +31,6 @@ public:
 	bool IsHUDVisible() const;
 	bool IsHUDValid() const;
 	
-	// Web интерфейс
-	UWebInterface* WebInterface;
-	// Делегат для сообщений из веба
-	FOnMessageFromWeb OnWebMessageDelegate;
-	
-	// Web-интерфейс методы (делаем их публичными)
-	void BindWebInterface(UWebBrowser* WebBrowser);
-    
-	// Отправка сообщений в веб
-	void SendToWeb(const FString& EventName, const FString& Data);
-    
-	// Получение сообщений из веба
-	FOnMessageFromWeb& OnWebMessage() { return OnWebMessageDelegate; }
 	
 	UUserWidget* NewWidget;
 private:

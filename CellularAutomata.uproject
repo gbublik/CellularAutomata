@@ -40,7 +40,11 @@
 		},
 		{
 			"Name": "RemoteControlWebInterface",
-			"Enabled": true
+			"Enabled": false
+		},
+		{
+			"Name": "RiderLink",
+			"Enabled": false
 		}
 	]
 }

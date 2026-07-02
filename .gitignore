@@ -1,0 +1,38 @@
+# Visual Studio
+.vs/
+*.sln
+*.suo
+*.user
+*.userprefs
+*.vcxproj*
+*.vcxproj.user
+*.vcxproj.filters
+*.opensdf
+*.sdf
+*.db
+*.opendb
+*.cachefile
+
+# Binaries and intermediates
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+Build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Rider
+.idea/
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Local config
+*.target
+*.local
