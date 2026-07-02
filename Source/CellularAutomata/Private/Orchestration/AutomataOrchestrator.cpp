@@ -68,7 +68,7 @@ void AAutomataOrchestrator::InitializePlayerController()
 		GamePC = Cast<AGamePlayerController>(PC);
 		if (GamePC)
 		{
-			GamePC->SetCameraControlEnabled(false);
+			GamePC->SetCameraControlEnabled(true);
 			UE_LOG(LogTemp, Warning, TEXT("GamePlayerController setup complete"));
 		}
 		else
@@ -117,6 +117,8 @@ void AAutomataOrchestrator::GenerateRandom()
 
 	const float RadiusInCells = static_cast<float>(SpawnRadius);
 
+	const double GenerationStartSeconds = FPlatformTime::Seconds();
+
 	for (int32 i = 0; i < Amount; ++i)
 	{
 		// Reject-sampling: точка в кубе [-Radius, +Radius], отбрасываем если вне сферы
@@ -139,11 +141,17 @@ void AAutomataOrchestrator::GenerateRandom()
 		Grid->SetAlive(GridCell, true);
 	}
 
+	const double GenerationSeconds = FPlatformTime::Seconds() - GenerationStartSeconds;
+
 	Renderer->SetMesh(CellMesh);
 	Renderer->SetMaterial(CellMaterial);
-	Renderer->Render(*Grid);
 
-	UE_LOG(LogTemp, Log, TEXT("GenerateRandom: заспавнено %d клеток в радиусе %d"), Grid->Num(), SpawnRadius);
+	const double RenderStartSeconds = FPlatformTime::Seconds();
+	Renderer->Render(*Grid);
+	const double RenderSeconds = FPlatformTime::Seconds() - RenderStartSeconds;
+
+	UE_LOG(LogTemp, Log, TEXT("GenerateRandom: заспавнено %d клеток в радиусе %d (генерация: %.2f мс, отрисовка: %.2f мс)"),
+		Grid->Num(), SpawnRadius, GenerationSeconds * 1000.0, RenderSeconds * 1000.0);
 }
 
 void AAutomataOrchestrator::Next()
