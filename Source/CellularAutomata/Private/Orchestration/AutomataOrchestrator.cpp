@@ -8,6 +8,7 @@
 #include "Automata/Grid/SparseCellGrid.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
+#include "Automata/Simulation/CellularAutomatonRule.h"
 
 
 // Sets default values
@@ -16,8 +17,11 @@ AAutomataOrchestrator::AAutomataOrchestrator()
 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = false;
 
-	// Инстансированный меш для отрисовки клеток автомата - корневой компонент
+	// Инстансированный меш для отрисовки клеток автомата - корневой компонент.
+	// Клетки чисто визуальные, коллизия не нужна и только замедляет
+	// добавление инстансов при большом их количестве.
 	CellsMesh = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("CellsMesh"));
+	CellsMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	RootComponent = CellsMesh;
 }
 
@@ -93,6 +97,18 @@ void AAutomataOrchestrator::InitializeRenderer()
 	}
 }
 
+TUniquePtr<FCellGrid> AAutomataOrchestrator::CreateGrid() const
+{
+	switch (GridStorageStrategy)
+	{
+	case EGridStorageStrategy::Dense:
+		return MakeUnique<FDenseCellGrid>(CellSize, ChunkSize);
+	case EGridStorageStrategy::Sparse:
+	default:
+		return MakeUnique<FSparseCellGrid>(CellSize);
+	}
+}
+
 void AAutomataOrchestrator::GenerateRandom()
 {
 	if (!CellMesh)
@@ -111,16 +127,7 @@ void AAutomataOrchestrator::GenerateRandom()
 
 	// GenerateRandom() всегда генерирует новое состояние с нуля и подхватывает
 	// актуальный CellSize, если его поменяли в Details panel
-	switch (GridStorageStrategy)
-	{
-	case EGridStorageStrategy::Dense:
-		Grid = MakeUnique<FDenseCellGrid>(CellSize, ChunkSize);
-		break;
-	case EGridStorageStrategy::Sparse:
-	default:
-		Grid = MakeUnique<FSparseCellGrid>(CellSize);
-		break;
-	}
+	Grid = CreateGrid();
 
 	// Инициализируем ГСЧ фиксированным сидом для воспроизводимости
 	FRandomStream RandomStream(Seed);
@@ -166,7 +173,48 @@ void AAutomataOrchestrator::GenerateRandom()
 
 void AAutomataOrchestrator::Next()
 {
-	
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Next: сетка не инициализирована - сначала вызовите GenerateRandom"));
+		return;
+	}
+
+	if (!CellMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Next: CellMesh не задан - назначьте StaticMesh в Details panel"));
+		return;
+	}
+
+	if (!CellsMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Next: CellsMesh компонент отсутствует"));
+		return;
+	}
+
+	InitializeRenderer();
+
+	// Строим правило заново на каждый вызов, чтобы правки Rule/Neighborhood
+	// в Details panel подхватывались немедленно (аналогично тому, как
+	// GenerateRandom() каждый раз пересоздаёт Grid, а не кэширует его)
+	const FCellularAutomatonRule AutomatonRule(Rule, Neighborhood);
+
+	TUniquePtr<FCellGrid> NextGrid = CreateGrid();
+
+	const double StepStartSeconds = FPlatformTime::Seconds();
+	AutomatonRule.Step(*Grid, *NextGrid);
+	const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
+
+	Grid = MoveTemp(NextGrid);
+
+	Renderer->SetMesh(CellMesh);
+	Renderer->SetMaterial(CellMaterial);
+
+	const double RenderStartSeconds = FPlatformTime::Seconds();
+	Renderer->Render(*Grid);
+	const double RenderSeconds = FPlatformTime::Seconds() - RenderStartSeconds;
+
+	UE_LOG(LogTemp, Log, TEXT("Next: живых клеток %d после шага (шаг: %.2f мс, отрисовка: %.2f мс)"),
+		Grid->Num(), StepSeconds * 1000.0, RenderSeconds * 1000.0);
 }
 
 void AAutomataOrchestrator::Start()
