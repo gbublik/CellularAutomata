@@ -135,13 +135,13 @@ public:
 			  meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float ClusterFactor = 0.7f;
 
-	/** Правило автомата в нотации "B<рождение>/S<выживание>" (счётчики -
-	 *  число живых соседей). Классическая однозначная запись (например
-	 *  "B3/S23") допустима только пока все значения < 10; при значениях
-	 *  >= 10 (актуально для Moore, до 26 соседей) используйте запятые:
-	 *  "B13,14/S5,6,7,8". */
+	/** Количества живых соседей, при которых мёртвая клетка рождается. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
-	FString Rule = TEXT("B3/S23");
+	TArray<int32> BirthCounts = { 3 };
+
+	/** Количества живых соседей, при которых живая клетка выживает. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
+	TArray<int32> SurvivalCounts = { 2, 3 };
 
 	/** Тип соседства для подсчёта живых соседей: Von Neumann (6, грани)
 	 *  или Moore (26, полный куб 3x3x3). */

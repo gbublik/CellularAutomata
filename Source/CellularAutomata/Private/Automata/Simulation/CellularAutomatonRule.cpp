@@ -36,65 +36,11 @@ TArray<FIntVector> FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood In
 	return Offsets;
 }
 
-TSet<int32> FCellularAutomatonRule::ParseCountSegment(const FString& Segment, const TCHAR* SegmentLabel)
+FCellularAutomatonRule::FCellularAutomatonRule(const TArray<int32>& InBirthCounts, const TArray<int32>& InSurvivalCounts, ENeighborhood InNeighborhood)
+	: NeighborOffsets(BuildNeighborOffsets(InNeighborhood))
+	, BirthCounts(InBirthCounts)
+	, SurvivalCounts(InSurvivalCounts)
 {
-	TSet<int32> Counts;
-
-	if (Segment.Contains(TEXT(",")))
-	{
-		TArray<FString> Tokens;
-		Segment.ParseIntoArray(Tokens, TEXT(","), /*bInCullEmpty=*/true);
-
-		for (const FString& Token : Tokens)
-		{
-			const FString Trimmed = Token.TrimStartAndEnd();
-			if (Trimmed.IsEmpty() || !Trimmed.IsNumeric())
-			{
-				UE_LOG(LogTemp, Warning, TEXT("FCellularAutomatonRule: не удалось разобрать сегмент %s - некорректный токен \"%s\""),
-					SegmentLabel, *Token);
-				return TSet<int32>();
-			}
-			Counts.Add(FCString::Atoi(*Trimmed));
-		}
-	}
-	else
-	{
-		for (const TCHAR Ch : Segment)
-		{
-			if (!FChar::IsDigit(Ch))
-			{
-				UE_LOG(LogTemp, Warning, TEXT("FCellularAutomatonRule: не удалось разобрать сегмент %s - недопустимый символ '%c'"),
-					SegmentLabel, Ch);
-				return TSet<int32>();
-			}
-			Counts.Add(Ch - TEXT('0'));
-		}
-	}
-
-	return Counts;
-}
-
-FCellularAutomatonRule::FCellularAutomatonRule(const FString& RuleString, ENeighborhood InNeighborhood)
-{
-	NeighborOffsets = BuildNeighborOffsets(InNeighborhood);
-
-	FString BPart;
-	FString SPart;
-	if (!RuleString.Split(TEXT("/"), &BPart, &SPart))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FCellularAutomatonRule: не удалось разобрать правило \"%s\" - ожидается формат \"B.../S...\""), *RuleString);
-		return;
-	}
-
-	if (!BPart.StartsWith(TEXT("B"), ESearchCase::CaseSensitive) ||
-		!SPart.StartsWith(TEXT("S"), ESearchCase::CaseSensitive))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FCellularAutomatonRule: не удалось разобрать правило \"%s\" - ожидается формат \"B.../S...\""), *RuleString);
-		return;
-	}
-
-	BirthCounts = ParseCountSegment(BPart.Mid(1), TEXT("B"));
-	SurvivalCounts = ParseCountSegment(SPart.Mid(1), TEXT("S"));
 }
 
 void FCellularAutomatonRule::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid) const

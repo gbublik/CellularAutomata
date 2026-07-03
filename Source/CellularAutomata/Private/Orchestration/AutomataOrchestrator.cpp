@@ -196,10 +196,11 @@ void AAutomataOrchestrator::Next()
 
 	InitializeRenderer();
 
-	// Строим правило заново на каждый вызов, чтобы правки Rule/Neighborhood
-	// в Details panel подхватывались немедленно (аналогично тому, как
-	// GenerateRandom() каждый раз пересоздаёт Grid, а не кэширует его)
-	const FCellularAutomatonRule AutomatonRule(Rule, Neighborhood);
+	// Строим правило заново на каждый вызов, чтобы правки BirthCounts/
+	// SurvivalCounts/Neighborhood в Details panel подхватывались немедленно
+	// (аналогично тому, как GenerateRandom() каждый раз пересоздаёт Grid,
+	// а не кэширует его)
+	const FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
 
 	TUniquePtr<FCellGrid> NextGrid = CreateGrid();
 

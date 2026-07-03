@@ -6,15 +6,19 @@
 class FCellGrid;
 
 /**
- * Правило клеточного автомата в нотации "B<рождение>/S<выживание>",
- * обобщённой на 3D (счётчик соседей не ограничен 8). Не владеет
- * сетками - Step() читает CurrentGrid и пишет в NextGrid (double buffering),
- * поэтому CurrentGrid никогда не мутируется во время подсчёта соседей.
+ * Правило клеточного автомата: клетка рождается/выживает по количеству
+ * живых соседей. Три параметра, каждый независим и однозначен - никакого
+ * строкового формата и парсинга: BirthCounts/SurvivalCounts - обычные
+ * списки чисел (в отличие от классической Conway-нотации "B3/S23", здесь
+ * не нужна отдельная запись для счётчиков >= 10, актуальных для Moore, до
+ * 26 соседей). Не владеет сетками - Step() читает CurrentGrid и пишет в
+ * NextGrid (double buffering), поэтому CurrentGrid никогда не мутируется
+ * во время подсчёта соседей.
  */
 class CELLULARAUTOMATA_API FCellularAutomatonRule
 {
 public:
-	FCellularAutomatonRule(const FString& RuleString, ENeighborhood InNeighborhood);
+	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, ENeighborhood InNeighborhood);
 
 	/** Один шаг: для каждой клетки-кандидата (живая клетка CurrentGrid или
 	 *  её сосед) решает, жива ли она в следующем поколении, и если да -
@@ -24,15 +28,6 @@ public:
 
 private:
 	static TArray<FIntVector> BuildNeighborOffsets(ENeighborhood InNeighborhood);
-
-	/** Разбирает один сегмент правила (без ведущей буквы B/S) в набор
-	 *  количеств соседей. Гибридный формат: если в сегменте есть запятая -
-	 *  токены через запятую, каждый может быть многозначным числом (нужно
-	 *  для Moore, где счётчик может быть > 9); иначе - классическая нотация
-	 *  "каждая цифра отдельное значение" (однозначна только пока все
-	 *  значения < 10, как в Von Neumann). При ошибке разбора логирует
-	 *  warning и возвращает пустой TSet. */
-	static TSet<int32> ParseCountSegment(const FString& Segment, const TCHAR* SegmentLabel);
 
 	TArray<FIntVector> NeighborOffsets;
 	TSet<int32> BirthCounts;
