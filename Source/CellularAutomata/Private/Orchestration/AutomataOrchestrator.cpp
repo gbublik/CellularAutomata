@@ -166,9 +166,12 @@ void AAutomataOrchestrator::GenerateRandom()
 	const double RenderStartSeconds = FPlatformTime::Seconds();
 	Renderer->Render(*Grid);
 	const double RenderSeconds = FPlatformTime::Seconds() - RenderStartSeconds;
+	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
 
-	UE_LOG(LogTemp, Log, TEXT("GenerateRandom: заспавнено %d клеток в радиусе %d (генерация: %.2f мс, отрисовка: %.2f мс)"),
-		Grid->Num(), SpawnRadius, GenerationSeconds * 1000.0, RenderSeconds * 1000.0);
+	UE_LOG(LogTemp, Log, TEXT("GenerateRandom: заспавнено %d клеток в радиусе %d (генерация: %.2f мс, отрисовка: %.2f мс [SetMesh/Material: %.2f, ClearInstances: %.2f, Scale: %.2f, GetAliveCells: %.2f, BuildTransforms: %.2f, AddInstances: %.2f])"),
+		Grid->Num(), SpawnRadius, GenerationSeconds * 1000.0, RenderSeconds * 1000.0,
+		RT.SetMeshSeconds * 1000.0, RT.ClearSeconds * 1000.0, RT.ScaleSeconds * 1000.0,
+		RT.GetAliveSeconds * 1000.0, RT.BuildTransformsSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
 }
 
 void AAutomataOrchestrator::Next()
@@ -212,9 +215,12 @@ void AAutomataOrchestrator::Next()
 	const double RenderStartSeconds = FPlatformTime::Seconds();
 	Renderer->Render(*Grid);
 	const double RenderSeconds = FPlatformTime::Seconds() - RenderStartSeconds;
+	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
 
-	UE_LOG(LogTemp, Log, TEXT("Next: живых клеток %d после шага (шаг: %.2f мс, отрисовка: %.2f мс)"),
-		Grid->Num(), StepSeconds * 1000.0, RenderSeconds * 1000.0);
+	UE_LOG(LogTemp, Log, TEXT("Next: живых клеток %d после шага (шаг: %.2f мс, отрисовка: %.2f мс [SetMesh/Material: %.2f, ClearInstances: %.2f, Scale: %.2f, GetAliveCells: %.2f, BuildTransforms: %.2f, AddInstances: %.2f])"),
+		Grid->Num(), StepSeconds * 1000.0, RenderSeconds * 1000.0,
+		RT.SetMeshSeconds * 1000.0, RT.ClearSeconds * 1000.0, RT.ScaleSeconds * 1000.0,
+		RT.GetAliveSeconds * 1000.0, RT.BuildTransformsSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
 }
 
 void AAutomataOrchestrator::Start()

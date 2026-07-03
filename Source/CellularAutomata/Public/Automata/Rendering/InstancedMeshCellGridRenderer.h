@@ -7,6 +7,21 @@ class UInstancedStaticMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
 
+/** Разбивка времени последнего Render() по этапам, в секундах - для
+ *  профилирования. Логирование намеренно вынесено из Render() к
+ *  вызывающей стороне (см. GetLastRenderTimings()), иначе сама операция
+ *  логирования (форматирование строки + запись в файл) съедала бы время
+ *  ещё до того, как её саму успели бы измерить. */
+struct FRenderTimings
+{
+	double SetMeshSeconds = 0.0;
+	double ClearSeconds = 0.0;
+	double ScaleSeconds = 0.0;
+	double GetAliveSeconds = 0.0;
+	double BuildTransformsSeconds = 0.0;
+	double AddInstanceSeconds = 0.0;
+};
+
 /** Рендерит через UInstancedStaticMeshComponent: один инстанс меша на
  *  живую клетку. Компонент создаётся/владеется актором
  *  (CreateDefaultSubobject); этот класс хранит только слабую ссылку. */
@@ -22,8 +37,11 @@ public:
 
 	virtual void Render(const FCellGrid& Grid) override;
 
+	const FRenderTimings& GetLastRenderTimings() const { return LastTimings; }
+
 private:
 	TWeakObjectPtr<UInstancedStaticMeshComponent> Component;
 	TWeakObjectPtr<UStaticMesh> Mesh;
 	TWeakObjectPtr<UMaterialInterface> Material;
+	FRenderTimings LastTimings;
 };
