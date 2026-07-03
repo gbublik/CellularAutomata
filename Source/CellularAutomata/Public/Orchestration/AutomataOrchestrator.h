@@ -165,5 +165,16 @@ private:
 	 *  с нуля), и Next() (буфер для следующего поколения). */
 	TUniquePtr<FCellGrid> CreateGrid() const;
 
-	AGamePlayerController* GamePC;
+	/** UPROPERTY (не голый указатель) - иначе после реинстансинга через
+	 *  Live Coding во время активного PIE значение не переживает пересборку
+	 *  класса (BeginPlay(), который его заполняет, повторно не вызывается) и
+	 *  остаётся мусором, а не nullptr - разыменование такого указателя
+	 *  роняет редактор Access Violation. */
+	UPROPERTY(Transient)
+	AGamePlayerController* GamePC = nullptr;
+
+	/** true между Start() и Stop() - Tick() копит DeltaTime и вызывает
+	 *  Next() с интервалом 1/Speed секунд, пока флаг не сброшен. */
+	bool bSimulationRunning = false;
+	float TimeSinceLastStep = 0.0f;
 };

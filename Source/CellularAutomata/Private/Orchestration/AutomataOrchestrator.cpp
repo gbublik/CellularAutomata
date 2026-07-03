@@ -14,8 +14,10 @@
 // Sets default values
 AAutomataOrchestrator::AAutomataOrchestrator()
 {
-	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
-	PrimaryActorTick.bCanEverTick = false;
+	// Тик нужен для непрерывной симуляции (Start()/Stop()), но не должен
+	// крутиться, пока симуляция не запущена явно.
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
 
 	// Инстансированный меш для отрисовки клеток автомата - корневой компонент.
 	// Клетки чисто визуальные, коллизия не нужна и только замедляет
@@ -37,6 +39,23 @@ void AAutomataOrchestrator::BeginPlay()
 void AAutomataOrchestrator::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	if (!bSimulationRunning)
+	{
+		return;
+	}
+
+	// Копим DeltaTime и шагаем симуляцию с интервалом 1/Speed секунд - а не
+	// раз в кадр - чтобы Speed действительно означал "шагов в секунду"
+	// независимо от FPS, и чтобы правки Speed в Details panel подхватывались
+	// немедленно (интервал пересчитывается каждый раз, а не кэшируется).
+	TimeSinceLastStep += DeltaTime;
+	const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
+	while (TimeSinceLastStep >= StepInterval)
+	{
+		TimeSinceLastStep -= StepInterval;
+		Next();
+	}
 }
 
 void AAutomataOrchestrator::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -228,21 +247,40 @@ void AAutomataOrchestrator::Start()
 {
 	UE_LOG(LogTemp, Log, TEXT("Start game"));
 	Resume();
-	//UiController->HideHUD();
+
+	if (!Grid)
+	{
+		GenerateRandom();
+	}
+
+	TimeSinceLastStep = 0.0f;
+	bSimulationRunning = true;
+	SetActorTickEnabled(true);
 }
 
 void AAutomataOrchestrator::Pause()
 {
+	if (!GamePC)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Pause: GamePC не назначен - PlayerController не найден"));
+		return;
+	}
 	GamePC->SetCameraControlEnabled(false);
 }
 void AAutomataOrchestrator::Resume()
 {
+	if (!GamePC)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Resume: GamePC не назначен - PlayerController не найден"));
+		return;
+	}
 	GamePC->SetCameraControlEnabled(true);
 }
 
 void AAutomataOrchestrator::Stop()
 {
-	
+	bSimulationRunning = false;
+	SetActorTickEnabled(false);
 }
 
 void AAutomataOrchestrator::Clear()
