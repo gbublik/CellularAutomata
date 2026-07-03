@@ -1,5 +1,6 @@
 #include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Automata/Grid/CellGrid.h"
+#include "Async/ParallelFor.h"
 
 TArray<FIntVector> FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood InNeighborhood)
 {
@@ -48,19 +49,32 @@ void FCellularAutomatonRule::Step(const FCellGrid& CurrentGrid, FCellGrid& NextG
 	TArray<FIntVector> AliveCells;
 	CurrentGrid.GetAliveCells(AliveCells);
 
-	TSet<FIntVector> Candidates;
-	Candidates.Reserve(AliveCells.Num() * (NeighborOffsets.Num() + 1));
+	TSet<FIntVector> CandidateSet;
+	CandidateSet.Reserve(AliveCells.Num() * (NeighborOffsets.Num() + 1));
 	for (const FIntVector& Cell : AliveCells)
 	{
-		Candidates.Add(Cell);
+		CandidateSet.Add(Cell);
 		for (const FIntVector& Offset : NeighborOffsets)
 		{
-			Candidates.Add(Cell + Offset);
+			CandidateSet.Add(Cell + Offset);
 		}
 	}
 
-	for (const FIntVector& Candidate : Candidates)
+	// ParallelFor нужен индексируемый массив, а не TSet.
+	const TArray<FIntVector> Candidates = CandidateSet.Array();
+
+	// Подсчёт соседей на кандидата не зависит от других кандидатов (только
+	// читает CurrentGrid, которую Step() не мутирует) - самая тяжёлая часть
+	// шага, безопасно распараллелить по CPU-потокам. Каждый поток пишет в
+	// свой индекс TArray<bool> (не бит-упакованный в Unreal, в отличие от
+	// std::vector<bool> - гонок по соседним элементам нет).
+	TArray<bool> bNextAlive;
+	bNextAlive.SetNumUninitialized(Candidates.Num());
+
+	ParallelFor(Candidates.Num(), [this, &Candidates, &CurrentGrid, &bNextAlive](int32 Index)
 	{
+		const FIntVector& Candidate = Candidates[Index];
+
 		int32 AliveNeighborCount = 0;
 		for (const FIntVector& Offset : NeighborOffsets)
 		{
@@ -71,13 +85,19 @@ void FCellularAutomatonRule::Step(const FCellGrid& CurrentGrid, FCellGrid& NextG
 		}
 
 		const bool bCurrentlyAlive = CurrentGrid.IsAlive(Candidate);
-		const bool bNextAlive = bCurrentlyAlive
+		bNextAlive[Index] = bCurrentlyAlive
 			? SurvivalCounts.Contains(AliveNeighborCount)
 			: BirthCounts.Contains(AliveNeighborCount);
+	});
 
-		if (bNextAlive)
+	// Запись в NextGrid - последовательно: TSet/TBitArray внутри
+	// FSparseCellGrid/FDenseCellGrid не потокобезопасны для конкурентной
+	// записи, поэтому SetAlive() нельзя звать прямо из ParallelFor-лямбды.
+	for (int32 Index = 0; Index < Candidates.Num(); ++Index)
+	{
+		if (bNextAlive[Index])
 		{
-			NextGrid.SetAlive(Candidate, true);
+			NextGrid.SetAlive(Candidates[Index], true);
 		}
 	}
 }
