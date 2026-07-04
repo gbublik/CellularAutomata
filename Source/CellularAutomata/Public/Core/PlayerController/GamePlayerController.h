@@ -68,6 +68,15 @@ protected:
 	 *  числе инстансированных клеток автомата. */
 	void OnSetUnlitMode();
 
+	/** Хоткей (Left Shift, удержание) - ускоряет полёт камеры на время
+	 *  удержания. Камера летает через ADefaultPawn/UFloatingPawnMovement -
+	 *  масштабируем MaxSpeed на AAutomataOrchestrator::CameraSpeedMultiplier.
+	 *  BaseFlySpeed кэширует исходную скорость при первом нажатии (0 значит
+	 *  ещё не закэширована), чтобы OnSpeedBoostEnded() мог её восстановить
+	 *  не накапливая ошибку при повторных нажатиях. */
+	void OnSpeedBoostStarted();
+	void OnSpeedBoostEnded();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. */
@@ -87,7 +96,14 @@ protected:
 	TObjectPtr<class UInputAction> SetUnlitModeAction;
 
 	UPROPERTY()
+	TObjectPtr<class UInputAction> SpeedBoostAction;
+
+	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;
+
+	/** Исходный MaxSpeed пешки до ускорения Shift'ом - 0 значит ещё не
+	 *  закэширован (см. OnSpeedBoostStarted()/OnSpeedBoostEnded()). */
+	float BaseFlySpeed = 0.0f;
 
 	UPROPERTY()
 	AActor* CurrentViewTarget;

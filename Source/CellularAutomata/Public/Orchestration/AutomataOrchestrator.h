@@ -95,9 +95,18 @@ public:
 	void NewSeed();
 
 	/** Скорость симуляции (шагов в секунду) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata", 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata",
 			  meta = (ClampMin = "0.1", UIMin = "0.1", UIMax = "10.0"))
 	float Speed = 1.0f;
+
+	/** Множитель скорости полёта камеры при удержании Shift (см.
+	 *  AGamePlayerController::OnSpeedBoostStarted() - камера летает через
+	 *  ADefaultPawn/UFloatingPawnMovement, эта настройка живёт здесь, а не
+	 *  на самом контроллере, чтобы дизайнер тюнил её из того же Details
+	 *  panel, что и остальную симуляцию). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera",
+			  meta = (ClampMin = "1.0", UIMin = "1.0", UIMax = "10.0"))
+	float CameraSpeedMultiplier = 3.0f;
 
 	/** Размер сетки в клетках по осям X, Y, Z */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid",

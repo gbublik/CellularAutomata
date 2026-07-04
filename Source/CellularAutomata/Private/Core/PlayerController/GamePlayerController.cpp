@@ -8,6 +8,8 @@
 #include "InputMappingContext.h"
 #include "Kismet/GameplayStatics.h"
 #include "Orchestration/AutomataOrchestrator.h"
+#include "GameFramework/DefaultPawn.h"
+#include "GameFramework/FloatingPawnMovement.h"
 
 // YourPlayerController.cpp
 void AGamePlayerController::SetupInputComponent()
@@ -29,12 +31,16 @@ void AGamePlayerController::SetupInputComponent()
 	SetUnlitModeAction = NewObject<UInputAction>(this, TEXT("IA_SetUnlitMode"));
 	SetUnlitModeAction->ValueType = EInputActionValueType::Boolean;
 
+	SpeedBoostAction = NewObject<UInputAction>(this, TEXT("IA_SpeedBoost"));
+	SpeedBoostAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(StepOnceAction, EKeys::F);
 	SimulationMappingContext->MapKey(ResetSimulationAction, EKeys::R);
 	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
 	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::Two);
+	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -51,6 +57,8 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(ResetSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnResetSimulation);
 		EnhancedInputComp->BindAction(SetLitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetLitMode);
 		EnhancedInputComp->BindAction(SetUnlitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetUnlitMode);
+		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSpeedBoostStarted);
+		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSpeedBoostEnded);
 	}
 }
 
@@ -111,6 +119,54 @@ void AGamePlayerController::OnSetLitMode()
 void AGamePlayerController::OnSetUnlitMode()
 {
 	ConsoleCommand(TEXT("VIEWMODE UNLIT"));
+}
+
+void AGamePlayerController::OnSpeedBoostStarted()
+{
+	ADefaultPawn* FlyingPawn = Cast<ADefaultPawn>(GetPawn());
+	if (!FlyingPawn)
+	{
+		return;
+	}
+
+	UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(FlyingPawn->GetMovementComponent());
+	if (!Movement)
+	{
+		return;
+	}
+
+	// Кэшируем исходную скорость только один раз - иначе повторный Started
+	// без промежуточного Completed (не должно случаться штатно, но на
+	// всякий случай) задавил бы исходное значение уже ускоренным.
+	if (BaseFlySpeed <= 0.0f)
+	{
+		BaseFlySpeed = Movement->MaxSpeed;
+	}
+
+	float Multiplier = 1.0f;
+	if (AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass())))
+	{
+		Multiplier = Orchestrator->CameraSpeedMultiplier;
+	}
+
+	Movement->MaxSpeed = BaseFlySpeed * Multiplier;
+}
+
+void AGamePlayerController::OnSpeedBoostEnded()
+{
+	ADefaultPawn* FlyingPawn = Cast<ADefaultPawn>(GetPawn());
+	if (!FlyingPawn)
+	{
+		return;
+	}
+
+	UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(FlyingPawn->GetMovementComponent());
+	if (!Movement || BaseFlySpeed <= 0.0f)
+	{
+		return;
+	}
+
+	Movement->MaxSpeed = BaseFlySpeed;
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)
