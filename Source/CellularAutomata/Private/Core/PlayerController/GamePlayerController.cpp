@@ -17,8 +17,16 @@ void AGamePlayerController::SetupInputComponent()
 	ToggleSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ToggleSimulation"));
 	ToggleSimulationAction->ValueType = EInputActionValueType::Boolean;
 
+	StepOnceAction = NewObject<UInputAction>(this, TEXT("IA_StepOnce"));
+	StepOnceAction->ValueType = EInputActionValueType::Boolean;
+
+	ResetSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ResetSimulation"));
+	ResetSimulationAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::SpaceBar);
+	SimulationMappingContext->MapKey(StepOnceAction, EKeys::F);
+	SimulationMappingContext->MapKey(ResetSimulationAction, EKeys::R);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -28,6 +36,8 @@ void AGamePlayerController::SetupInputComponent()
 	if (UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent))
 	{
 		EnhancedInputComp->BindAction(ToggleSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSimulation);
+		EnhancedInputComp->BindAction(StepOnceAction, ETriggerEvent::Started, this, &AGamePlayerController::OnStepOnce);
+		EnhancedInputComp->BindAction(ResetSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnResetSimulation);
 	}
 }
 
@@ -48,6 +58,36 @@ void AGamePlayerController::OnToggleSimulation()
 	{
 		Orchestrator->Start();
 	}
+}
+
+void AGamePlayerController::OnStepOnce()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnStepOnce: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	if (Orchestrator->IsSimulationRunning())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnStepOnce: непрерывная симуляция уже идёт (Space) - ручной шаг F игнорируется"));
+		return;
+	}
+
+	Orchestrator->Next();
+}
+
+void AGamePlayerController::OnResetSimulation()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnResetSimulation: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->GenerateRandom();
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

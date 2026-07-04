@@ -29,7 +29,7 @@ protected:
 	void RestoreGameInputMode();
 	void DisableGameInputMode();
 
-	/** Хоткей (P) для Start()/Stop() автомата прямо в PIE, через
+	/** Хоткей (Space) для Start()/Stop() автомата прямо в PIE, через
 	 *  UGameplayStatics::GetActorOfClass - а не через CallInEditor-кнопку в
 	 *  Details panel. Кнопка ненадёжна во время PIE: если в момент клика в
 	 *  Outliner всё ещё выбран актор из обычного (не-PIE) уровня, а не его
@@ -39,11 +39,30 @@ protected:
 	 *  от PlayerController активного PIE-мира. */
 	void OnToggleSimulation();
 
+	/** Хоткей (F) для ручного одиночного шага (Next()) - только пока
+	 *  непрерывная симуляция не запущена (IsSimulationRunning() == false);
+	 *  иначе Next() и так откажется работать (гонка на Grid с фоновым
+	 *  StepAsync(), см. bStepInProgress), но здесь проверяем заранее, чтобы
+	 *  дать понятный лог вместо результата "как будто ничего не произошло". */
+	void OnStepOnce();
+
+	/** Хоткей (R) для GenerateRandom() - сбрасывает сетку в новое случайное
+	 *  состояние с тем же Seed. В отличие от F, доступен и во время
+	 *  непрерывной симуляции - GenerateRandom() сам разберётся с гонкой на
+	 *  Grid через bStepInProgress, отдельная проверка здесь не нужна. */
+	void OnResetSimulation();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
-	 *  как Content-ассеты - для одного хоткея на весь проект не нужен
-	 *  отдельный .uasset. */
+	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
+	 *  отдельные .uasset. */
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleSimulationAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> StepOnceAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ResetSimulationAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;
