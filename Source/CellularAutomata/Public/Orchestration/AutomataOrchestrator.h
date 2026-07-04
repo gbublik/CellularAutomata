@@ -13,6 +13,7 @@
 #include "AutomataOrchestrator.generated.h"
 
 class UInstancedStaticMeshComponent;
+class UHierarchicalInstancedStaticMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
 
@@ -22,6 +23,20 @@ enum class EGridStorageStrategy : uint8
 {
 	Sparse,
 	Dense
+};
+
+/** Реализация инстансированного компонента для отрисовки клеток. */
+UENUM(BlueprintType)
+enum class ECellMeshComponentType : uint8
+{
+	/** Обычный UInstancedStaticMeshComponent - без LOD-дерева кластеров,
+	 *  дешевле на полную перестройку (ClearInstances+AddInstances каждый шаг). */
+	Instanced,
+	/** UHierarchicalInstancedStaticMeshComponent - строит LOD-дерево
+	 *  кластеров инстансов (occlusion/distance culling по кластерам) -
+	 *  выгоднее при больших количествах клеток, но каждая полная
+	 *  перестройка дороже, чем у Instanced. */
+	HierarchicalInstanced
 };
 
 UCLASS()
@@ -111,9 +126,14 @@ public:
 			  meta = (ClampMin = "1.0", UIMin = "1.0", UIMax = "1000.0"))
 	float CellSize = 100.0f;
 
-	/** Инстансированный меш для отрисовки клеток автомата */
+	/** Какая реализация инстансированного компонента реально используется
+	 *  для отрисовки - переключается лениво, на следующем Render() (см.
+	 *  InitializeRenderer()/GetActiveCellsMeshComponent()), без пересборки
+	 *  C++ и без пересоздания компонентов: оба (CellsMeshFlat/
+	 *  CellsMeshHierarchical) существуют постоянно, выбирается только,
+	 *  который из них получает инстансы. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
-	UInstancedStaticMeshComponent* CellsMesh;
+	ECellMeshComponentType CellMeshComponentType = ECellMeshComponentType::HierarchicalInstanced;
 
 	/** Количество живых клеток при генерации */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",
@@ -157,9 +177,25 @@ private:
 	TUniquePtr<FCellGrid> Grid;
 	TUniquePtr<FInstancedMeshCellGridRenderer> Renderer;
 
+	/** Обычный ISMC - существует всегда, независимо от CellMeshComponentType
+	 *  (создание/уничтожение компонента в рантейме - лишняя возня и ещё один
+	 *  сценарий, который Live Coding не умеет безопасно хот-патчить; оба
+	 *  компонента дёшевы, пока в них 0 инстансов). Дочерний относительно
+	 *  CellsMeshHierarchical (который root), а не наоборот - см. конструктор. */
+	UPROPERTY()
+	UInstancedStaticMeshComponent* CellsMeshFlat;
+
+	/** HISM - тоже существует всегда; root component актора (см. конструктор). */
+	UPROPERTY()
+	UHierarchicalInstancedStaticMeshComponent* CellsMeshHierarchical;
+
 	void InitializeHUD();
 	void InitializePlayerController();
 	void InitializeRenderer();
+	/** Возвращает CellsMeshFlat или CellsMeshHierarchical в зависимости от
+	 *  CellMeshComponentType - единственное место, которое решает, какой
+	 *  компонент сейчас "активен". */
+	UInstancedStaticMeshComponent* GetActiveCellsMeshComponent() const;
 	/** Строит новую пустую сетку по текущим GridStorageStrategy/CellSize/
 	 *  ChunkSize из Details panel. Используется и GenerateRandom() (сетка
 	 *  с нуля), и Next() (буфер для следующего поколения). */
@@ -174,7 +210,30 @@ private:
 	AGamePlayerController* GamePC = nullptr;
 
 	/** true между Start() и Stop() - Tick() копит DeltaTime и вызывает
-	 *  Next() с интервалом 1/Speed секунд, пока флаг не сброшен. */
+	 *  StepAsync() с интервалом 1/Speed секунд, пока флаг не сброшен. */
 	bool bSimulationRunning = false;
 	float TimeSinceLastStep = 0.0f;
+
+	/** true с момента запуска фонового шага (StepAsync()) и до применения
+	 *  его результата на game thread (ApplyStepResult()). Пока true: Tick()
+	 *  не запускает следующий шаг поверх текущего (гонка на Grid), а
+	 *  Next()/GenerateRandom() отказываются выполняться (та же причина -
+	 *  фоновый поток в это время читает *Grid). */
+	bool bStepInProgress = false;
+
+	/** Асинхронная версия шага симуляции для непрерывного Play (используется
+	 *  только из Tick()) - тяжёлый FCellularAutomatonRule::Step() считается в
+	 *  фоновом потоке (EAsyncExecution::ThreadPool), чтобы не блокировать
+	 *  game thread (а с ним и камеру/интерфейс) на время шага. Rule и
+	 *  next-gen буфер строятся на game thread ДО диспетчеризации (снимок
+	 *  текущих Details-panel значений), чтобы фоновый поток не читал
+	 *  UPROPERTY одновременно с возможной правкой в редакторе. Next()
+	 *  (ручная кнопка) остаётся синхронной - для непрерывной игры не
+	 *  используется. */
+	void StepAsync();
+
+	/** Завершение StepAsync() - выполняется на game thread через
+	 *  AsyncTask(ENamedThreads::GameThread, ...), т.к. UInstancedStaticMeshComponent
+	 *  (и HISM) не потокобезопасны. Подставляет посчитанный NewGrid и рендерит его. */
+	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds);
 };

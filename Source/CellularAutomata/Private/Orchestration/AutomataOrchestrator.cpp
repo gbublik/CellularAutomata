@@ -4,11 +4,13 @@
 #include "CellularAutomata/Public/Orchestration/AutomataOrchestrator.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Core/PlayerController/GamePlayerController.h"
 #include "Automata/Grid/SparseCellGrid.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
+#include "Async/Async.h"
 
 
 // Sets default values
@@ -19,12 +21,20 @@ AAutomataOrchestrator::AAutomataOrchestrator()
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = false;
 
-	// Инстансированный меш для отрисовки клеток автомата - корневой компонент.
-	// Клетки чисто визуальные, коллизия не нужна и только замедляет
-	// добавление инстансов при большом их количестве.
-	CellsMesh = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("CellsMesh"));
-	CellsMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	RootComponent = CellsMesh;
+	// Оба компонента для отрисовки клеток создаются всегда - переключение
+	// CellMeshComponentType в рантайме (см. GetActiveCellsMeshComponent())
+	// просто выбирает, какой из них получает AddInstances/ClearInstances, без
+	// пересоздания компонентов (Live Coding не умеет безопасно хот-патчить
+	// смену класса CreateDefaultSubobject-компонента на уже существующих в
+	// уровне акторах - см. CLAUDE.md). Клетки чисто визуальные, коллизия не
+	// нужна и только замедляет добавление инстансов при большом их количестве.
+	CellsMeshHierarchical = CreateDefaultSubobject<UHierarchicalInstancedStaticMeshComponent>(TEXT("CellsMeshHierarchical"));
+	CellsMeshHierarchical->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RootComponent = CellsMeshHierarchical;
+
+	CellsMeshFlat = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("CellsMeshFlat"));
+	CellsMeshFlat->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	CellsMeshFlat->SetupAttachment(CellsMeshHierarchical);
 }
 
 // Called when the game starts or when spawned
@@ -51,10 +61,18 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// немедленно (интервал пересчитывается каждый раз, а не кэшируется).
 	TimeSinceLastStep += DeltaTime;
 	const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
-	while (TimeSinceLastStep >= StepInterval)
+
+	// Шаг считается асинхронно (см. StepAsync()) - пока предыдущий не
+	// завершился, новый не запускаем (гонка на Grid), просто ждём. Раньше
+	// здесь был while-цикл, "нагоняющий" пропущенные шаги за один тик - для
+	// синхронного Next() это было безопасно, но для асинхронного шага
+	// означало бы запуск нескольких фоновых Step() поверх друг друга.
+	// Оставшееся время не копится "про запас" - реальная скорость сама
+	// упрётся в то, сколько Step() занимает на этой сетке.
+	if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
 	{
-		TimeSinceLastStep -= StepInterval;
-		Next();
+		TimeSinceLastStep = 0.0f;
+		StepAsync();
 	}
 }
 
@@ -108,11 +126,28 @@ void AAutomataOrchestrator::PostActorCreated()
 	InitializeHUD();
 }
 
+UInstancedStaticMeshComponent* AAutomataOrchestrator::GetActiveCellsMeshComponent() const
+{
+	return (CellMeshComponentType == ECellMeshComponentType::HierarchicalInstanced)
+		? static_cast<UInstancedStaticMeshComponent*>(CellsMeshHierarchical)
+		: static_cast<UInstancedStaticMeshComponent*>(CellsMeshFlat);
+}
+
 void AAutomataOrchestrator::InitializeRenderer()
 {
-	if (!Renderer)
+	UInstancedStaticMeshComponent* DesiredComponent = GetActiveCellsMeshComponent();
+
+	if (!Renderer || Renderer->GetComponent() != DesiredComponent)
 	{
-		Renderer = MakeUnique<FInstancedMeshCellGridRenderer>(CellsMesh);
+		// CellMeshComponentType поменяли в Details panel - у ранее активного
+		// компонента могли остаться инстансы с прошлого рендера, иначе
+		// увидим оба набора кубов одновременно.
+		if (UInstancedStaticMeshComponent* PreviousComponent = Renderer ? Renderer->GetComponent() : nullptr)
+		{
+			PreviousComponent->ClearInstances();
+		}
+
+		Renderer = MakeUnique<FInstancedMeshCellGridRenderer>(DesiredComponent);
 	}
 }
 
@@ -130,15 +165,21 @@ TUniquePtr<FCellGrid> AAutomataOrchestrator::CreateGrid() const
 
 void AAutomataOrchestrator::GenerateRandom()
 {
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: фоновый шаг StepAsync() ещё считается - подождите его завершения"));
+		return;
+	}
+
 	if (!CellMesh)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: CellMesh не задан - назначьте StaticMesh в Details panel"));
 		return;
 	}
 
-	if (!CellsMesh)
+	if (!GetActiveCellsMeshComponent())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: CellsMesh компонент отсутствует"));
+		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: активный CellsMesh-компонент отсутствует"));
 		return;
 	}
 
@@ -195,6 +236,12 @@ void AAutomataOrchestrator::GenerateRandom()
 
 void AAutomataOrchestrator::Next()
 {
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Next: фоновый шаг StepAsync() ещё считается - подождите его завершения"));
+		return;
+	}
+
 	if (!Grid)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Next: сетка не инициализирована - сначала вызовите GenerateRandom"));
@@ -207,9 +254,9 @@ void AAutomataOrchestrator::Next()
 		return;
 	}
 
-	if (!CellsMesh)
+	if (!GetActiveCellsMeshComponent())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Next: CellsMesh компонент отсутствует"));
+		UE_LOG(LogTemp, Warning, TEXT("Next: активный CellsMesh-компонент отсутствует"));
 		return;
 	}
 
@@ -241,6 +288,82 @@ void AAutomataOrchestrator::Next()
 		Grid->Num(), StepSeconds * 1000.0, RenderSeconds * 1000.0,
 		RT.SetMeshSeconds * 1000.0, RT.ClearSeconds * 1000.0, RT.ScaleSeconds * 1000.0,
 		RT.GetAliveSeconds * 1000.0, RT.BuildTransformsSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
+}
+
+void AAutomataOrchestrator::StepAsync()
+{
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StepAsync: сетка не инициализирована - сначала вызовите GenerateRandom"));
+		return;
+	}
+
+	if (!CellMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StepAsync: CellMesh не задан - назначьте StaticMesh в Details panel"));
+		return;
+	}
+
+	if (!GetActiveCellsMeshComponent())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StepAsync: активный CellsMesh-компонент отсутствует"));
+		return;
+	}
+
+	// Правило и буфер следующего поколения строим здесь, на game thread -
+	// оба читают UPROPERTY (BirthCounts/SurvivalCounts/Neighborhood/CellSize/
+	// ChunkSize/GridStorageStrategy), которые могут одновременно
+	// редактироваться в Details panel. После этой точки фоновый поток их
+	// больше не касается - только *Grid (на чтение) и NextGridBuffer (на
+	// запись, свежесозданный, ни с кем не общий).
+	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
+	TUniquePtr<FCellGrid> NextGridBuffer = CreateGrid();
+
+	bStepInProgress = true;
+
+	FCellGrid* CurrentGridPtr = Grid.Get();
+	TWeakObjectPtr<AAutomataOrchestrator> WeakThis(this);
+
+	Async(EAsyncExecution::ThreadPool,
+		[AutomatonRule = MoveTemp(AutomatonRule), NextGridBuffer = MoveTemp(NextGridBuffer), CurrentGridPtr, WeakThis]() mutable
+		{
+			const double StepStartSeconds = FPlatformTime::Seconds();
+			AutomatonRule.Step(*CurrentGridPtr, *NextGridBuffer);
+			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
+
+			// Grid/рендер трогаем только на game thread - AsyncTask сюда и
+			// маршрутизирует. WeakThis - на случай, если актор уничтожили
+			// (например, level unload) пока фоновый Step() ещё считался.
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, NextGridBuffer = MoveTemp(NextGridBuffer), StepSeconds]() mutable
+			{
+				if (AAutomataOrchestrator* StrongThis = WeakThis.Get())
+				{
+					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds);
+				}
+			});
+		});
+}
+
+void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds)
+{
+	Grid = MoveTemp(NewGrid);
+
+	InitializeRenderer();
+
+	Renderer->SetMesh(CellMesh);
+	Renderer->SetMaterial(CellMaterial);
+
+	const double RenderStartSeconds = FPlatformTime::Seconds();
+	Renderer->Render(*Grid);
+	const double RenderSeconds = FPlatformTime::Seconds() - RenderStartSeconds;
+	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
+
+	UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток], отрисовка: %.2f мс [SetMesh/Material: %.2f, ClearInstances: %.2f, Scale: %.2f, GetAliveCells: %.2f, BuildTransforms: %.2f, AddInstances: %.2f])"),
+		Grid->Num(), StepSeconds * 1000.0, RenderSeconds * 1000.0,
+		RT.SetMeshSeconds * 1000.0, RT.ClearSeconds * 1000.0, RT.ScaleSeconds * 1000.0,
+		RT.GetAliveSeconds * 1000.0, RT.BuildTransformsSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
+
+	bStepInProgress = false;
 }
 
 void AAutomataOrchestrator::Start()

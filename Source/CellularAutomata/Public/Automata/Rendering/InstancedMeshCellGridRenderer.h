@@ -39,6 +39,11 @@ public:
 
 	const FRenderTimings& GetLastRenderTimings() const { return LastTimings; }
 
+	/** Компонент, который этот рендерер оборачивает - нужен, чтобы вызывающая
+	 *  сторона могла определить, устарел ли рендерер (обёрнут не тот
+	 *  компонент), не храня свою копию указателя параллельно. */
+	UInstancedStaticMeshComponent* GetComponent() const { return Component.Get(); }
+
 private:
 	TWeakObjectPtr<UInstancedStaticMeshComponent> Component;
 	TWeakObjectPtr<UStaticMesh> Mesh;
