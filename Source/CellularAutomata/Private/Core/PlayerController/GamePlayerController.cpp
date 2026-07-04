@@ -2,11 +2,52 @@
 
 #include "Core/PlayerController/GamePlayerController.h"
 #include "Camera/PlayerCameraManager.h"
+#include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "InputAction.h"
+#include "InputMappingContext.h"
+#include "Kismet/GameplayStatics.h"
+#include "Orchestration/AutomataOrchestrator.h"
 
 // YourPlayerController.cpp
 void AGamePlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
+
+	ToggleSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ToggleSimulation"));
+	ToggleSimulationAction->ValueType = EInputActionValueType::Boolean;
+
+	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
+	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::SpaceBar);
+
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
+	{
+		Subsystem->AddMappingContext(SimulationMappingContext, 0);
+	}
+
+	if (UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent))
+	{
+		EnhancedInputComp->BindAction(ToggleSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSimulation);
+	}
+}
+
+void AGamePlayerController::OnToggleSimulation()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleSimulation: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	if (Orchestrator->IsSimulationRunning())
+	{
+		Orchestrator->Stop();
+	}
+	else
+	{
+		Orchestrator->Start();
+	}
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

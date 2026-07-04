@@ -72,6 +72,12 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void Stop();
 
+	/** Идёт ли сейчас непрерывная симуляция (между Start() и Stop()) - нужно
+	 *  внешнему коду (например, хоткею в AGamePlayerController), чтобы
+	 *  решить, звать Start() или Stop(), не трогая bSimulationRunning напрямую. */
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsSimulationRunning() const { return bSimulationRunning; }
+
 	/** Выполнить один шаг симуляции */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void Next();
