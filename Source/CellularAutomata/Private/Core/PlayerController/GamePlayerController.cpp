@@ -23,10 +23,18 @@ void AGamePlayerController::SetupInputComponent()
 	ResetSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ResetSimulation"));
 	ResetSimulationAction->ValueType = EInputActionValueType::Boolean;
 
+	SetLitModeAction = NewObject<UInputAction>(this, TEXT("IA_SetLitMode"));
+	SetLitModeAction->ValueType = EInputActionValueType::Boolean;
+
+	SetUnlitModeAction = NewObject<UInputAction>(this, TEXT("IA_SetUnlitMode"));
+	SetUnlitModeAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::SpaceBar);
 	SimulationMappingContext->MapKey(StepOnceAction, EKeys::F);
 	SimulationMappingContext->MapKey(ResetSimulationAction, EKeys::R);
+	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
+	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::Two);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -38,6 +46,8 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(ToggleSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSimulation);
 		EnhancedInputComp->BindAction(StepOnceAction, ETriggerEvent::Started, this, &AGamePlayerController::OnStepOnce);
 		EnhancedInputComp->BindAction(ResetSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnResetSimulation);
+		EnhancedInputComp->BindAction(SetLitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetLitMode);
+		EnhancedInputComp->BindAction(SetUnlitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetUnlitMode);
 	}
 }
 
@@ -88,6 +98,16 @@ void AGamePlayerController::OnResetSimulation()
 	}
 
 	Orchestrator->GenerateRandom();
+}
+
+void AGamePlayerController::OnSetLitMode()
+{
+	ConsoleCommand(TEXT("VIEWMODE LIT"));
+}
+
+void AGamePlayerController::OnSetUnlitMode()
+{
+	ConsoleCommand(TEXT("VIEWMODE UNLIT"));
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)
@@ -176,7 +196,8 @@ void AGamePlayerController::BeginPlay()
 		UE_LOG(LogTemp, Log, TEXT("Camera FOV set to %f degrees"), Fov);
 	}
 
-	// Unlit-режим - как в редакторе, чтобы не считать освещение при
-	// большом количестве инстансированных клеток автомата
-	ConsoleCommand(TEXT("VIEWMODE UNLIT"));
+	// Игра стартует с обычным освещённым рендером - Unlit больше не
+	// форсируется автоматически, переключается вручную хоткеями 1 (Lit) /
+	// 2 (Unlit, экономит на освещении при большом числе инстансированных
+	// клеток автомата).
 }

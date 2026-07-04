@@ -52,6 +52,17 @@ protected:
 	 *  Grid через bStepInProgress, отдельная проверка здесь не нужна. */
 	void OnResetSimulation();
 
+	/** Хоткей (1) - включить освещённый режим (VIEWMODE LIT). Игра теперь
+	 *  стартует в этом режиме по умолчанию (см. BeginPlay) - принудительный
+	 *  Unlit больше не форсируется автоматически, а переключается вручную
+	 *  через 1/2. */
+	void OnSetLitMode();
+
+	/** Хоткей (2) - включить безосветный режим (VIEWMODE UNLIT), тот же, что
+	 *  раньше форсировался в BeginPlay - экономит на освещении при большом
+	 *  числе инстансированных клеток автомата. */
+	void OnSetUnlitMode();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. */
@@ -63,6 +74,12 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ResetSimulationAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> SetLitModeAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> SetUnlitModeAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;
