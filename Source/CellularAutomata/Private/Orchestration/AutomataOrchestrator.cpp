@@ -50,6 +50,15 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	// Разлитый по кадрам рендер (см. ChunkedRenderCellThreshold) продолжается
+	// независимо от bSimulationRunning - если игру остановили посреди
+	// "разлива", он всё равно должен доехать до конца, а не застрять
+	// наполовину отрисованным.
+	if (bChunkedRenderInProgress)
+	{
+		AdvanceChunkedRender();
+	}
+
 	if (!bSimulationRunning)
 	{
 		return;
@@ -353,6 +362,26 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	Renderer->SetMesh(CellMesh);
 	Renderer->SetMaterial(CellMaterial);
 
+	if (bEnableChunkedRender && Grid->Num() > ChunkedRenderCellThreshold)
+	{
+		// Сетка большая - разливаем AddInstances по нескольким Tick() вместо
+		// одного кадра (см. AdvanceChunkedRender()), чтобы не блокировать
+		// game thread (а с ним и камеру) на десятки-сотни миллисекунд, даже
+		// когда сам шаг уже посчитан асинхронно. bStepInProgress остаётся
+		// true - AdvanceChunkedRender() сбросит его, когда рендер закончится.
+		const double BeginRenderStartSeconds = FPlatformTime::Seconds();
+		Renderer->BeginRender(*Grid);
+		const double BeginRenderSeconds = FPlatformTime::Seconds() - BeginRenderStartSeconds;
+
+		bChunkedRenderInProgress = true;
+		ChunkedRenderStartSeconds = FPlatformTime::Seconds();
+		ChunkedRenderFrameCount = 0;
+
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток], подготовка рендера: %.2f мс) - рендер разлит по кадрам (%d инстансов/кадр)"),
+			Grid->Num(), StepSeconds * 1000.0, BeginRenderSeconds * 1000.0, ChunkedRenderCellsPerFrame);
+		return;
+	}
+
 	const double RenderStartSeconds = FPlatformTime::Seconds();
 	Renderer->Render(*Grid);
 	const double RenderSeconds = FPlatformTime::Seconds() - RenderStartSeconds;
@@ -364,6 +393,26 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 		RT.GetAliveSeconds * 1000.0, RT.BuildTransformsSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
 
 	bStepInProgress = false;
+}
+
+void AAutomataOrchestrator::AdvanceChunkedRender()
+{
+	++ChunkedRenderFrameCount;
+
+	const bool bMoreRemaining = Renderer->AdvanceRenderChunk(ChunkedRenderCellsPerFrame);
+	if (bMoreRemaining)
+	{
+		return;
+	}
+
+	bChunkedRenderInProgress = false;
+	bStepInProgress = false;
+
+	const double TotalSeconds = FPlatformTime::Seconds() - ChunkedRenderStartSeconds;
+	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
+
+	UE_LOG(LogTemp, Log, TEXT("StepAsync: рендер разлитый по кадрам завершён - живых клеток %d за %d кадр(ов)/%.2f мс (AddInstances суммарно: %.2f мс)"),
+		Grid->Num(), ChunkedRenderFrameCount, TotalSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
 }
 
 void AAutomataOrchestrator::Start()

@@ -37,6 +37,22 @@ public:
 
 	virtual void Render(const FCellGrid& Grid) override;
 
+	/** Готовит трансформы для Grid и один раз чистит компонент, но не
+	 *  добавляет ни одного инстанса - используется вместе с
+	 *  AdvanceRenderChunk(), чтобы "разлить" AddInstances (самую дорогую
+	 *  часть Render() при больших сетках) по нескольким кадрам вместо
+	 *  одного. Render() сам реализован через BeginRender() + один вызов
+	 *  AdvanceRenderChunk() без ограничения - так оба пути не дублируют
+	 *  логику построения трансформов. */
+	void BeginRender(const FCellGrid& Grid);
+
+	/** Добавляет очередную порцию (до MaxCellsThisChunk) трансформов,
+	 *  построенных предыдущим BeginRender(). Возвращает true, если после
+	 *  этого вызова ещё остались недобавленные инстансы. AddInstanceSeconds
+	 *  в LastTimings накапливается по всем чанкам одного цикла BeginRender(),
+	 *  а не перезаписывается, чтобы суммарное время было видно целиком. */
+	bool AdvanceRenderChunk(int32 MaxCellsThisChunk);
+
 	const FRenderTimings& GetLastRenderTimings() const { return LastTimings; }
 
 	/** Компонент, который этот рендерер оборачивает - нужен, чтобы вызывающая
@@ -49,4 +65,9 @@ private:
 	TWeakObjectPtr<UStaticMesh> Mesh;
 	TWeakObjectPtr<UMaterialInterface> Material;
 	FRenderTimings LastTimings;
+
+	/** Трансформы, построенные последним BeginRender() - AdvanceRenderChunk()
+	 *  добавляет их порциями начиная с PendingCursor. */
+	TArray<FTransform> PendingTransforms;
+	int32 PendingCursor = 0;
 };

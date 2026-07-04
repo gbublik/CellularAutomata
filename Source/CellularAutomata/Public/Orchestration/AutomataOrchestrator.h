@@ -150,6 +150,33 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	ECellMeshComponentType CellMeshComponentType = ECellMeshComponentType::HierarchicalInstanced;
 
+	/** Включает/выключает разлитый по кадрам рендер целиком (см.
+	 *  ChunkedRenderCellThreshold/ChunkedRenderCellsPerFrame) - если false,
+	 *  StepAsync() всегда рендерит новую сетку одним кадром, независимо от
+	 *  числа живых клеток, как до появления чанкинга. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	bool bEnableChunkedRender = true;
+
+	/** Порог числа живых клеток, после которого рендер очередного поколения
+	 *  (только для непрерывной игры - StepAsync()) не применяется одним
+	 *  кадром, а "разливается" по нескольким Tick() (см.
+	 *  ChunkedRenderCellsPerFrame) - самая дорогая часть Render()
+	 *  (AddInstances) иначе блокирует game thread (а с ним и камеру)
+	 *  на десятки-сотни миллисекунд при огромных сетках, даже когда сам шаг
+	 *  симуляции уже посчитан асинхронно. Next()/GenerateRandom() всегда
+	 *  рендерят сеткой целиком, независимо от этого порога. Актуально только
+	 *  при bEnableChunkedRender == true. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "1", EditCondition = "bEnableChunkedRender", EditConditionHides))
+	int32 ChunkedRenderCellThreshold = 100000;
+
+	/** Сколько инстансов добавлять за один Tick, пока идёт "разлитый" по
+	 *  кадрам рендер (см. ChunkedRenderCellThreshold). Актуально только при
+	 *  bEnableChunkedRender == true. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "1", EditCondition = "bEnableChunkedRender", EditConditionHides))
+	int32 ChunkedRenderCellsPerFrame = 20000;
+
 	/** Количество живых клеток при генерации */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",
 			  meta = (ClampMin = "1"))
@@ -251,4 +278,19 @@ private:
 	 *  AsyncTask(ENamedThreads::GameThread, ...), т.к. UInstancedStaticMeshComponent
 	 *  (и HISM) не потокобезопасны. Подставляет посчитанный NewGrid и рендерит его. */
 	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds);
+
+	/** true, пока рендер текущего поколения "разлит" по кадрам (см.
+	 *  ChunkedRenderCellThreshold) - Tick() вызывает AdvanceChunkedRender()
+	 *  каждый кадр, пока флаг не сброшен. bStepInProgress остаётся true всё
+	 *  это время (переиспользуем как единый guard "занят предыдущим
+	 *  поколением"), поэтому следующий StepAsync()/ручной Next()/
+	 *  GenerateRandom() не стартуют поверх незаконченного рендера. */
+	bool bChunkedRenderInProgress = false;
+	double ChunkedRenderStartSeconds = 0.0;
+	int32 ChunkedRenderFrameCount = 0;
+
+	/** Добавляет очередную порцию инстансов (см. Renderer::AdvanceRenderChunk())
+	 *  и, когда рендер полностью завершён, сбрасывает bChunkedRenderInProgress/
+	 *  bStepInProgress и логирует итог (сколько кадров/времени заняло). */
+	void AdvanceChunkedRender();
 };

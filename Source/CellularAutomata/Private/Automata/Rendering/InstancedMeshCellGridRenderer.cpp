@@ -22,6 +22,22 @@ void FInstancedMeshCellGridRenderer::SetMaterial(UMaterialInterface* InMaterial)
 
 void FInstancedMeshCellGridRenderer::Render(const FCellGrid& Grid)
 {
+	BeginRender(Grid);
+	// Без ограничения на размер чанка - весь PendingTransforms уходит одним
+	// вызовом AddInstances(), как и раньше до появления чанкинга; цикл
+	// формален (тела достаточно ровно одной итерации), но так BeginRender()/
+	// AdvanceRenderChunk() остаются единственным местом с этой логикой.
+	while (AdvanceRenderChunk(TNumericLimits<int32>::Max()))
+	{
+	}
+}
+
+void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid)
+{
+	PendingTransforms.Reset();
+	PendingCursor = 0;
+	LastTimings = FRenderTimings();
+
 	UInstancedStaticMeshComponent* Comp = Component.Get();
 	if (!Comp)
 	{
@@ -66,25 +82,50 @@ void FInstancedMeshCellGridRenderer::Render(const FCellGrid& Grid)
 
 	// AddInstance() по одному элементу пересобирает внутренний буфер инстансов
 	// на каждый вызов (супралинейный рост при большом числе клеток) - строим
-	// все трансформы разом и добавляем их одним батчем через AddInstances().
-	// bUpdateNavigation=false: навмеш клеткам автомата не нужен.
+	// все трансформы разом, а добавляем их через AddInstances() в
+	// AdvanceRenderChunk() (одним батчем целиком или по частям).
 	const double BuildTransformsStartSeconds = FPlatformTime::Seconds();
-	TArray<FTransform> InstanceTransforms;
-	InstanceTransforms.Reserve(AliveCells.Num());
+	PendingTransforms.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
-		InstanceTransforms.Add(FTransform(FQuat::Identity, Grid.GridToWorld(Cell), InstanceScale));
+		PendingTransforms.Add(FTransform(FQuat::Identity, Grid.GridToWorld(Cell), InstanceScale));
 	}
 	LastTimings.BuildTransformsSeconds = FPlatformTime::Seconds() - BuildTransformsStartSeconds;
 
-	const double AddInstanceStartSeconds = FPlatformTime::Seconds();
-	Comp->AddInstances(InstanceTransforms, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/false, /*bUpdateNavigation=*/false);
-	LastTimings.AddInstanceSeconds = FPlatformTime::Seconds() - AddInstanceStartSeconds;
-
 	// Логирование намеренно НЕ здесь: UE_LOG сам по себе (форматирование +
-	// запись в файл) стоит времени, и если логировать внутри Render(), эта
-	// стоимость попадает в измеряемый снаружи интервал (см. Next()/
+	// запись в файл) стоит времени, и если логировать внутри BeginRender(),
+	// эта стоимость попадает в измеряемый снаружи интервал (см. Next()/
 	// GenerateRandom() в AutomataOrchestrator), но не в одну из полей
 	// LastTimings - разница выглядит как необъяснённый пробел в замерах.
 	// Вызывающая сторона логирует один раз, объединяя это с шагом симуляции.
+}
+
+bool FInstancedMeshCellGridRenderer::AdvanceRenderChunk(int32 MaxCellsThisChunk)
+{
+	UInstancedStaticMeshComponent* Comp = Component.Get();
+	if (!Comp)
+	{
+		PendingTransforms.Reset();
+		PendingCursor = 0;
+		return false;
+	}
+
+	const int32 Remaining = PendingTransforms.Num() - PendingCursor;
+	if (Remaining <= 0)
+	{
+		return false;
+	}
+
+	const int32 CountThisChunk = FMath::Min(MaxCellsThisChunk, Remaining);
+
+	TArray<FTransform> ChunkTransforms;
+	ChunkTransforms.Append(PendingTransforms.GetData() + PendingCursor, CountThisChunk);
+
+	// bUpdateNavigation=false: навмеш клеткам автомата не нужен.
+	const double AddInstanceStartSeconds = FPlatformTime::Seconds();
+	Comp->AddInstances(ChunkTransforms, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/false, /*bUpdateNavigation=*/false);
+	LastTimings.AddInstanceSeconds += FPlatformTime::Seconds() - AddInstanceStartSeconds;
+
+	PendingCursor += CountThisChunk;
+	return PendingCursor < PendingTransforms.Num();
 }
