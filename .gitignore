@@ -41,3 +41,6 @@ __pycache__/
 # stress-testing (ISM components serialize their instances into the level
 # unless transient) - not meaningful design content, just noise per save.
 Content/levels/NewMap.umap
+
+# Changes on every editor save with no meaningful diff to track.
+Content/music/Music_controller.uasset
