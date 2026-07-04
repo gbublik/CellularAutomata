@@ -59,6 +59,23 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		AdvanceChunkedRender();
 	}
 
+	// Автошаг Shift+F (см. StartFastStep()) - взаимоисключающ с
+	// bSimulationRunning (Start() отказывает, пока это активно, и наоборот),
+	// поэтому безопасно делить TimeSinceLastStep с обычным Play.
+	if (bFastStepActive)
+	{
+		TimeSinceLastStep += DeltaTime;
+		const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
+
+		if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
+		{
+			TimeSinceLastStep = 0.0f;
+			StepAsync();
+		}
+
+		return;
+	}
+
 	if (!bSimulationRunning)
 	{
 		return;
@@ -87,6 +104,15 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 
 void AAutomataOrchestrator::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// Дожидаемся фонового шага (если он в полёте) ДО того, как актор начнёт
+	// разрушаться - иначе StepAsync()'s CurrentGridPtr (сырой Grid.Get()) может
+	// пережить сам Grid и фоновый ParallelFor разыменует уже освобождённую
+	// память (см. PendingStepFuture в заголовке).
+	if (PendingStepFuture.IsValid())
+	{
+		PendingStepFuture.Wait();
+	}
+
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -342,7 +368,10 @@ void AAutomataOrchestrator::StepAsync()
 	FCellGrid* CurrentGridPtr = Grid.Get();
 	TWeakObjectPtr<AAutomataOrchestrator> WeakThis(this);
 
-	Async(EAsyncExecution::ThreadPool,
+	// CurrentGridPtr - сырой указатель на *Grid, без защиты времени жизни -
+	// PendingStepFuture даёт EndPlay() дождаться завершения этого фонового
+	// шага перед тем, как актор (а с ним и Grid) начнёт разрушаться.
+	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
 		[AutomatonRule = MoveTemp(AutomatonRule), NextGridBuffer = MoveTemp(NextGridBuffer), CurrentGridPtr, WeakThis]() mutable
 		{
 			const double StepStartSeconds = FPlatformTime::Seconds();
@@ -432,8 +461,41 @@ void AAutomataOrchestrator::AdvanceChunkedRender()
 		Grid->Num(), ChunkedRenderFrameCount, TotalSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
 }
 
+void AAutomataOrchestrator::StartFastStep()
+{
+	if (bSimulationRunning)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StartFastStep: симуляция уже запущена через Play (P) - остановите её сначала"));
+		return;
+	}
+
+	bFastStepActive = true;
+	TimeSinceLastStep = 0.0f;
+	SetActorTickEnabled(true);
+
+	UE_LOG(LogTemp, Log, TEXT("StartFastStep: автошаг (Shift+F) включён"));
+}
+
+void AAutomataOrchestrator::StopFastStep()
+{
+	bFastStepActive = false;
+
+	if (!bSimulationRunning && !bChunkedRenderInProgress)
+	{
+		SetActorTickEnabled(false);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("StopFastStep: автошаг выключен"));
+}
+
 void AAutomataOrchestrator::Start()
 {
+	if (IsFastStepActive())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Start: активен автошаг по F - остановите его (повторное F / отпустить Shift+F) перед запуском Play"));
+		return;
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("Start game"));
 	Resume();
 

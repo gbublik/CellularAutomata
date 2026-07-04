@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Async/Future.h"
 #include "Blueprint/UserWidget.h"
 #include "CellularAutomata/Public/Core/PlayerController/GamePlayerController.h"
 #include "CellularAutomata/Public/Ui/UiController.h"
@@ -77,6 +78,26 @@ public:
 	 *  решить, звать Start() или Stop(), не трогая bSimulationRunning напрямую. */
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	bool IsSimulationRunning() const { return bSimulationRunning; }
+
+	/** Включает автошаг "как Play" (Shift+F, пока зажато - см.
+	 *  AGamePlayerController::OnFastStepPressed()) - темп по Speed, та же
+	 *  ветка Tick(), что и bSimulationRunning, но останавливается по
+	 *  отпусканию клавиши (OnFastStepReleased()), а не повторным нажатием.
+	 *  Отказывает (с warning в лог), если уже идёт Play (bSimulationRunning) -
+	 *  F и P не работают одновременно, симметрично тому, как Start() ниже
+	 *  отказывает, если активен автошаг. Обычное нажатие F без Shift сюда не
+	 *  попадает вовсе - оно просто вызывает Next() один раз. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void StartFastStep();
+
+	/** Останавливает автошаг, запущенный StartFastStep(). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void StopFastStep();
+
+	/** Активен ли сейчас автошаг Shift+F - нужно AGamePlayerController::
+	 *  OnFastStepReleased(), чтобы понять, есть ли что останавливать. */
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsFastStepActive() const { return bFastStepActive; }
 
 	/** Выполнить один шаг симуляции */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
@@ -261,6 +282,13 @@ private:
 	bool bSimulationRunning = false;
 	float TimeSinceLastStep = 0.0f;
 
+	/** true между StartFastStep() и StopFastStep() (Shift+F, пока зажато) -
+	 *  Tick() шагает в этой ветке тем же темпом по Speed и тем же
+	 *  TimeSinceLastStep, что и bSimulationRunning (взаимоисключающи,
+	 *  делить аккумулятор безопасно). Обычное F без Shift сюда не попадает -
+	 *  оно вызывает Next() один раз напрямую, минуя это состояние. */
+	bool bFastStepActive = false;
+
 	/** true с момента запуска фонового шага (StepAsync()) и до применения
 	 *  его результата на game thread (ApplyStepResult()). Пока true: Tick()
 	 *  не запускает следующий шаг поверх текущего (гонка на Grid), а
@@ -283,6 +311,15 @@ private:
 	 *  AsyncTask(ENamedThreads::GameThread, ...), т.к. UInstancedStaticMeshComponent
 	 *  (и HISM) не потокобезопасны. Подставляет посчитанный NewGrid и рендерит его. */
 	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds);
+
+	/** Future от Async() в StepAsync() - StepAsync() передаёт фоновому потоку
+	 *  сырой Grid.Get() (см. StepAsync()), поэтому EndPlay() обязан дождаться
+	 *  этого future перед тем, как актор (а с ним и Grid) начнёт разрушаться -
+	 *  иначе фоновый поток может разыменовать уже освобождённый Grid
+	 *  (Access Violation внутри FCellularAutomatonRule::Step()'s ParallelFor).
+	 *  Всегда максимум один шаг в полёте одновременно (см. bStepInProgress),
+	 *  так что перезапись этого поля на каждый StepAsync() безопасна. */
+	TFuture<void> PendingStepFuture;
 
 	/** true, пока рендер текущего поколения "разлит" по кадрам (см.
 	 *  bEnableChunkedRender) - Tick() вызывает AdvanceChunkedRender()

@@ -19,8 +19,8 @@ void AGamePlayerController::SetupInputComponent()
 	ToggleSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ToggleSimulation"));
 	ToggleSimulationAction->ValueType = EInputActionValueType::Boolean;
 
-	StepOnceAction = NewObject<UInputAction>(this, TEXT("IA_StepOnce"));
-	StepOnceAction->ValueType = EInputActionValueType::Boolean;
+	FastStepAction = NewObject<UInputAction>(this, TEXT("IA_FastStep"));
+	FastStepAction->ValueType = EInputActionValueType::Boolean;
 
 	ResetSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ResetSimulation"));
 	ResetSimulationAction->ValueType = EInputActionValueType::Boolean;
@@ -45,7 +45,7 @@ void AGamePlayerController::SetupInputComponent()
 
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
-	SimulationMappingContext->MapKey(StepOnceAction, EKeys::F);
+	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
 	SimulationMappingContext->MapKey(ResetSimulationAction, EKeys::R);
 	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
 	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::Two);
@@ -66,10 +66,11 @@ void AGamePlayerController::SetupInputComponent()
 	if (UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent))
 	{
 		EnhancedInputComp->BindAction(ToggleSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSimulation);
-		// Triggered (не Started) - срабатывает каждый кадр, пока клавиша
-		// зажата, а не один раз на нажатие: держа F, генерируем следующее
-		// состояние настолько часто, насколько позволяет частота кадров.
-		EnhancedInputComp->BindAction(StepOnceAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnStepOnce);
+		// Started/Completed (не Triggered) - F теперь тумблер (обычное
+		// нажатие) или hold-режим (Shift+F), а не "срабатывает каждый кадр,
+		// пока зажата", как раньше.
+		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFastStepPressed);
+		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnFastStepReleased);
 		EnhancedInputComp->BindAction(ResetSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnResetSimulation);
 		EnhancedInputComp->BindAction(SetLitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetLitMode);
 		EnhancedInputComp->BindAction(SetUnlitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetUnlitMode);
@@ -102,22 +103,40 @@ void AGamePlayerController::OnToggleSimulation()
 	}
 }
 
-void AGamePlayerController::OnStepOnce()
+void AGamePlayerController::OnFastStepPressed()
 {
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("OnStepOnce: AAutomataOrchestrator не найден в мире"));
+		UE_LOG(LogTemp, Warning, TEXT("OnFastStepPressed: AAutomataOrchestrator не найден в мире"));
 		return;
 	}
 
 	if (Orchestrator->IsSimulationRunning())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("OnStepOnce: непрерывная симуляция уже идёт (Space) - ручной шаг F игнорируется"));
+		UE_LOG(LogTemp, Warning, TEXT("OnFastStepPressed: непрерывная симуляция уже идёт (P) - F игнорируется"));
 		return;
 	}
 
-	Orchestrator->Next();
+	// Shift+F - непрерывный автошаг "как Play", пока F зажата (см.
+	// OnFastStepReleased()); голый F - один шаг, как и раньше.
+	if (IsInputKeyDown(EKeys::LeftShift))
+	{
+		Orchestrator->StartFastStep();
+	}
+	else
+	{
+		Orchestrator->Next();
+	}
+}
+
+void AGamePlayerController::OnFastStepReleased()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (Orchestrator && Orchestrator->IsFastStepActive())
+	{
+		Orchestrator->StopFastStep();
+	}
 }
 
 void AGamePlayerController::OnResetSimulation()

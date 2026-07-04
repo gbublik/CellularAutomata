@@ -39,17 +39,27 @@ protected:
 	 *  от PlayerController активного PIE-мира. */
 	void OnToggleSimulation();
 
-	/** Хоткей (F) для ручного шага (Next()) - привязан к ETriggerEvent::
-	 *  Triggered (не Started), поэтому срабатывает каждый кадр, пока клавиша
-	 *  зажата: удерживая F, генерируем следующее состояние настолько часто,
-	 *  насколько позволяет частота кадров (Next() синхронный, так что
-	 *  реальный темп упрётся в то, сколько шаг занимает на этой сетке).
-	 *  Работает только пока непрерывная симуляция не запущена
-	 *  (IsSimulationRunning() == false); иначе Next() и так откажется
-	 *  работать (гонка на Grid с фоновым StepAsync(), см. bStepInProgress),
-	 *  но здесь проверяем заранее, чтобы дать понятный лог вместо результата
-	 *  "как будто ничего не произошло". */
-	void OnStepOnce();
+	/** Хоткей (F) - без Shift просто вызывает Next() один раз (обычный ручной
+	 *  шаг, как и было изначально); если в момент нажатия зажат Shift -
+	 *  вместо одного шага включается непрерывный автошаг "как Play"
+	 *  (AAutomataOrchestrator::StartFastStep(), темп по Speed), который
+	 *  работает только пока F физически зажата и останавливается по
+	 *  отпусканию (см. OnFastStepReleased()). Привязана на
+	 *  ETriggerEvent::Started (однократно на нажатие) и Completed (на
+	 *  отпускание, нужно только для hold-режима Shift+F) - не Triggered,
+	 *  иначе голый F повторял бы Next() каждый кадр, пока зажата, как раньше.
+	 *  Работает только пока непрерывная симуляция (P) не запущена -
+	 *  AAutomataOrchestrator::StartFastStep() и так откажется работать в
+	 *  этом случае (см. её реализацию), здесь дублируем проверку заранее
+	 *  только чтобы дать понятный лог вместо результата "как будто ничего
+	 *  не произошло". */
+	void OnFastStepPressed();
+
+	/** Останавливает автошаг Shift+F, если он сейчас активен
+	 *  (AAutomataOrchestrator::IsFastStepActive()) - обычный одиночный шаг
+	 *  (F без Shift) не запускает никакого длящегося состояния, поэтому
+	 *  отпускание клавиши в этом случае ничего не делает. */
+	void OnFastStepReleased();
 
 	/** Хоткей (R) для GenerateRandom() - сбрасывает сетку в новое случайное
 	 *  состояние с тем же Seed. В отличие от F, доступен и во время
@@ -93,7 +103,7 @@ protected:
 	TObjectPtr<class UInputAction> ToggleSimulationAction;
 
 	UPROPERTY()
-	TObjectPtr<class UInputAction> StepOnceAction;
+	TObjectPtr<class UInputAction> FastStepAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ResetSimulationAction;
