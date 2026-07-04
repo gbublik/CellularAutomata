@@ -30,7 +30,7 @@ void AGamePlayerController::SetupInputComponent()
 	SetUnlitModeAction->ValueType = EInputActionValueType::Boolean;
 
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
-	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::SpaceBar);
+	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(StepOnceAction, EKeys::F);
 	SimulationMappingContext->MapKey(ResetSimulationAction, EKeys::R);
 	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
@@ -44,7 +44,10 @@ void AGamePlayerController::SetupInputComponent()
 	if (UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent))
 	{
 		EnhancedInputComp->BindAction(ToggleSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSimulation);
-		EnhancedInputComp->BindAction(StepOnceAction, ETriggerEvent::Started, this, &AGamePlayerController::OnStepOnce);
+		// Triggered (не Started) - срабатывает каждый кадр, пока клавиша
+		// зажата, а не один раз на нажатие: держа F, генерируем следующее
+		// состояние настолько часто, насколько позволяет частота кадров.
+		EnhancedInputComp->BindAction(StepOnceAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnStepOnce);
 		EnhancedInputComp->BindAction(ResetSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnResetSimulation);
 		EnhancedInputComp->BindAction(SetLitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetLitMode);
 		EnhancedInputComp->BindAction(SetUnlitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetUnlitMode);
