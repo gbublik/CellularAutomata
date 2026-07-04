@@ -99,6 +99,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	bool IsFastStepActive() const { return bFastStepActive; }
 
+	/** Вычисляет мировой центр и радиус описанной сферы вокруг всех живых
+	 *  клеток - нужно AGamePlayerController::OnFrameAllCells(), чтобы
+	 *  поставить камеру на расстояние, при котором вся сетка помещается в
+	 *  кадр. Возвращает false (Out-параметры не трогает), если сетка не
+	 *  инициализирована или пуста. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	bool ComputeAliveCellsBounds(FVector& OutCenter, float& OutRadius) const;
+
 	/** Выполнить один шаг симуляции */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void Next();

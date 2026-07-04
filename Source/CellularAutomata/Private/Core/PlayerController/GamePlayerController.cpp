@@ -43,6 +43,9 @@ void AGamePlayerController::SetupInputComponent()
 	DecreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_DecreaseSpeed"));
 	DecreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
 
+	FrameAllCellsAction = NewObject<UInputAction>(this, TEXT("IA_FrameAllCells"));
+	FrameAllCellsAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
@@ -57,6 +60,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Add);
 	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Hyphen);
 	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Subtract);
+	SimulationMappingContext->MapKey(FrameAllCellsAction, EKeys::Home);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -81,6 +85,7 @@ void AGamePlayerController::SetupInputComponent()
 		// только на однократное нажатие (аналогично F/OnStepOnce()).
 		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
 		EnhancedInputComp->BindAction(DecreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseSpeed);
+		EnhancedInputComp->BindAction(FrameAllCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFrameAllCells);
 	}
 }
 
@@ -243,6 +248,43 @@ void AGamePlayerController::OnDecreaseSpeed()
 	}
 
 	Orchestrator->AdjustSpeed(-SpeedAdjustStep);
+}
+
+void AGamePlayerController::OnFrameAllCells()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnFrameAllCells: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	FVector Center;
+	float Radius;
+	if (!Orchestrator->ComputeAliveCellsBounds(Center, Radius))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnFrameAllCells: сетка пуста - кадрировать нечего"));
+		return;
+	}
+
+	APawn* FlyingPawn = GetPawn();
+	if (!FlyingPawn || !PlayerCameraManager)
+	{
+		return;
+	}
+
+	// Расстояние, на котором сфера радиуса Radius целиком видна под углом
+	// FOV/2: Radius / sin(FOV/2) - точное касание края кадра, плюс
+	// FramingPadding, чтобы был небольшой запас по краям.
+	const float HalfFovRadians = FMath::DegreesToRadians(PlayerCameraManager->GetFOVAngle()) * 0.5f;
+	const float Distance = (Radius / FMath::Sin(HalfFovRadians)) * FramingPadding;
+
+	// Ракурс не меняем - только отодвигаем/придвигаем камеру вдоль текущего
+	// направления взгляда, чтобы сетка оказалась в кадре целиком.
+	const FVector ViewDirection = PlayerCameraManager->GetCameraRotation().Vector();
+	FlyingPawn->SetActorLocation(Center - ViewDirection * Distance);
+
+	UE_LOG(LogTemp, Log, TEXT("OnFrameAllCells: камера поставлена на расстояние %.1f от центра сетки (радиус %.1f)"), Distance, Radius);
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

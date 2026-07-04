@@ -195,6 +195,39 @@ void AAutomataOrchestrator::InitializeRenderer()
 	}
 }
 
+bool AAutomataOrchestrator::ComputeAliveCellsBounds(FVector& OutCenter, float& OutRadius) const
+{
+	if (!Grid || Grid->Num() == 0)
+	{
+		return false;
+	}
+
+	TArray<FIntVector> AliveCells;
+	Grid->GetAliveCells(AliveCells);
+
+	FIntVector MinCell = AliveCells[0];
+	FIntVector MaxCell = AliveCells[0];
+	for (const FIntVector& Cell : AliveCells)
+	{
+		MinCell.X = FMath::Min(MinCell.X, Cell.X);
+		MinCell.Y = FMath::Min(MinCell.Y, Cell.Y);
+		MinCell.Z = FMath::Min(MinCell.Z, Cell.Z);
+		MaxCell.X = FMath::Max(MaxCell.X, Cell.X);
+		MaxCell.Y = FMath::Max(MaxCell.Y, Cell.Y);
+		MaxCell.Z = FMath::Max(MaxCell.Z, Cell.Z);
+	}
+
+	const FVector WorldMin = Grid->GridToWorld(MinCell);
+	const FVector WorldMax = Grid->GridToWorld(MaxCell);
+
+	OutCenter = (WorldMin + WorldMax) * 0.5;
+	// Половина диагонали AABB (радиус описанной сферы) плюс запас на
+	// полклетки - GridToWorld() даёт координаты центра клетки, а не её края.
+	OutRadius = (WorldMax - WorldMin).Size() * 0.5f + Grid->GetCellSize() * 0.5f;
+
+	return true;
+}
+
 TUniquePtr<FCellGrid> AAutomataOrchestrator::CreateGrid() const
 {
 	switch (GridStorageStrategy)

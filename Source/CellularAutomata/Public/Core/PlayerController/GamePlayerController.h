@@ -96,6 +96,16 @@ protected:
 	void OnIncreaseSpeed();
 	void OnDecreaseSpeed();
 
+	/** Хоткей (Home) - подъезжает камерой вдоль текущего направления взгляда
+	 *  (не меняя ракурс, только расстояние) так, чтобы вся сетка автомата
+	 *  поместилась в кадр. Использует AAutomataOrchestrator::
+	 *  ComputeAliveCellsBounds() (описанная сфера вокруг живых клеток) и
+	 *  текущий FOV камеры (PlayerCameraManager->GetFOVAngle()) - расстояние
+	 *  считается из условия, что сфера радиуса R видна целиком под углом
+	 *  FOV/2 (Distance = R / sin(FOV/2)), с небольшим запасом
+	 *  (FramingPadding), чтобы клетки не упирались точно в край кадра. */
+	void OnFrameAllCells();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. */
@@ -127,10 +137,17 @@ protected:
 	TObjectPtr<class UInputAction> DecreaseSpeedAction;
 
 	UPROPERTY()
+	TObjectPtr<class UInputAction> FrameAllCellsAction;
+
+	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;
 
 	/** Шаг изменения Speed за одно нажатие +/-. */
 	static constexpr float SpeedAdjustStep = 0.5f;
+
+	/** Запас поверх точного расстояния кадрирования (OnFrameAllCells()) -
+	 *  без него сетка ровно касалась бы краёв кадра. */
+	static constexpr float FramingPadding = 1.1f;
 
 	/** Исходный MaxSpeed пешки до ускорения Shift'ом - 0 значит ещё не
 	 *  закэширован (см. OnSpeedBoostStarted()/OnSpeedBoostEnded()). */
