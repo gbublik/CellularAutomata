@@ -77,6 +77,10 @@ protected:
 	void OnSpeedBoostStarted();
 	void OnSpeedBoostEnded();
 
+	/** Хоткей (Z) - включает/выключает разлитый по кадрам рендер
+	 *  (AAutomataOrchestrator::SetChunkedRenderEnabled()/IsChunkedRenderEnabled()). */
+	void OnToggleChunkedRender();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. */
@@ -97,6 +101,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> SpeedBoostAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleChunkedRenderAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;

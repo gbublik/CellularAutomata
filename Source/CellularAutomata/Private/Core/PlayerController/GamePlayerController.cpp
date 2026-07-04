@@ -34,6 +34,9 @@ void AGamePlayerController::SetupInputComponent()
 	SpeedBoostAction = NewObject<UInputAction>(this, TEXT("IA_SpeedBoost"));
 	SpeedBoostAction->ValueType = EInputActionValueType::Boolean;
 
+	ToggleChunkedRenderAction = NewObject<UInputAction>(this, TEXT("IA_ToggleChunkedRender"));
+	ToggleChunkedRenderAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(StepOnceAction, EKeys::F);
@@ -41,6 +44,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
 	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::Two);
 	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
+	SimulationMappingContext->MapKey(ToggleChunkedRenderAction, EKeys::Z);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -59,6 +63,7 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(SetUnlitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetUnlitMode);
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSpeedBoostStarted);
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSpeedBoostEnded);
+		EnhancedInputComp->BindAction(ToggleChunkedRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleChunkedRender);
 	}
 }
 
@@ -167,6 +172,18 @@ void AGamePlayerController::OnSpeedBoostEnded()
 	}
 
 	Movement->MaxSpeed = BaseFlySpeed;
+}
+
+void AGamePlayerController::OnToggleChunkedRender()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleChunkedRender: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->SetChunkedRenderEnabled(!Orchestrator->IsChunkedRenderEnabled());
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

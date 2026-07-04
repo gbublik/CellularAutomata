@@ -151,28 +151,26 @@ public:
 	ECellMeshComponentType CellMeshComponentType = ECellMeshComponentType::HierarchicalInstanced;
 
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
-	 *  ChunkedRenderCellThreshold/ChunkedRenderCellsPerFrame) - если false,
-	 *  StepAsync() всегда рендерит новую сетку одним кадром, независимо от
-	 *  числа живых клеток, как до появления чанкинга. */
+	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
+	 *  новую сетку одним кадром, как до появления чанкинга. Никакого
+	 *  автоматического порога по числу клеток нет - переключается только
+	 *  вручную (Details panel или хоткей Z, см.
+	 *  AGamePlayerController::OnToggleChunkedRender()). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	bool bEnableChunkedRender = true;
 
-	/** Порог числа живых клеток, после которого рендер очередного поколения
-	 *  (только для непрерывной игры - StepAsync()) не применяется одним
-	 *  кадром, а "разливается" по нескольким Tick() (см.
-	 *  ChunkedRenderCellsPerFrame) - самая дорогая часть Render()
-	 *  (AddInstances) иначе блокирует game thread (а с ним и камеру)
-	 *  на десятки-сотни миллисекунд при огромных сетках, даже когда сам шаг
-	 *  симуляции уже посчитан асинхронно. Next()/GenerateRandom() всегда
-	 *  рендерят сеткой целиком, независимо от этого порога. Актуально только
-	 *  при bEnableChunkedRender == true. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
-			  meta = (ClampMin = "1", EditCondition = "bEnableChunkedRender", EditConditionHides))
-	int32 ChunkedRenderCellThreshold = 100000;
+	/** Включено ли сейчас разлитое по кадрам рендер - нужно внешнему коду
+	 *  (хоткею C), чтобы решить, на что переключать, не трогая
+	 *  bEnableChunkedRender напрямую. */
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsChunkedRenderEnabled() const { return bEnableChunkedRender; }
+
+	/** Включает/выключает разлитый по кадрам рендер (см. bEnableChunkedRender). */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void SetChunkedRenderEnabled(bool bEnabled);
 
 	/** Сколько инстансов добавлять за один Tick, пока идёт "разлитый" по
-	 *  кадрам рендер (см. ChunkedRenderCellThreshold). Актуально только при
-	 *  bEnableChunkedRender == true. */
+	 *  кадрам рендер. Актуально только при bEnableChunkedRender == true. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
 			  meta = (ClampMin = "1", EditCondition = "bEnableChunkedRender", EditConditionHides))
 	int32 ChunkedRenderCellsPerFrame = 20000;

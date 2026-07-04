@@ -362,12 +362,14 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	Renderer->SetMesh(CellMesh);
 	Renderer->SetMaterial(CellMaterial);
 
-	if (bEnableChunkedRender && Grid->Num() > ChunkedRenderCellThreshold)
+	if (bEnableChunkedRender)
 	{
-		// Сетка большая - разливаем AddInstances по нескольким Tick() вместо
-		// одного кадра (см. AdvanceChunkedRender()), чтобы не блокировать
-		// game thread (а с ним и камеру) на десятки-сотни миллисекунд, даже
-		// когда сам шаг уже посчитан асинхронно. bStepInProgress остаётся
+		// Разливаем AddInstances по нескольким Tick() вместо одного кадра
+		// (см. AdvanceChunkedRender()), чтобы не блокировать game thread
+		// (а с ним и камеру) на десятки-сотни миллисекунд при больших
+		// сетках, даже когда сам шаг уже посчитан асинхронно. Включение/
+		// выключение - только вручную (Details panel или хоткей Z), без
+		// автоматического порога по числу клеток. bStepInProgress остаётся
 		// true - AdvanceChunkedRender() сбросит его, когда рендер закончится.
 		const double BeginRenderStartSeconds = FPlatformTime::Seconds();
 		Renderer->BeginRender(*Grid);
@@ -393,6 +395,12 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 		RT.GetAliveSeconds * 1000.0, RT.BuildTransformsSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
 
 	bStepInProgress = false;
+}
+
+void AAutomataOrchestrator::SetChunkedRenderEnabled(bool bEnabled)
+{
+	bEnableChunkedRender = bEnabled;
+	UE_LOG(LogTemp, Log, TEXT("SetChunkedRenderEnabled: рендер по кадрам %s"), bEnabled ? TEXT("включён") : TEXT("выключен"));
 }
 
 void AAutomataOrchestrator::AdvanceChunkedRender()
