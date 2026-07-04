@@ -335,4 +335,11 @@ private:
 	 *  и, когда рендер полностью завершён, сбрасывает bChunkedRenderInProgress/
 	 *  bStepInProgress и логирует итог (сколько кадров/времени заняло). */
 	void AdvanceChunkedRender();
+
+	/** Досыпает все оставшиеся инстансы чанкового рендера одним вызовом
+	 *  (Renderer::AdvanceRenderChunk(TNumericLimits<int32>::Max())) вместо
+	 *  того, чтобы ждать, пока AdvanceChunkedRender() доедет по кадрам -
+	 *  вызывается из Stop() (P), чтобы остановка не оставляла сетку висеть
+	 *  недорисованной. Не-op, если чанковый рендер сейчас не идёт. */
+	void FinishChunkedRenderImmediately();
 };

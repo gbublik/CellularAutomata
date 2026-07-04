@@ -461,6 +461,30 @@ void AAutomataOrchestrator::AdvanceChunkedRender()
 		Grid->Num(), ChunkedRenderFrameCount, TotalSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
 }
 
+void AAutomataOrchestrator::FinishChunkedRenderImmediately()
+{
+	if (!bChunkedRenderInProgress)
+	{
+		return;
+	}
+
+	// Без ограничения на размер чанка - досыпаем всё оставшееся одним вызовом,
+	// а не ждём, пока AdvanceChunkedRender() доедет по кадрам (тот же приём,
+	// что и FInstancedMeshCellGridRenderer::Render()).
+	while (Renderer->AdvanceRenderChunk(TNumericLimits<int32>::Max()))
+	{
+	}
+
+	bChunkedRenderInProgress = false;
+	bStepInProgress = false;
+
+	const double TotalSeconds = FPlatformTime::Seconds() - ChunkedRenderStartSeconds;
+	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
+
+	UE_LOG(LogTemp, Log, TEXT("FinishChunkedRenderImmediately: чанковый рендер довершён одним разом (остановлен через Stop) - живых клеток %d, AddInstances суммарно: %.2f мс"),
+		Grid->Num(), RT.AddInstanceSeconds * 1000.0);
+}
+
 void AAutomataOrchestrator::StartFastStep()
 {
 	if (bSimulationRunning)
@@ -531,6 +555,13 @@ void AAutomataOrchestrator::Resume()
 void AAutomataOrchestrator::Stop()
 {
 	bSimulationRunning = false;
+
+	// Если чанковый рендер ещё не доехал по кадрам - досыпаем его одним
+	// разом сейчас, а не оставляем недорисованным: SetActorTickEnabled(false)
+	// ниже иначе останавливает Tick() (а с ним и AdvanceChunkedRender())
+	// прямо здесь, замораживая "разлив" навсегда до следующего Start()/шага.
+	FinishChunkedRenderImmediately();
+
 	SetActorTickEnabled(false);
 }
 
