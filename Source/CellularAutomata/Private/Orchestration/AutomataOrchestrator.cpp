@@ -50,7 +50,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// Разлитый по кадрам рендер (см. ChunkedRenderCellThreshold) продолжается
+	// Разлитый по кадрам рендер (см. bEnableChunkedRender) продолжается
 	// независимо от bSimulationRunning - если игру остановили посреди
 	// "разлива", он всё равно должен доехать до конца, а не застрять
 	// наполовину отрисованным.
@@ -99,6 +99,15 @@ void AAutomataOrchestrator::NewSeed()
 {
 	Seed = FMath::Rand();
 	GenerateRandom();
+}
+
+void AAutomataOrchestrator::AdjustSpeed(float Delta)
+{
+	// Верхняя граница здесь выше, чем UIMax в UPROPERTY-метаданных Speed
+	// (10.0) - тот UIMax только ограничивает слайдер в Details panel, не сам
+	// ClampMax, так что хоткеям +/- можно позволить разогнать Speed дальше.
+	Speed = FMath::Clamp(Speed + Delta, 0.1f, 100.0f);
+	UE_LOG(LogTemp, Log, TEXT("AdjustSpeed: Speed = %.2f"), Speed);
 }
 
 void AAutomataOrchestrator::InitializeHUD()

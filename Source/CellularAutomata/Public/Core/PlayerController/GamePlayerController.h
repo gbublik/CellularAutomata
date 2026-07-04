@@ -81,6 +81,11 @@ protected:
 	 *  (AAutomataOrchestrator::SetChunkedRenderEnabled()/IsChunkedRenderEnabled()). */
 	void OnToggleChunkedRender();
 
+	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
+	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
+	void OnIncreaseSpeed();
+	void OnDecreaseSpeed();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. */
@@ -106,7 +111,16 @@ protected:
 	TObjectPtr<class UInputAction> ToggleChunkedRenderAction;
 
 	UPROPERTY()
+	TObjectPtr<class UInputAction> IncreaseSpeedAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> DecreaseSpeedAction;
+
+	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;
+
+	/** Шаг изменения Speed за одно нажатие +/-. */
+	static constexpr float SpeedAdjustStep = 0.5f;
 
 	/** Исходный MaxSpeed пешки до ускорения Shift'ом - 0 значит ещё не
 	 *  закэширован (см. OnSpeedBoostStarted()/OnSpeedBoostEnded()). */

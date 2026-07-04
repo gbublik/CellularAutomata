@@ -97,7 +97,14 @@ public:
 	/** Скорость симуляции (шагов в секунду) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata",
 			  meta = (ClampMin = "0.1", UIMin = "0.1", UIMax = "10.0"))
-	float Speed = 1.0f;
+	float Speed = 5.0f;
+
+	/** Меняет Speed на Delta (например, из хоткеев +/- в
+	 *  AGamePlayerController), клампится к [0.1, 100.0] - шире, чем UIMax
+	 *  в UPROPERTY-метаданных Speed выше (тот ограничивает только слайдер
+	 *  в Details panel, не сам ClampMax). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void AdjustSpeed(float Delta);
 
 	/** Множитель скорости полёта камеры при удержании Shift (см.
 	 *  AGamePlayerController::OnSpeedBoostStarted() - камера летает через
@@ -106,7 +113,7 @@ public:
 	 *  panel, что и остальную симуляцию). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera",
 			  meta = (ClampMin = "1.0", UIMin = "1.0", UIMax = "10.0"))
-	float CameraSpeedMultiplier = 3.0f;
+	float CameraSpeedMultiplier = 6.0f;
 
 	/** Размер сетки в клетках по осям X, Y, Z */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid",
@@ -278,7 +285,7 @@ private:
 	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds);
 
 	/** true, пока рендер текущего поколения "разлит" по кадрам (см.
-	 *  ChunkedRenderCellThreshold) - Tick() вызывает AdvanceChunkedRender()
+	 *  bEnableChunkedRender) - Tick() вызывает AdvanceChunkedRender()
 	 *  каждый кадр, пока флаг не сброшен. bStepInProgress остаётся true всё
 	 *  это время (переиспользуем как единый guard "занят предыдущим
 	 *  поколением"), поэтому следующий StepAsync()/ручной Next()/

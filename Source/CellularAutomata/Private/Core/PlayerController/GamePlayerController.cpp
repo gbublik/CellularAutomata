@@ -37,6 +37,12 @@ void AGamePlayerController::SetupInputComponent()
 	ToggleChunkedRenderAction = NewObject<UInputAction>(this, TEXT("IA_ToggleChunkedRender"));
 	ToggleChunkedRenderAction->ValueType = EInputActionValueType::Boolean;
 
+	IncreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseSpeed"));
+	IncreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
+
+	DecreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_DecreaseSpeed"));
+	DecreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(StepOnceAction, EKeys::F);
@@ -45,6 +51,12 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::Two);
 	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
 	SimulationMappingContext->MapKey(ToggleChunkedRenderAction, EKeys::Z);
+	// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от того,
+	// есть ли у клавиатуры цифровой блок.
+	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Equals);
+	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Add);
+	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Hyphen);
+	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Subtract);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -64,6 +76,10 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSpeedBoostStarted);
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSpeedBoostEnded);
 		EnhancedInputComp->BindAction(ToggleChunkedRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleChunkedRender);
+		// Triggered - держа +/-, Speed продолжает меняться каждый кадр, а не
+		// только на однократное нажатие (аналогично F/OnStepOnce()).
+		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
+		EnhancedInputComp->BindAction(DecreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseSpeed);
 	}
 }
 
@@ -184,6 +200,30 @@ void AGamePlayerController::OnToggleChunkedRender()
 	}
 
 	Orchestrator->SetChunkedRenderEnabled(!Orchestrator->IsChunkedRenderEnabled());
+}
+
+void AGamePlayerController::OnIncreaseSpeed()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnIncreaseSpeed: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->AdjustSpeed(SpeedAdjustStep);
+}
+
+void AGamePlayerController::OnDecreaseSpeed()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnDecreaseSpeed: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->AdjustSpeed(-SpeedAdjustStep);
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)
