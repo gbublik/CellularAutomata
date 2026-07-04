@@ -46,6 +46,12 @@ void AGamePlayerController::SetupInputComponent()
 	FrameAllCellsAction = NewObject<UInputAction>(this, TEXT("IA_FrameAllCells"));
 	FrameAllCellsAction->ValueType = EInputActionValueType::Boolean;
 
+	IncreaseStepsPerRenderAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseStepsPerRender"));
+	IncreaseStepsPerRenderAction->ValueType = EInputActionValueType::Boolean;
+
+	DecreaseStepsPerRenderAction = NewObject<UInputAction>(this, TEXT("IA_DecreaseStepsPerRender"));
+	DecreaseStepsPerRenderAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
@@ -61,6 +67,8 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Hyphen);
 	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Subtract);
 	SimulationMappingContext->MapKey(FrameAllCellsAction, EKeys::Home);
+	SimulationMappingContext->MapKey(IncreaseStepsPerRenderAction, EKeys::T);
+	SimulationMappingContext->MapKey(DecreaseStepsPerRenderAction, EKeys::G);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -86,6 +94,10 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
 		EnhancedInputComp->BindAction(DecreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseSpeed);
 		EnhancedInputComp->BindAction(FrameAllCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFrameAllCells);
+		// Triggered - держа T/G, StepsPerRender продолжает меняться каждый
+		// кадр, а не только на однократное нажатие (аналогично +/- для Speed).
+		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseStepsPerRender);
+		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseStepsPerRender);
 	}
 }
 
@@ -285,6 +297,30 @@ void AGamePlayerController::OnFrameAllCells()
 	FlyingPawn->SetActorLocation(Center - ViewDirection * Distance);
 
 	UE_LOG(LogTemp, Log, TEXT("OnFrameAllCells: камера поставлена на расстояние %.1f от центра сетки (радиус %.1f)"), Distance, Radius);
+}
+
+void AGamePlayerController::OnIncreaseStepsPerRender()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnIncreaseStepsPerRender: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->AdjustStepsPerRender(1);
+}
+
+void AGamePlayerController::OnDecreaseStepsPerRender()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnDecreaseStepsPerRender: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->AdjustStepsPerRender(-1);
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

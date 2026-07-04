@@ -106,6 +106,13 @@ protected:
 	 *  (FramingPadding), чтобы клетки не упирались точно в край кадра. */
 	void OnFrameAllCells();
 
+	/** Хоткеи (T и G) - меняют StepsPerRender автомата на ±1 через
+	 *  AAutomataOrchestrator::AdjustStepsPerRender(), привязаны на Triggered
+	 *  (как +/- для Speed), так что удержание повторяет изменение каждый
+	 *  кадр. */
+	void OnIncreaseStepsPerRender();
+	void OnDecreaseStepsPerRender();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. */
@@ -138,6 +145,12 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> FrameAllCellsAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> IncreaseStepsPerRenderAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> DecreaseStepsPerRenderAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;

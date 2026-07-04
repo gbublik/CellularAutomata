@@ -67,7 +67,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		TimeSinceLastStep += DeltaTime;
 		const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
-		if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
+		if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bRenderHandoffPending)
 		{
 			TimeSinceLastStep = 0.0f;
 			StepAsync();
@@ -88,14 +88,19 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	TimeSinceLastStep += DeltaTime;
 	const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
-	// Шаг считается асинхронно (см. StepAsync()) - пока предыдущий не
-	// завершился, новый не запускаем (гонка на Grid), просто ждём. Раньше
-	// здесь был while-цикл, "нагоняющий" пропущенные шаги за один тик - для
-	// синхронного Next() это было безопасно, но для асинхронного шага
-	// означало бы запуск нескольких фоновых Step() поверх друг друга.
-	// Оставшееся время не копится "про запас" - реальная скорость сама
-	// упрётся в то, сколько Step() занимает на этой сетке.
-	if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
+	// Шаг считается асинхронно (см. StepAsync()) - пока предыдущий фоновый
+	// счёт не завершился (bStepInProgress), новый не запускаем (гонка на
+	// Grid), просто ждём. Раньше здесь был while-цикл, "нагоняющий"
+	// пропущенные шаги за один тик - для синхронного Next() это было
+	// безопасно, но для асинхронного шага означало бы запуск нескольких
+	// фоновых Step() поверх друг друга. bRenderHandoffPending - отдельная
+	// причина подождать: поколение досчиталось и достигло порога
+	// StepsPerRender, но предыдущий чанковый "разлив" ещё не закончился -
+	// пока рендер не передан придержанному поколению, следующую пачку не
+	// начинаем (максимум одна пачка в фоне впереди отрисовки). Оставшееся
+	// время не копится "про запас" - реальная скорость сама упрётся в то,
+	// сколько Step() занимает на этой сетке.
+	if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bRenderHandoffPending)
 	{
 		TimeSinceLastStep = 0.0f;
 		StepAsync();
@@ -134,6 +139,12 @@ void AAutomataOrchestrator::AdjustSpeed(float Delta)
 	// ClampMax, так что хоткеям +/- можно позволить разогнать Speed дальше.
 	Speed = FMath::Clamp(Speed + Delta, 0.1f, 100.0f);
 	UE_LOG(LogTemp, Log, TEXT("AdjustSpeed: Speed = %.2f"), Speed);
+}
+
+void AAutomataOrchestrator::AdjustStepsPerRender(int32 Delta)
+{
+	StepsPerRender = FMath::Max(StepsPerRender + Delta, 1);
+	UE_LOG(LogTemp, Log, TEXT("AdjustStepsPerRender: StepsPerRender = %d"), StepsPerRender);
 }
 
 void AAutomataOrchestrator::InitializeHUD()
@@ -265,6 +276,7 @@ void AAutomataOrchestrator::GenerateRandom()
 	// GenerateRandom() всегда генерирует новое состояние с нуля и подхватывает
 	// актуальный CellSize, если его поменяли в Details panel
 	Grid = CreateGrid();
+	StepsSinceLastRender = 0;
 
 	// Инициализируем ГСЧ фиксированным сидом для воспроизводимости
 	FRandomStream RandomStream(Seed);
@@ -424,10 +436,8 @@ void AAutomataOrchestrator::StepAsync()
 		});
 }
 
-void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds)
+void AAutomataOrchestrator::RenderCurrentGrid()
 {
-	Grid = MoveTemp(NewGrid);
-
 	InitializeRenderer();
 
 	Renderer->SetMesh(CellMesh);
@@ -440,8 +450,7 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 		// (а с ним и камеру) на десятки-сотни миллисекунд при больших
 		// сетках, даже когда сам шаг уже посчитан асинхронно. Включение/
 		// выключение - только вручную (Details panel или хоткей Z), без
-		// автоматического порога по числу клеток. bStepInProgress остаётся
-		// true - AdvanceChunkedRender() сбросит его, когда рендер закончится.
+		// автоматического порога по числу клеток.
 		const double BeginRenderStartSeconds = FPlatformTime::Seconds();
 		Renderer->BeginRender(*Grid);
 		const double BeginRenderSeconds = FPlatformTime::Seconds() - BeginRenderStartSeconds;
@@ -450,8 +459,8 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 		ChunkedRenderStartSeconds = FPlatformTime::Seconds();
 		ChunkedRenderFrameCount = 0;
 
-		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток], подготовка рендера: %.2f мс) - рендер разлит по кадрам (%d инстансов/кадр)"),
-			Grid->Num(), StepSeconds * 1000.0, BeginRenderSeconds * 1000.0, ChunkedRenderCellsPerFrame);
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d рендерится (подготовка рендера: %.2f мс) - рендер разлит по кадрам (%d инстансов/кадр)"),
+			Grid->Num(), BeginRenderSeconds * 1000.0, ChunkedRenderCellsPerFrame);
 		return;
 	}
 
@@ -460,12 +469,45 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	const double RenderSeconds = FPlatformTime::Seconds() - RenderStartSeconds;
 	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
 
-	UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток], отрисовка: %.2f мс [SetMesh/Material: %.2f, ClearInstances: %.2f, Scale: %.2f, GetAliveCells: %.2f, BuildTransforms: %.2f, AddInstances: %.2f])"),
-		Grid->Num(), StepSeconds * 1000.0, RenderSeconds * 1000.0,
+	UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d отрисовано (%.2f мс [SetMesh/Material: %.2f, ClearInstances: %.2f, Scale: %.2f, GetAliveCells: %.2f, BuildTransforms: %.2f, AddInstances: %.2f])"),
+		Grid->Num(), RenderSeconds * 1000.0,
 		RT.SetMeshSeconds * 1000.0, RT.ClearSeconds * 1000.0, RT.ScaleSeconds * 1000.0,
 		RT.GetAliveSeconds * 1000.0, RT.BuildTransformsSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
+}
 
+void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds)
+{
+	Grid = MoveTemp(NewGrid);
+
+	// Сужено до конца фонового чтения Grid - дальше (рендер, возможный
+	// чанковый "разлив") фонового потока уже не касается, так что следующий
+	// StepAsync() может стартовать независимо от того, что происходит с
+	// рендером ниже (см. bRenderHandoffPending).
 	bStepInProgress = false;
+
+	++StepsSinceLastRender;
+	if (StepsSinceLastRender < StepsPerRender)
+	{
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток]) - рендер пропущен (%d/%d)"),
+			Grid->Num(), StepSeconds * 1000.0, StepsSinceLastRender, StepsPerRender);
+		return;
+	}
+	StepsSinceLastRender = 0;
+
+	if (bChunkedRenderInProgress)
+	{
+		// Предыдущий "разлив" ещё не закончился - придерживаем уже
+		// посчитанное поколение (Grid уже обновлён) вместо того, чтобы
+		// оборвать текущий разлив новым BeginRender(). AdvanceChunkedRender()
+		// сама передаст его на рендер, когда текущий разлив дорисуется.
+		bRenderHandoffPending = true;
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток]) - поколение придержано, предыдущий разлив ещё не закончился"),
+			Grid->Num(), StepSeconds * 1000.0);
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("StepAsync: шаг занял %.2f мс [фоновый поток]"), StepSeconds * 1000.0);
+	RenderCurrentGrid();
 }
 
 void AAutomataOrchestrator::SetChunkedRenderEnabled(bool bEnabled)
@@ -485,17 +527,36 @@ void AAutomataOrchestrator::AdvanceChunkedRender()
 	}
 
 	bChunkedRenderInProgress = false;
-	bStepInProgress = false;
 
 	const double TotalSeconds = FPlatformTime::Seconds() - ChunkedRenderStartSeconds;
 	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
 
 	UE_LOG(LogTemp, Log, TEXT("StepAsync: рендер разлитый по кадрам завершён - живых клеток %d за %d кадр(ов)/%.2f мс (AddInstances суммарно: %.2f мс)"),
 		Grid->Num(), ChunkedRenderFrameCount, TotalSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
+
+	if (bRenderHandoffPending)
+	{
+		// Поколение ждало своей очереди, пока шёл этот "разлив" - тут же
+		// передаём его на рендер (может сразу же снова выставить
+		// bChunkedRenderInProgress = true, запустив новый разлив).
+		bRenderHandoffPending = false;
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: придержанное поколение передано на рендер"));
+		RenderCurrentGrid();
+	}
 }
 
 void AAutomataOrchestrator::FinishChunkedRenderImmediately()
 {
+	if (bRenderHandoffPending)
+	{
+		// Раз мы останавливаемся - отрисовываем придержанное поколение
+		// сейчас, а не оставляем его невидимым навсегда (может запустить
+		// новый чанковый разлив, который цикл ниже тут же довершит одним
+		// разом).
+		bRenderHandoffPending = false;
+		RenderCurrentGrid();
+	}
+
 	if (!bChunkedRenderInProgress)
 	{
 		return;
@@ -509,7 +570,6 @@ void AAutomataOrchestrator::FinishChunkedRenderImmediately()
 	}
 
 	bChunkedRenderInProgress = false;
-	bStepInProgress = false;
 
 	const double TotalSeconds = FPlatformTime::Seconds() - ChunkedRenderStartSeconds;
 	const FRenderTimings& RT = Renderer->GetLastRenderTimings();
@@ -528,6 +588,7 @@ void AAutomataOrchestrator::StartFastStep()
 
 	bFastStepActive = true;
 	TimeSinceLastStep = 0.0f;
+	StepsSinceLastRender = 0;
 	SetActorTickEnabled(true);
 
 	UE_LOG(LogTemp, Log, TEXT("StartFastStep: автошаг (Shift+F) включён"));
@@ -562,6 +623,7 @@ void AAutomataOrchestrator::Start()
 	}
 
 	TimeSinceLastStep = 0.0f;
+	StepsSinceLastRender = 0;
 	bSimulationRunning = true;
 	SetActorTickEnabled(true);
 }

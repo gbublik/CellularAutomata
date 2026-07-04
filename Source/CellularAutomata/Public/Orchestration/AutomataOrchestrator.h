@@ -211,6 +211,25 @@ public:
 			  meta = (ClampMin = "1", EditCondition = "bEnableChunkedRender", EditConditionHides))
 	int32 ChunkedRenderCellsPerFrame = 20000;
 
+	/** Сколько посчитанных поколений пропускать между рендерами: 1 = рендерить
+	 *  каждое (текущее поведение), N>1 - рендерить только каждое N-ое, пока
+	 *  остальные N-1 продолжают считаться в фоне без отрисовки. Если очередное
+	 *  N-ое поколение досчиталось раньше, чем закончился "разлив" предыдущего
+	 *  показанного (bEnableChunkedRender) - оно придерживается
+	 *  (bRenderHandoffPending) и передаётся на рендер сразу по окончании
+	 *  предыдущего разлива; следующая пачка из N шагов стартует считаться в тот
+	 *  же момент - дальше одной пачки вперёд рендера не забегаем. Next()/
+	 *  GenerateRandom() этот порог игнорируют - рендерят немедленно всегда. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "1"))
+	int32 StepsPerRender = 1;
+
+	/** Меняет StepsPerRender на Delta (хоткеи [ и ] в AGamePlayerController),
+	 *  клампится снизу к 1 - StepsPerRender не может быть меньше 1 (рендерить
+	 *  реже раза в поколение не имеет смысла). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void AdjustStepsPerRender(int32 Delta);
+
 	/** Количество живых клеток при генерации */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",
 			  meta = (ClampMin = "1"))
@@ -268,6 +287,11 @@ private:
 	void InitializeHUD();
 	void InitializePlayerController();
 	void InitializeRenderer();
+	/** InitializeRenderer()+SetMesh/SetMaterial+рендер (чанково или сразу) для
+	 *  текущего Grid - общий код, вызываемый и из ApplyStepResult() (обычный
+	 *  путь), и из AdvanceChunkedRender()/FinishChunkedRenderImmediately()
+	 *  (отложенный хендофф после bRenderHandoffPending). */
+	void RenderCurrentGrid();
 	/** Возвращает CellsMeshFlat или CellsMeshHierarchical в зависимости от
 	 *  CellMeshComponentType - единственное место, которое решает, какой
 	 *  компонент сейчас "активен". */
@@ -297,12 +321,30 @@ private:
 	 *  оно вызывает Next() один раз напрямую, минуя это состояние. */
 	bool bFastStepActive = false;
 
-	/** true с момента запуска фонового шага (StepAsync()) и до применения
-	 *  его результата на game thread (ApplyStepResult()). Пока true: Tick()
-	 *  не запускает следующий шаг поверх текущего (гонка на Grid), а
-	 *  Next()/GenerateRandom() отказываются выполняться (та же причина -
-	 *  фоновый поток в это время читает *Grid). */
+	/** true с момента запуска фонового шага (StepAsync()) и до момента, когда
+	 *  ApplyStepResult() переподставляет Grid новым поколением (сбрасывается
+	 *  в самом начале ApplyStepResult(), а не в конце) - защищает только сам
+	 *  Grid-указатель на время фонового чтения, а не последующий рендер/
+	 *  чанковый "разлив" (см. bRenderHandoffPending - это отдельная забота).
+	 *  Пока true: Tick() не запускает следующий шаг поверх текущего (гонка
+	 *  на Grid), а Next()/GenerateRandom() отказываются выполняться (та же
+	 *  причина - фоновый поток в это время читает *Grid). */
 	bool bStepInProgress = false;
+
+	/** Сколько поколений посчитано с последнего фактического рендера -
+	 *  сбрасывается в 0 сразу после реального рендера (ApplyStepResult()/
+	 *  AdvanceChunkedRender()), и в GenerateRandom()/Start()/StartFastStep()
+	 *  (свежий прогон считает с нуля). См. StepsPerRender. */
+	int32 StepsSinceLastRender = 0;
+
+	/** true - поколение достигло порога StepsPerRender, но предыдущий чанковый
+	 *  разлив ещё не закончился, поэтому рендер придержан (сам Grid уже
+	 *  обновлён - в нём то поколение, которое ждёт своей очереди).
+	 *  AdvanceChunkedRender() сама стартует отложенный рендер, когда
+	 *  предыдущий разлив дорисуется, и сбрасывает флаг. Пока true, Tick() не
+	 *  стартует следующую пачку шагов - максимум одна пачка в фоне впереди
+	 *  отрисовки, а не неограниченный забег вперёд. */
+	bool bRenderHandoffPending = false;
 
 	/** Асинхронная версия шага симуляции для непрерывного Play (используется
 	 *  только из Tick()) - тяжёлый FCellularAutomatonRule::Step() считается в
@@ -331,17 +373,19 @@ private:
 
 	/** true, пока рендер текущего поколения "разлит" по кадрам (см.
 	 *  bEnableChunkedRender) - Tick() вызывает AdvanceChunkedRender()
-	 *  каждый кадр, пока флаг не сброшен. bStepInProgress остаётся true всё
-	 *  это время (переиспользуем как единый guard "занят предыдущим
-	 *  поколением"), поэтому следующий StepAsync()/ручной Next()/
-	 *  GenerateRandom() не стартуют поверх незаконченного рендера. */
+	 *  каждый кадр, пока флаг не сброшен. bStepInProgress уже false к этому
+	 *  моменту (см. его комментарий) - фоновый счёт следующих поколений
+	 *  продолжается параллельно с этим "разливом" (см. StepsPerRender/
+	 *  bRenderHandoffPending), а не ждёт его окончания. */
 	bool bChunkedRenderInProgress = false;
 	double ChunkedRenderStartSeconds = 0.0;
 	int32 ChunkedRenderFrameCount = 0;
 
 	/** Добавляет очередную порцию инстансов (см. Renderer::AdvanceRenderChunk())
-	 *  и, когда рендер полностью завершён, сбрасывает bChunkedRenderInProgress/
-	 *  bStepInProgress и логирует итог (сколько кадров/времени заняло). */
+	 *  и, когда рендер полностью завершён, сбрасывает bChunkedRenderInProgress
+	 *  и логирует итог (сколько кадров/времени заняло); если к этому моменту
+	 *  накопился bRenderHandoffPending (см. его комментарий) - тут же
+	 *  запускает отложенный рендер придержанного поколения. */
 	void AdvanceChunkedRender();
 
 	/** Досыпает все оставшиеся инстансы чанкового рендера одним вызовом
