@@ -181,6 +181,31 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	ECellMeshComponentType CellMeshComponentType = ECellMeshComponentType::HierarchicalInstanced;
 
+	/** Расстояние от камеры, на котором инстансы клеток начинают исчезать -
+	 *  см. CellCullEndDistance ниже (UInstancedStaticMeshComponent::
+	 *  InstanceStartCullDistance/SetCullDistances()). 0 - отсечение по
+	 *  расстоянию выключено целиком (стандартное поведение движка, было до
+	 *  добавления этих двух параметров). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0.0"))
+	float CellCullStartDistance = 0.0f;
+
+	/** Расстояние от камеры, дальше которого инстансы клеток вообще не
+	 *  рисуются - честное runtime-отсечение по расстоянию
+	 *  (UInstancedStaticMeshComponent::InstanceEndCullDistance/
+	 *  SetCullDistances()), а не HLOD: HLOD рассчитан на запечённые
+	 *  проксирующие меши статичных акторов (нужен отдельный шаг "Build
+	 *  HLODs" в редакторе) и не годится для сетки клеток, которая
+	 *  перестраивается целиком каждое посчитанное поколение - у HLOD просто
+	 *  нет статичного состояния, которое можно было бы запечь. SetCullDistances()
+	 *  применяется к обоим CellsMeshFlat/CellsMeshHierarchical в
+	 *  InitializeRenderer() на каждый рендер (сама no-op, если значения не
+	 *  изменились - см. её реализацию в движке), так что правки в Details
+	 *  panel подхватываются немедленно, как и остальные параметры рендера. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0.0"))
+	float CellCullEndDistance = 0.0f;
+
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
 	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
 	 *  новую сетку одним кадром, как до появления чанкинга. Никакого

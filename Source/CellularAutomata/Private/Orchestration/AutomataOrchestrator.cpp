@@ -200,6 +200,18 @@ UInstancedStaticMeshComponent* AAutomataOrchestrator::GetActiveCellsMeshComponen
 
 void AAutomataOrchestrator::InitializeRenderer()
 {
+	// Отсечение по расстоянию (не HLOD - см. doc-comment CellCullEndDistance
+	// в заголовке) применяем к ОБОИМ компонентам одинаково, а не только к
+	// активному - если CellMeshComponentType переключат позже, второй
+	// компонент не должен остаться со старыми (или дефолтными) значениями.
+	// SetCullDistances() сама no-op, если значения не изменились, так что
+	// звать её на каждый рендер дёшево и сразу подхватывает правки в Details
+	// panel, как и SetMesh/SetMaterial ниже.
+	const int32 CullStart = FMath::Max(0, FMath::RoundToInt(CellCullStartDistance));
+	const int32 CullEnd = FMath::Max(0, FMath::RoundToInt(CellCullEndDistance));
+	CellsMeshHierarchical->SetCullDistances(CullStart, CullEnd);
+	CellsMeshFlat->SetCullDistances(CullStart, CullEnd);
+
 	UInstancedStaticMeshComponent* DesiredComponent = GetActiveCellsMeshComponent();
 
 	if (!Renderer || Renderer->GetComponent() != DesiredComponent)
