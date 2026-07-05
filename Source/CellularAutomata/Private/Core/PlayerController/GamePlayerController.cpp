@@ -198,7 +198,7 @@ void AGamePlayerController::OnResetSimulation()
 		return;
 	}
 
-	Orchestrator->GenerateRandom();
+	Orchestrator->ResetToInitialState();
 }
 
 void AGamePlayerController::OnSetLitMode()

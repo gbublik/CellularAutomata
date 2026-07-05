@@ -489,14 +489,19 @@ void AAutomataOrchestrator::StartFromSelection()
 	// там же, где их выделили (правила автомата трансляционно инвариантны, а
 	// камера и так уже смотрит именно туда - см. doc-comment в заголовке).
 	TUniquePtr<FCellGrid> NewGrid = CreateGrid();
-	int32 SpawnedCount = 0;
+	// Заодно строим InitialStateCells - точно тот же набор, что реально
+	// попал в NewGrid (только реально живые из SelectedCells), а не сырой
+	// SelectedCells, который в принципе мог содержать неактуальные записи -
+	// это и есть "точка возврата" для последующего ResetToInitialState() (R).
+	InitialStateCells.Reset();
+	InitialStateCells.Reserve(SelectedCells.Num());
 	for (const FIntVector& Cell : SelectedCells)
 	{
 		if (Grid->IsAlive(Cell))
 		{
 			NewGrid->SetAlive(Cell, true);
 			NewGrid->SetAge(Cell, 0); // свежий старт, как только что рождённая клетка
-			++SpawnedCount;
+			InitialStateCells.Add(Cell);
 		}
 	}
 
@@ -511,7 +516,50 @@ void AAutomataOrchestrator::StartFromSelection()
 
 	RenderGridImmediate();
 
-	UE_LOG(LogTemp, Log, TEXT("StartFromSelection: новое состояние из %d клеток"), SpawnedCount);
+	UE_LOG(LogTemp, Log, TEXT("StartFromSelection: новое состояние из %d клеток (запомнено как точка возврата для R)"), InitialStateCells.Num());
+}
+
+void AAutomataOrchestrator::ResetToInitialState()
+{
+	if (InitialStateCells.Num() == 0)
+	{
+		// StartFromSelection() ещё ни разу не вызывался в этой сессии -
+		// нет сохранённой точки возврата, ведём себя как раньше.
+		GenerateRandom();
+		return;
+	}
+
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: фоновый шаг StepAsync() ещё считается - подождите его завершения"));
+		return;
+	}
+
+	if (!CellMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: CellMesh не задан - назначьте StaticMesh в Details panel"));
+		return;
+	}
+
+	if (AgeMaterials.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		return;
+	}
+
+	Grid = CreateGrid();
+	StepsSinceLastRender = 0;
+	SelectedCells.Reset();
+
+	for (const FIntVector& Cell : InitialStateCells)
+	{
+		Grid->SetAlive(Cell, true);
+		Grid->SetAge(Cell, 0);
+	}
+
+	RenderGridImmediate();
+
+	UE_LOG(LogTemp, Log, TEXT("ResetToInitialState: сетка восстановлена из сохранённой точки возврата (%d клеток)"), Grid->Num());
 }
 
 bool AAutomataOrchestrator::ComputeAliveCellsBounds(FVector& OutCenter, float& OutRadius) const
@@ -597,6 +645,11 @@ void AAutomataOrchestrator::GenerateRandom()
 	// Новая сетка делает старое выделение бессмысленным (координаты уже не
 	// про эту сетку) - см. doc-comment SelectedCells в заголовке.
 	SelectedCells.Reset();
+	// Явный запрос нового случайного состояния - явно отказ от прежней
+	// "точки возврата" (см. doc-comment InitialStateCells в заголовке);
+	// ResetToInitialState() (R) снова начнёт делегировать сюда же, пока
+	// не будет вызван новый StartFromSelection().
+	InitialStateCells.Reset();
 
 	// Инициализируем ГСЧ фиксированным сидом для воспроизводимости
 	FRandomStream RandomStream(Seed);

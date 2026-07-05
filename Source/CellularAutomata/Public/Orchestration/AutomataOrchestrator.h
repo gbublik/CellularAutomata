@@ -149,9 +149,22 @@ public:
 	 *  клетки остаются там же, где их выделили (правила автомата
 	 *  трансляционно инвариантны, а камера и так уже смотрит именно туда).
 	 *  Отказывает (с warning в лог), если ничего не выделено - тот же паттерн
-	 *  guard'ов, что и у остальных методов этого класса. */
+	 *  guard'ов, что и у остальных методов этого класса. Дополнительно
+	 *  запоминает извлечённые клетки в InitialStateCells - именно к этому
+	 *  состоянию (а не к новому случайному) вернёт последующий вызов
+	 *  ResetToInitialState() (хоткей R). */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
 	void StartFromSelection();
+
+	/** Хоткей R: если StartFromSelection() уже извлекал паттерн ранее
+	 *  (InitialStateCells непуст), пересоздаёт сетку заново из ЭТОГО
+	 *  сохранённого набора клеток (возраст снова сброшен в 0) - то есть R
+	 *  теперь "сброс к тому состоянию, которое я выбрал и запустил через
+	 *  Enter", а не к новому случайному спавну. Если InitialStateCells пуст
+	 *  (StartFromSelection() ещё ни разу не вызывался в этой сессии) -
+	 *  ведёт себя как раньше и просто делегирует в GenerateRandom(). */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
+	void ResetToInitialState();
 
 	/** Материал подсветки выделенных клеток - отдельный рендер-проход поверх
 	 *  обычного возрастного рендера (см. SelectionMeshComponent/
@@ -482,6 +495,16 @@ private:
 	 *  старое выделение бессмысленным (рабочий процесс "пауза -> выделение
 	 *  -> извлечение", не "выделение во время бесконечного Play"). */
 	TArray<FIntVector> SelectedCells;
+
+	/** Сохранённый набор клеток последнего StartFromSelection() - в отличие
+	 *  от SelectedCells, НЕ сбрасывается ни шагом симуляции, ни новым
+	 *  выделением мышкой (только новым вызовом StartFromSelection() или
+	 *  GenerateRandom(), см. их реализацию) - это долгоживущая "точка
+	 *  возврата", которую ResetToInitialState() (хоткей R) переигрывает.
+	 *  Пустой массив означает "точка возврата ещё не задавалась в этой
+	 *  сессии" - тогда ResetToInitialState() ведёт себя как раньше и просто
+	 *  делегирует в GenerateRandom(). */
+	TArray<FIntVector> InitialStateCells;
 
 	/** Компонент подсветки выделения - всегда обычный (не HISM)
 	 *  UInstancedStaticMeshComponent, независимо от CellMeshComponentType:
