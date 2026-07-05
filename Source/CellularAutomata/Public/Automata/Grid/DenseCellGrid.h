@@ -25,19 +25,28 @@ public:
 	virtual void Clear() override;
 	virtual int32 Num() const override;
 	virtual void GetAliveCells(TArray<FIntVector>& OutCells) const override;
+	virtual uint8 GetAge(const FIntVector& Cell) const override;
+	virtual void SetAge(const FIntVector& Cell, uint8 Age) override;
 
 private:
 	/** Плотный чанк ChunkSize^3 клеток. AliveCount кэширует число живых
 	 *  бит, чтобы SetAlive(false) мог дёшево (O(1)) определить, опустел
-	 *  ли чанк, не сканируя битовый массив целиком. */
+	 *  ли чанк, не сканируя битовый массив целиком. Ages - параллельный
+	 *  битовому массиву возраст каждой клетки (тот же LocalIndex, что и
+	 *  Bits), нулевой по умолчанию - зануляется как при ленивом создании
+	 *  чанка, так и (полностью, вместе со всем чанком) при опустошении,
+	 *  так что заново родившаяся в этом месте клетка всегда стартует с
+	 *  возраста 0, не помня историю чанка до его удаления. */
 	struct FChunk
 	{
 		explicit FChunk(int32 InCellsPerChunk)
 		{
 			Bits.Init(false, InCellsPerChunk);
+			Ages.SetNumZeroed(InCellsPerChunk);
 		}
 
 		TBitArray<> Bits;
+		TArray<uint8> Ages;
 		int32 AliveCount = 0;
 	};
 

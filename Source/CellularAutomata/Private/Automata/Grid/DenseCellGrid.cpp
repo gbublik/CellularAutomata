@@ -100,6 +100,24 @@ void FDenseCellGrid::SetAlive(const FIntVector& Cell, bool bAlive)
 	}
 }
 
+uint8 FDenseCellGrid::GetAge(const FIntVector& Cell) const
+{
+	const FChunk* Chunk = Chunks.Find(CellToChunkCoord(Cell));
+	return Chunk ? Chunk->Ages[CellToLocalIndex(Cell)] : 0;
+}
+
+void FDenseCellGrid::SetAge(const FIntVector& Cell, uint8 Age)
+{
+	// Возраст осмысленно задавать только у живой клетки - чанк для мёртвой
+	// координаты может вообще не существовать (лениво создаётся только
+	// SetAlive(true)), поэтому здесь намеренно не создаём чанк сами.
+	FChunk* Chunk = Chunks.Find(CellToChunkCoord(Cell));
+	if (Chunk)
+	{
+		Chunk->Ages[CellToLocalIndex(Cell)] = Age;
+	}
+}
+
 void FDenseCellGrid::Clear()
 {
 	Chunks.Empty();

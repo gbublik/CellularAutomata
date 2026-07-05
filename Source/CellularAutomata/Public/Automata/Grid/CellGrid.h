@@ -24,6 +24,13 @@ public:
 	virtual void Clear() = 0;
 	virtual int32 Num() const = 0;
 
+	/** Возраст клетки - сколько поколений подряд она прожила (0 у только
+	 *  что родившейся). Насыщающийся (не переполняется) - для клеток,
+	 *  которых сейчас нет в сетке, возвращает 0. Используется отображением
+	 *  клеток на материалы по возрасту (см. AAutomataOrchestrator::AgeMaterials). */
+	virtual uint8 GetAge(const FIntVector& Cell) const = 0;
+	virtual void SetAge(const FIntVector& Cell, uint8 Age) = 0;
+
 	/** Заполняет OutCells координатами всех живых клеток (out-параметр,
 	 *  чтобы не копировать внутреннее хранилище на каждый вызов). */
 	virtual void GetAliveCells(TArray<FIntVector>& OutCells) const = 0;

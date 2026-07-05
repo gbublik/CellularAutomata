@@ -57,6 +57,12 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostActorCreated() override;
+#if WITH_EDITOR
+	/** Правки AgeMaterials в Details panel (добавили/убрали элемент) должны
+	 *  сразу же создать/удалить соответствующие AgeMeshComponents - не
+	 *  дожидаясь следующего рендера. */
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 public:
 	virtual void Tick(float DeltaTime) override;
@@ -163,21 +169,42 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	UStaticMesh* CellMesh = nullptr;
 
-	/** Материал для клеток (опционально - переопределяет материал меша) */
+	/** Материалы клеток по возрасту (сколько поколений подряд клетка прожила) -
+	 *  от самых старых (первый элемент) к самым молодым (последний) - ЕДИНСТВЕННЫЙ
+	 *  источник материала для клеток в этом проекте (раньше был отдельный
+	 *  CellMaterial "по умолчанию, без возраста" - убран: раз рендер всё равно
+	 *  всегда идёт через возрастные бакеты, отдельный материал-заглушка только
+	 *  усложнял бы конфигурацию и провоцировал именно ту путаницу, из-за которой
+	 *  его убрали - "почему показывается не то" при пустом/неполном массиве).
+	 *  ОБЯЗАТЕЛЕН - должен содержать хотя бы 1 элемент, иначе GenerateRandom()/
+	 *  Next()/StepAsync() откажутся выполняться (с warning в лог), как и при
+	 *  отсутствии CellMesh. Клетка возраста 0 (только родилась) красится
+	 *  ПОСЛЕДНИМ материалом массива, клетка возраста (N-1) и старше - ПЕРВЫМ;
+	 *  формула MaterialIndex = N-1-min(Age, N-1) (см. BuildAgeBuckets()). При
+	 *  N==1 все клетки красятся этим единственным материалом независимо от
+	 *  возраста - эквивалент старого поведения с одним CellMaterial. Материал в
+	 *  UInstancedStaticMeshComponent/HISM задаётся на весь компонент целиком, не
+	 *  на инстанс - поэтому N разных материалов реализованы N отдельными,
+	 *  создаваемыми в рантайме компонентами (см. AgeMeshComponents/
+	 *  RebuildAgeMeshComponents()), а не одним. Учитывается во всех путях
+	 *  рендера одинаково - и в непрерывной симуляции (Play/StepAsync ->
+	 *  RenderCurrentGrid(), чанково), и в ручном шаге/спавне (Next()/
+	 *  GenerateRandom() -> RenderGridImmediate(), одним снимком). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
-	UMaterialInterface* CellMaterial = nullptr;
+	TArray<UMaterialInterface*> AgeMaterials;
 
 	/** Размер одной клетки в мировых единицах */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
 			  meta = (ClampMin = "1.0", UIMin = "1.0", UIMax = "1000.0"))
 	float CellSize = 100.0f;
 
-	/** Какая реализация инстансированного компонента реально используется
-	 *  для отрисовки - переключается лениво, на следующем Render() (см.
-	 *  InitializeRenderer()/GetActiveCellsMeshComponent()), без пересборки
-	 *  C++ и без пересоздания компонентов: оба (CellsMeshFlat/
-	 *  CellsMeshHierarchical) существуют постоянно, выбирается только,
-	 *  который из них получает инстансы. */
+	/** Какая реализация инстансированного компонента используется для
+	 *  отрисовки клеток - выбирает класс (ISM/HISM) как для каждого
+	 *  компонента в AgeMeshComponents (см. RebuildAgeMeshComponents()), так и
+	 *  для CellsMeshFlat/CellsMeshHierarchical (GetActiveCellsMeshComponent(),
+	 *  оставлены как постоянный root/attach-parent - см. их doc-comment).
+	 *  Правка пересоздаёт пул AgeMeshComponents под новый класс (см.
+	 *  RebuildAgeMeshComponents()), а не переключает существующие компоненты. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	ECellMeshComponentType CellMeshComponentType = ECellMeshComponentType::HierarchicalInstanced;
 
@@ -198,16 +225,17 @@ public:
 	 *  HLODs" в редакторе) и не годится для сетки клеток, которая
 	 *  перестраивается целиком каждое посчитанное поколение - у HLOD просто
 	 *  нет статичного состояния, которое можно было бы запечь. SetCullDistances()
-	 *  применяется к обоим CellsMeshFlat/CellsMeshHierarchical в
-	 *  InitializeRenderer() на каждый рендер (сама no-op, если значения не
-	 *  изменились - см. её реализацию в движке), так что правки в Details
-	 *  panel подхватываются немедленно, как и остальные параметры рендера. */
+	 *  применяется к CellsMeshFlat/CellsMeshHierarchical и ко всем
+	 *  AgeMeshComponents в ApplyCellCullDistances() на каждый рендер (сама
+	 *  no-op, если значения не изменились - см. её реализацию в движке), так
+	 *  что правки в Details panel подхватываются немедленно, как и остальные
+	 *  параметры рендера. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
 			  meta = (ClampMin = "0.0"))
 	float CellCullEndDistance = 0.0f;
 
 	/** Мастер-переключатель отсечения по расстоянию - если false,
-	 *  InitializeRenderer() применяет к обоим компонентам (0, 0) вместо
+	 *  ApplyCellCullDistances() применяет ко всем компонентам (0, 0) вместо
 	 *  CellCullStartDistance/CellCullEndDistance, т.е. полностью отключает
 	 *  SetCullDistances(), НЕ трогая сами значения дистанций - удобно
 	 *  быстро сравнить "с отсечением/без", не теряя подобранные числа.
@@ -389,7 +417,6 @@ public:
 private:
 	TUniquePtr<FUiController> UiController;
 	TUniquePtr<FCellGrid> Grid;
-	TUniquePtr<FInstancedMeshCellGridRenderer> Renderer;
 
 	/** Обычный ISMC - существует всегда, независимо от CellMeshComponentType
 	 *  (создание/уничтожение компонента в рантейме - лишняя возня и ещё один
@@ -403,22 +430,64 @@ private:
 	UPROPERTY()
 	UHierarchicalInstancedStaticMeshComponent* CellsMeshHierarchical;
 
+	/** Пул компонентов для рендера по возрасту (см. AgeMaterials) - ровно один
+	 *  компонент на элемент AgeMaterials, в отличие от CellsMeshFlat/
+	 *  CellsMeshHierarchical создаются/уничтожаются в рантайме через
+	 *  NewObject()+RegisterComponent()/DestroyComponent() по мере правки
+	 *  размера AgeMaterials (см. RebuildAgeMeshComponents()) - это не тот же
+	 *  случай, что уже кусал проект со сменой класса CreateDefaultSubobject-
+	 *  компонента (см. CLAUDE.md): тут компоненты не default subobject'ы, и
+	 *  уничтожать/пересоздавать их в рантайме - штатная операция. UPROPERTY
+	 *  (не голый массив) по той же причине, что и GamePC - иначе после
+	 *  реинстансинга Live Coding'ом массив останется валиден, а вот
+	 *  параллельный AgeRenderers (не UPROPERTY, см. ниже) обнулится, и их
+	 *  придётся пересинхронизировать (см. RebuildAgeMeshComponents()). */
+	UPROPERTY(Transient)
+	TArray<UInstancedStaticMeshComponent*> AgeMeshComponents;
+
+	/** Один FInstancedMeshCellGridRenderer на элемент AgeMeshComponents/
+	 *  AgeMaterials, тем же индексом. Обычный (не UPROPERTY) член - см.
+	 *  AgeMeshComponents выше про рассинхронизацию после Live Coding. */
+	TArray<TUniquePtr<FInstancedMeshCellGridRenderer>> AgeRenderers;
+
 	void InitializeHUD();
 	void InitializePlayerController();
-	void InitializeRenderer();
 	/** Пересчитывает и применяет CellCullStartDistance/CellCullEndDistance
-	 *  (или (0, 0), если bEnableCellCulling == false) к обоим CellsMeshFlat/
-	 *  CellsMeshHierarchical через SetCullDistances() - выделено из
-	 *  InitializeRenderer() в отдельную функцию, чтобы SetCellCullingEnabled()
-	 *  (хоткей B) могло применить изменение немедленно, не дожидаясь
-	 *  следующего рендера нового поколения. */
+	 *  (или (0, 0), если bEnableCellCulling == false) к CellsMeshFlat/
+	 *  CellsMeshHierarchical и ко всем AgeMeshComponents через
+	 *  SetCullDistances() - отдельная функция (не встроена в рендер), чтобы
+	 *  SetCellCullingEnabled() (хоткей B) могло применить изменение
+	 *  немедленно, не дожидаясь следующего рендера нового поколения. */
 	void ApplyCellCullDistances();
-	/** InitializeRenderer()+SetMesh/SetMaterial+рендер (чанково или сразу) для
-	 *  текущего Grid - общий код, вызываемый из ApplyStepResult() каждый раз,
-	 *  когда готово новое поколение (в т.ч. когда предыдущий чанковый разлив
-	 *  ещё не закончился - см. bChunkedRenderInProgress: BeginRender() внутри
-	 *  Render()/RenderCurrentGrid() сам всё сбрасывает и перестраивает). */
+	/** Пересоздаёт AgeMeshComponents/AgeRenderers так, чтобы их было ровно
+	 *  AgeMaterials.Num() штук нужного (текущий CellMeshComponentType, ISM
+	 *  или HISM) класса - вызывается из RenderCurrentGrid()/RenderGridImmediate(),
+	 *  BeginPlay()/OnConstruction() и PostEditChangeProperty(). Дёшево звать
+	 *  повторно без изменений (оба while-цикла роста/сокращения сразу
+	 *  становятся no-op, если размер уже совпадает); также пересинхронизирует
+	 *  AgeRenderers с AgeMeshComponents, если они разошлись по количеству
+	 *  (см. doc-comment AgeMeshComponents про реинстансинг Live Coding). */
+	void RebuildAgeMeshComponents();
+	/** Раскладывает Grid->GetAliveCells() на AgeMaterials.Num() бакетов по
+	 *  MaterialIndex = N-1-min(Age, N-1) (см. doc-comment AgeMaterials) -
+	 *  общий код для RenderCurrentGrid() (Play) и RenderGridImmediate()
+	 *  (Next()/GenerateRandom()), чтобы не дублировать сам цикл бакетирования. */
+	TArray<TArray<FIntVector>> BuildAgeBuckets() const;
+	/** Раскладывает живые клетки по AgeMaterials.Num() бакетам по возрасту
+	 *  (см. AgeMaterials/BuildAgeBuckets()) и рендерит каждый бакет через свой
+	 *  AgeRenderers[i] на AgeMeshComponents[i] - разлитый по кадрам рендер
+	 *  (bEnableChunkedRender), если включён. Общий код, вызываемый из
+	 *  ApplyStepResult() каждый раз, когда готово новое поколение (в т.ч.
+	 *  когда предыдущий чанковый разлив ещё не закончился - см.
+	 *  bChunkedRenderInProgress: BeginRender() сам всё сбрасывает и
+	 *  перестраивает). */
 	void RenderCurrentGrid();
+	/** То же бакетирование, что и RenderCurrentGrid(), но всегда одним
+	 *  снимком (Renderer::Render(), без BeginRender()/чанкинга) - используется
+	 *  Next()/GenerateRandom(), которые (как и bEnableChunkedRender/
+	 *  StepsPerRender для основного пути) всегда рендерят немедленно и
+	 *  целиком, независимо от режима разлитого по кадрам рендера. */
+	void RenderGridImmediate();
 	/** Возвращает CellsMeshFlat или CellsMeshHierarchical в зависимости от
 	 *  CellMeshComponentType - единственное место, которое решает, какой
 	 *  компонент сейчас "активен". */
@@ -508,14 +577,16 @@ private:
 	double ChunkedRenderStartSeconds = 0.0;
 	int32 ChunkedRenderFrameCount = 0;
 
-	/** Добавляет очередную порцию инстансов (см. Renderer::AdvanceRenderChunk())
-	 *  и, когда рендер полностью завершён, сбрасывает bChunkedRenderInProgress
+	/** Добавляет очередную порцию инстансов на каждый AgeRenderers[i]
+	 *  (AdvanceRenderChunk(), бюджет ChunkedRenderCellsPerFrame поровну между
+	 *  бакетами - см. doc-comment реализации) и, когда ни один из них не
+	 *  вернул "ещё есть, что дорисовать", сбрасывает bChunkedRenderInProgress
 	 *  и логирует итог (сколько кадров/времени заняло). */
 	void AdvanceChunkedRender();
 
-	/** Досыпает все оставшиеся инстансы чанкового рендера одним вызовом
-	 *  (Renderer::AdvanceRenderChunk(TNumericLimits<int32>::Max())) вместо
-	 *  того, чтобы ждать, пока AdvanceChunkedRender() доедет по кадрам -
+	/** Досыпает все оставшиеся инстансы чанкового рендера у каждого
+	 *  AgeRenderers[i] одним вызовом (AdvanceRenderChunk(TNumericLimits<int32>::Max()))
+	 *  вместо того, чтобы ждать, пока AdvanceChunkedRender() доедет по кадрам -
 	 *  вызывается из Stop() (P), чтобы остановка не оставляла сетку висеть
 	 *  недорисованной. Не-op, если чанковый рендер сейчас не идёт. */
 	void FinishChunkedRenderImmediately();
