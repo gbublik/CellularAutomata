@@ -3,8 +3,10 @@
 
 #include "Core/GameMode/AGameMode.h"
 #include "Core/PlayerController/GamePlayerController.h"
+#include "Core/Hud/GameHud.h"
 
 AAGameMode::AAGameMode()
 {
 	PlayerControllerClass = AGamePlayerController::StaticClass();
+	HUDClass = AGameHud::StaticClass();
 }

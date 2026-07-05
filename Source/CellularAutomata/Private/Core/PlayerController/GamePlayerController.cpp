@@ -10,6 +10,8 @@
 #include "Orchestration/AutomataOrchestrator.h"
 #include "GameFramework/DefaultPawn.h"
 #include "GameFramework/FloatingPawnMovement.h"
+#include "Engine/LocalPlayer.h"
+#include "SceneView.h"
 
 // YourPlayerController.cpp
 void AGamePlayerController::SetupInputComponent()
@@ -61,6 +63,15 @@ void AGamePlayerController::SetupInputComponent()
 	DecreaseStepsPerRenderAction = NewObject<UInputAction>(this, TEXT("IA_DecreaseStepsPerRender"));
 	DecreaseStepsPerRenderAction->ValueType = EInputActionValueType::Boolean;
 
+	ToggleSelectionModeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleSelectionMode"));
+	ToggleSelectionModeAction->ValueType = EInputActionValueType::Boolean;
+
+	SelectDragAction = NewObject<UInputAction>(this, TEXT("IA_SelectDrag"));
+	SelectDragAction->ValueType = EInputActionValueType::Boolean;
+
+	ExtractSelectionAction = NewObject<UInputAction>(this, TEXT("IA_ExtractSelection"));
+	ExtractSelectionAction->ValueType = EInputActionValueType::Boolean;
+
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
@@ -81,6 +92,9 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(FrameAllCellsAction, EKeys::Home);
 	SimulationMappingContext->MapKey(IncreaseStepsPerRenderAction, EKeys::T);
 	SimulationMappingContext->MapKey(DecreaseStepsPerRenderAction, EKeys::G);
+	SimulationMappingContext->MapKey(ToggleSelectionModeAction, EKeys::C);
+	SimulationMappingContext->MapKey(SelectDragAction, EKeys::LeftMouseButton);
+	SimulationMappingContext->MapKey(ExtractSelectionAction, EKeys::Enter);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -113,6 +127,10 @@ void AGamePlayerController::SetupInputComponent()
 		// кадр, а не только на однократное нажатие (аналогично +/- для Speed).
 		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseStepsPerRender);
 		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseStepsPerRender);
+		EnhancedInputComp->BindAction(ToggleSelectionModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSelectionMode);
+		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSelectDragStarted);
+		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSelectDragFinished);
+		EnhancedInputComp->BindAction(ExtractSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnExtractSelection);
 	}
 }
 
@@ -372,6 +390,106 @@ void AGamePlayerController::OnDecreaseStepsPerRender()
 	}
 
 	Orchestrator->AdjustStepsPerRender(-1);
+}
+
+void AGamePlayerController::OnToggleSelectionMode()
+{
+	SetSelectionModeActive(!bSelectionModeActive);
+}
+
+void AGamePlayerController::SetSelectionModeActive(bool bActive)
+{
+	if (bSelectionModeActive == bActive)
+	{
+		return;
+	}
+
+	bSelectionModeActive = bActive;
+	// Выход из режима не должен оставлять "подвисшую" рамку драга, если
+	// пользователь вышел из режима прямо во время удержания ЛКМ.
+	bIsDraggingSelection = false;
+
+	SetCameraControlEnabled(!bActive);
+
+	UE_LOG(LogTemp, Log, TEXT("Режим выделения клеток: %s"), bActive ? TEXT("включён") : TEXT("выключен"));
+}
+
+void AGamePlayerController::OnSelectDragStarted()
+{
+	if (!bSelectionModeActive)
+	{
+		return;
+	}
+
+	float MouseX = 0.0f;
+	float MouseY = 0.0f;
+	if (GetMousePosition(MouseX, MouseY))
+	{
+		DragStartScreenPos = FVector2D(MouseX, MouseY);
+		bIsDraggingSelection = true;
+	}
+}
+
+void AGamePlayerController::OnSelectDragFinished()
+{
+	if (!bIsDraggingSelection)
+	{
+		return;
+	}
+	bIsDraggingSelection = false;
+
+	float MouseX = 0.0f;
+	float MouseY = 0.0f;
+	if (!GetMousePosition(MouseX, MouseY))
+	{
+		return;
+	}
+
+	const FVector2D CurrentScreenPos(MouseX, MouseY);
+	const FVector2D RectMin(FMath::Min(DragStartScreenPos.X, CurrentScreenPos.X), FMath::Min(DragStartScreenPos.Y, CurrentScreenPos.Y));
+	const FVector2D RectMax(FMath::Max(DragStartScreenPos.X, CurrentScreenPos.X), FMath::Max(DragStartScreenPos.Y, CurrentScreenPos.Y));
+
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnSelectDragFinished: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	ULocalPlayer* LP = GetLocalPlayer();
+	if (!LP || !LP->ViewportClient || !LP->ViewportClient->Viewport)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnSelectDragFinished: нет доступного viewport для проекции"));
+		return;
+	}
+
+	// Матрица вида-проекции считается один раз на всю операцию выделения
+	// (не на клетку) - тот же API, что использует UGameplayStatics::
+	// ProjectWorldToScreen внутри, но без повторных накладных расходов на
+	// каждый вызов при потенциально миллионах живых клеток.
+	FSceneViewProjectionData ProjectionData;
+	if (!LP->GetProjectionData(LP->ViewportClient->Viewport, ProjectionData))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnSelectDragFinished: не удалось получить ProjectionData"));
+		return;
+	}
+
+	const FMatrix ViewProjectionMatrix = ProjectionData.ComputeViewProjectionMatrix();
+	const FVector2D ViewportSize(ProjectionData.GetConstrainedViewRect().Width(), ProjectionData.GetConstrainedViewRect().Height());
+
+	Orchestrator->SelectCellsInScreenRect(ViewProjectionMatrix, ViewportSize, RectMin, RectMax);
+}
+
+void AGamePlayerController::OnExtractSelection()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnExtractSelection: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->StartFromSelection();
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

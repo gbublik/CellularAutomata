@@ -133,6 +133,32 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void NewSeed();
 
+	/** Выбирает живые клетки, чья экранная проекция попадает в прямоугольник
+	 *  [RectMin, RectMax] (без ограничения по глубине - см. CellSelection::
+	 *  SelectCellsInScreenRect()), кладёт результат в SelectedCells и сразу
+	 *  перерисовывает подсветку (RenderSelectionOverlay()), не дожидаясь
+	 *  следующего шага симуляции. Матрицу вида-проекции строит вызывающий код
+	 *  (AGamePlayerController::OnSelectDragFinished()) один раз на всю
+	 *  операцию, не на клетку. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
+	void SelectCellsInScreenRect(const FMatrix& ViewProjectionMatrix, const FVector2D& ViewportSize, const FVector2D& RectMin, const FVector2D& RectMax);
+
+	/** Делает клетки из SelectedCells единственным содержимым новой сетки
+	 *  (возраст сброшен - как только что родившиеся) и выходит из режима
+	 *  выделения. Мировые координаты НЕ переносятся к началу координат -
+	 *  клетки остаются там же, где их выделили (правила автомата
+	 *  трансляционно инвариантны, а камера и так уже смотрит именно туда).
+	 *  Отказывает (с warning в лог), если ничего не выделено - тот же паттерн
+	 *  guard'ов, что и у остальных методов этого класса. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
+	void StartFromSelection();
+
+	/** Материал подсветки выделенных клеток - отдельный рендер-проход поверх
+	 *  обычного возрастного рендера (см. SelectionMeshComponent/
+	 *  SelectionRenderer), рисуется тем же CellMesh, что и обычные клетки. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Selection")
+	UMaterialInterface* SelectionMaterial = nullptr;
+
 	/** Скорость симуляции (шагов в секунду) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata",
 			  meta = (ClampMin = "0.1", UIMin = "0.1", UIMax = "10.0"))
@@ -449,6 +475,37 @@ private:
 	 *  AgeMaterials, тем же индексом. Обычный (не UPROPERTY) член - см.
 	 *  AgeMeshComponents выше про рассинхронизацию после Live Coding. */
 	TArray<TUniquePtr<FInstancedMeshCellGridRenderer>> AgeRenderers;
+
+	/** Выделенные мышкой клетки (см. SelectCellsInScreenRect()) - чисто
+	 *  рантайм-состояние, не UPROPERTY. Сбрасывается в GenerateRandom()/
+	 *  Next()/ApplyStepResult() (после свапа Grid) - смена поколения делает
+	 *  старое выделение бессмысленным (рабочий процесс "пауза -> выделение
+	 *  -> извлечение", не "выделение во время бесконечного Play"). */
+	TArray<FIntVector> SelectedCells;
+
+	/** Компонент подсветки выделения - всегда обычный (не HISM)
+	 *  UInstancedStaticMeshComponent, независимо от CellMeshComponentType:
+	 *  выделение всегда маленькое подмножество, LOD-дерево кластеров HISM тут
+	 *  не даёт выигрыша. Создаётся лениво (EnsureSelectionMeshComponent()),
+	 *  один раз, без пересоздания. UPROPERTY - та же причина, что и у
+	 *  GamePC/AgeMeshComponents (переживает реинстансинг Live Coding). */
+	UPROPERTY(Transient)
+	UInstancedStaticMeshComponent* SelectionMeshComponent = nullptr;
+
+	/** Рендерер подсветки поверх SelectionMeshComponent - обычный член (не
+	 *  UPROPERTY), как и AgeRenderers. */
+	TUniquePtr<FInstancedMeshCellGridRenderer> SelectionRenderer;
+
+	/** Создаёт SelectionMeshComponent/SelectionRenderer при первом
+	 *  обращении, если их ещё нет - вызывается из BeginPlay()/OnConstruction()
+	 *  и защитно в начале RenderSelectionOverlay(). */
+	void EnsureSelectionMeshComponent();
+
+	/** Рендерит SelectedCells (отфильтрованные до реально живых - на случай
+	 *  рассинхрона) через SelectionRenderer с материалом SelectionMaterial,
+	 *  одним снимком (без чанкинга - выделение всегда маленькое). Не-op, если
+	 *  SelectedCells пуст или SelectionMaterial не назначен. */
+	void RenderSelectionOverlay();
 
 	void InitializeHUD();
 	void InitializePlayerController();

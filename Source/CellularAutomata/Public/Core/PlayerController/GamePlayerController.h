@@ -15,9 +15,25 @@ class CELLULARAUTOMATA_API AGamePlayerController : public APlayerController
 	GENERATED_BODY()
 	
 public:
-	
+
 	UFUNCTION(BlueprintCallable, Category = "Input")
 	void SetCameraControlEnabled(bool bEnable);
+
+	/** Включает/выключает режим выделения клеток мышкой - оборачивает
+	 *  SetCameraControlEnabled() (камера стоп/едет, курсор скрыт/показан),
+	 *  плюс сам флаг bSelectionModeActive, который читают обработчики
+	 *  драг-выделения (OnSelectDragStarted/Finished) и AAutomataOrchestrator::
+	 *  StartFromSelection() (выходит из режима выделения после извлечения). */
+	UFUNCTION(BlueprintCallable, Category = "Input")
+	void SetSelectionModeActive(bool bActive);
+
+	bool IsSelectionModeActive() const { return bSelectionModeActive; }
+
+	/** Для AGameHud::DrawHUD() - рамка выделения рисуется, пока тянется мышь;
+	 *  текущая позиция мыши читается HUD'ом самостоятельно каждый кадр через
+	 *  GetMousePosition(), сюда выносится только неподвижная стартовая точка. */
+	bool IsDraggingSelection() const { return bIsDraggingSelection; }
+	FVector2D GetSelectionDragStart() const { return DragStartScreenPos; }
 
 	virtual void BeginPlay() override;
 
@@ -133,6 +149,23 @@ protected:
 	void OnIncreaseStepsPerRender();
 	void OnDecreaseStepsPerRender();
 
+	/** Хоткей (C) - переключает режим выделения клеток мышкой (см.
+	 *  SetSelectionModeActive()). */
+	void OnToggleSelectionMode();
+
+	/** ЛКМ, Started/Completed - работают только пока bSelectionModeActive.
+	 *  OnSelectDragStarted() запоминает экранную точку старта драга;
+	 *  OnSelectDragFinished() строит итоговый прямоугольник (старт vs.
+	 *  текущая позиция мыши) и передаёт его в AAutomataOrchestrator::
+	 *  SelectCellsInScreenRect() вместе с матрицей вида-проекции, посчитанной
+	 *  один раз на всю операцию (не на клетку). */
+	void OnSelectDragStarted();
+	void OnSelectDragFinished();
+
+	/** Хоткей (Enter) - AAutomataOrchestrator::StartFromSelection(), делает
+	 *  выделенные клетки единственным содержимым новой сетки. */
+	void OnExtractSelection();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. */
@@ -182,7 +215,30 @@ protected:
 	TObjectPtr<class UInputAction> DecreaseStepsPerRenderAction;
 
 	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleSelectionModeAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> SelectDragAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ExtractSelectionAction;
+
+	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;
+
+	/** true, пока пользователь удерживает ЛКМ после OnSelectDragStarted() и
+	 *  до OnSelectDragFinished() - читается AGameHud::DrawHUD() через
+	 *  IsDraggingSelection(). */
+	bool bIsDraggingSelection = false;
+
+	/** Экранная точка старта текущего драг-выделения (пиксели, viewport-
+	 *  relative), зафиксированная в OnSelectDragStarted(). */
+	FVector2D DragStartScreenPos = FVector2D::ZeroVector;
+
+	/** true между OnToggleSelectionMode()-включением и выключением - гейтит
+	 *  OnSelectDragStarted()/OnSelectDragFinished(), чтобы ЛКМ не запускала
+	 *  выделение вне явно включённого режима. */
+	bool bSelectionModeActive = false;
 
 	/** Шаг изменения Speed за одно нажатие +/-. */
 	static constexpr float SpeedAdjustStep = 0.5f;

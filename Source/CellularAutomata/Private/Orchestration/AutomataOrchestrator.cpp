@@ -13,6 +13,7 @@
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
+#include "Automata/Selection/CellSelection.h"
 #include "Async/Async.h"
 
 
@@ -46,6 +47,7 @@ void AAutomataOrchestrator::BeginPlay()
 	Super::BeginPlay();
 	InitializePlayerController();
 	RebuildAgeMeshComponents();
+	EnsureSelectionMeshComponent();
 	GenerateRandom();
 }
 
@@ -138,6 +140,7 @@ void AAutomataOrchestrator::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 	RebuildAgeMeshComponents();
+	EnsureSelectionMeshComponent();
 }
 
 #if WITH_EDITOR
@@ -270,6 +273,11 @@ void AAutomataOrchestrator::ApplyCellCullDistances()
 		}
 	}
 
+	if (SelectionMeshComponent)
+	{
+		SelectionMeshComponent->SetCullDistances(CullStart, CullEnd);
+	}
+
 	// Диагностика для отладки отсечения - пока порог включён (CullEnd > 0),
 	// раз в секунду (не на каждый вызов - при высоком Speed это был бы спам)
 	// печатаем всё, что нужно, чтобы понять, ПОЧЕМУ клетки не отсекаются:
@@ -379,6 +387,133 @@ void AAutomataOrchestrator::RebuildAgeMeshComponents()
 	}
 }
 
+void AAutomataOrchestrator::EnsureSelectionMeshComponent()
+{
+	if (SelectionMeshComponent && !SelectionRenderer)
+	{
+		// Пережил реинстансинг Live Coding (UPROPERTY), а SelectionRenderer
+		// (обычный член) - нет, см. doc-comment AgeMeshComponents про тот же
+		// сценарий.
+		SelectionRenderer = MakeUnique<FInstancedMeshCellGridRenderer>(SelectionMeshComponent);
+	}
+
+	if (SelectionMeshComponent)
+	{
+		return;
+	}
+
+	// Всегда обычный ISM, независимо от CellMeshComponentType - выделение
+	// всегда маленькое подмножество, LOD-дерево кластеров HISM тут не даёт
+	// выигрыша (см. doc-comment SelectionMeshComponent в заголовке).
+	SelectionMeshComponent = NewObject<UInstancedStaticMeshComponent>(this);
+	SelectionMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SelectionMeshComponent->SetupAttachment(CellsMeshHierarchical);
+	SelectionMeshComponent->RegisterComponent();
+
+	SelectionRenderer = MakeUnique<FInstancedMeshCellGridRenderer>(SelectionMeshComponent);
+}
+
+void AAutomataOrchestrator::RenderSelectionOverlay()
+{
+	EnsureSelectionMeshComponent();
+
+	if (!Grid || SelectedCells.Num() == 0 || !SelectionMaterial)
+	{
+		SelectionMeshComponent->ClearInstances();
+		return;
+	}
+
+	// Отфильтровываем до реально живых - на случай, если SelectedCells
+	// вызвали до какого-то не прошедшего через инвалидацию изменения Grid
+	// (сегодня такого пути нет, но проверка дешёвая, а рассинхрон иначе тихий).
+	TArray<FIntVector> AliveSelected;
+	AliveSelected.Reserve(SelectedCells.Num());
+	for (const FIntVector& Cell : SelectedCells)
+	{
+		if (Grid->IsAlive(Cell))
+		{
+			AliveSelected.Add(Cell);
+		}
+	}
+
+	if (AliveSelected.Num() == 0)
+	{
+		SelectionMeshComponent->ClearInstances();
+		return;
+	}
+
+	SelectionRenderer->SetMesh(CellMesh);
+	SelectionRenderer->SetMaterial(SelectionMaterial);
+
+	FFilteredCellGridView SelectionView(*Grid, MoveTemp(AliveSelected));
+	// Всегда одним снимком - выделение всегда маленькое, чанкинг не нужен
+	// даже во время непрерывного Play.
+	SelectionRenderer->Render(SelectionView);
+}
+
+void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectionMatrix, const FVector2D& ViewportSize, const FVector2D& RectMin, const FVector2D& RectMax)
+{
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SelectCellsInScreenRect: сетка не инициализирована"));
+		return;
+	}
+
+	SelectedCells = CellSelection::SelectCellsInScreenRect(*Grid, ViewProjectionMatrix, ViewportSize, RectMin, RectMax);
+	RenderSelectionOverlay();
+
+	UE_LOG(LogTemp, Log, TEXT("SelectCellsInScreenRect: выделено %d клеток"), SelectedCells.Num());
+}
+
+void AAutomataOrchestrator::StartFromSelection()
+{
+	if (SelectedCells.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: нет выделенных клеток - сначала выделите что-нибудь мышкой в режиме выделения (C)"));
+		return;
+	}
+
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: сетка не инициализирована"));
+		return;
+	}
+
+	if (AgeMaterials.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		return;
+	}
+
+	// Мировые координаты НЕ переносятся к началу координат - клетки остаются
+	// там же, где их выделили (правила автомата трансляционно инвариантны, а
+	// камера и так уже смотрит именно туда - см. doc-comment в заголовке).
+	TUniquePtr<FCellGrid> NewGrid = CreateGrid();
+	int32 SpawnedCount = 0;
+	for (const FIntVector& Cell : SelectedCells)
+	{
+		if (Grid->IsAlive(Cell))
+		{
+			NewGrid->SetAlive(Cell, true);
+			NewGrid->SetAge(Cell, 0); // свежий старт, как только что рождённая клетка
+			++SpawnedCount;
+		}
+	}
+
+	Grid = MoveTemp(NewGrid);
+	SelectedCells.Reset();
+	StepsSinceLastRender = 0;
+
+	if (GamePC)
+	{
+		GamePC->SetSelectionModeActive(false);
+	}
+
+	RenderGridImmediate();
+
+	UE_LOG(LogTemp, Log, TEXT("StartFromSelection: новое состояние из %d клеток"), SpawnedCount);
+}
+
 bool AAutomataOrchestrator::ComputeAliveCellsBounds(FVector& OutCenter, float& OutRadius) const
 {
 	if (!Grid || Grid->Num() == 0)
@@ -459,6 +594,9 @@ void AAutomataOrchestrator::GenerateRandom()
 	// актуальный CellSize, если его поменяли в Details panel
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
+	// Новая сетка делает старое выделение бессмысленным (координаты уже не
+	// про эту сетку) - см. doc-comment SelectedCells в заголовке.
+	SelectedCells.Reset();
 
 	// Инициализируем ГСЧ фиксированным сидом для воспроизводимости
 	FRandomStream RandomStream(Seed);
@@ -544,6 +682,7 @@ void AAutomataOrchestrator::Next()
 	const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
 	Grid = MoveTemp(NextGrid);
+	SelectedCells.Reset();
 
 	RenderGridImmediate();
 
@@ -675,6 +814,10 @@ void AAutomataOrchestrator::RenderGridImmediate()
 		BucketRenderer->Render(FilteredView);
 	}
 
+	// Не-op, если SelectedCells пуст (свежая сетка/шаг уже его сбросили) -
+	// сам чистит SelectionMeshComponent в этом случае.
+	RenderSelectionOverlay();
+
 	UE_LOG(LogTemp, Log, TEXT("RenderGridImmediate: живых клеток %d отрисовано по %d материалам (одним снимком)"),
 		Grid->Num(), NumBuckets);
 }
@@ -725,6 +868,10 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 		}
 	}
 
+	// Подсветка выделения - всегда одним снимком (не чанкуется, выделение
+	// всегда маленькое подмножество), не-op, если SelectedCells пуст.
+	RenderSelectionOverlay();
+
 	if (bEnableChunkedRender)
 	{
 		bChunkedRenderInProgress = true;
@@ -744,6 +891,10 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds)
 {
 	Grid = MoveTemp(NewGrid);
+	// Новое поколение делает старое выделение бессмысленным - сбрасываем
+	// сразу, независимо от того, дойдёт ли дело до фактического рендера ниже
+	// (см. doc-comment SelectedCells в заголовке).
+	SelectedCells.Reset();
 
 	// Сужено до конца фонового чтения Grid - дальше (рендер, возможный
 	// чанковый "разлив") фонового потока уже не касается, так что следующий
