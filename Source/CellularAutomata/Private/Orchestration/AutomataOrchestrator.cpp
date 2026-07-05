@@ -69,7 +69,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		TimeSinceLastStep += DeltaTime;
 		const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
-		if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bRenderHandoffPending)
+		if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
 		{
 			TimeSinceLastStep = 0.0f;
 			StepAsync();
@@ -95,14 +95,13 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// Grid), просто ждём. Раньше здесь был while-цикл, "нагоняющий"
 	// пропущенные шаги за один тик - для синхронного Next() это было
 	// безопасно, но для асинхронного шага означало бы запуск нескольких
-	// фоновых Step() поверх друг друга. bRenderHandoffPending - отдельная
-	// причина подождать: поколение досчиталось и достигло порога
-	// StepsPerRender, но предыдущий чанковый "разлив" ещё не закончился -
-	// пока рендер не передан придержанному поколению, следующую пачку не
-	// начинаем (максимум одна пачка в фоне впереди отрисовки). Оставшееся
-	// время не копится "про запас" - реальная скорость сама упрётся в то,
-	// сколько Step() занимает на этой сетке.
-	if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bRenderHandoffPending)
+	// фоновых Step() поверх друг друга. Рендер (в т.ч. чанковый "разлив") не
+	// гейтит следующий шаг вовсе - если он ещё не закончился, когда готово
+	// новое поколение, ApplyStepResult() сам его прерывает и перезапускает с
+	// нуля на новом состоянии (см. RenderCurrentGrid()/BeginRender()).
+	// Оставшееся время не копится "про запас" - реальная скорость сама
+	// упрётся в то, сколько Step() занимает на этой сетке.
+	if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
 	{
 		TimeSinceLastStep = 0.0f;
 		StepAsync();
@@ -499,7 +498,7 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// Сужено до конца фонового чтения Grid - дальше (рендер, возможный
 	// чанковый "разлив") фонового потока уже не касается, так что следующий
 	// StepAsync() может стартовать независимо от того, что происходит с
-	// рендером ниже (см. bRenderHandoffPending).
+	// рендером ниже.
 	bStepInProgress = false;
 
 	++StepsSinceLastRender;
@@ -511,19 +510,21 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	}
 	StepsSinceLastRender = 0;
 
+	// Если предыдущий чанковый "разлив" ещё не дорисовался - не ждём его
+	// окончания, а прерываем немедленно: RenderCurrentGrid() ниже вызывает
+	// BeginRender(), который сам делает ClearInstances() и перестраивает
+	// PendingTransforms с нуля по уже подставленному Grid, так что
+	// недорисованные инстансы прошлого поколения просто никогда не попадут
+	// на экран.
 	if (bChunkedRenderInProgress)
 	{
-		// Предыдущий "разлив" ещё не закончился - придерживаем уже
-		// посчитанное поколение (Grid уже обновлён) вместо того, чтобы
-		// оборвать текущий разлив новым BeginRender(). AdvanceChunkedRender()
-		// сама передаст его на рендер, когда текущий разлив дорисуется.
-		bRenderHandoffPending = true;
-		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток]) - поколение придержано, предыдущий разлив ещё не закончился"),
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток]) - предыдущий разлив прерван, рендерим новое состояние"),
 			Grid->Num(), StepSeconds * 1000.0);
-		return;
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("StepAsync: шаг занял %.2f мс [фоновый поток]"), StepSeconds * 1000.0);
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: шаг занял %.2f мс [фоновый поток]"), StepSeconds * 1000.0);
+	}
 	RenderCurrentGrid();
 }
 
@@ -550,30 +551,10 @@ void AAutomataOrchestrator::AdvanceChunkedRender()
 
 	UE_LOG(LogTemp, Log, TEXT("StepAsync: рендер разлитый по кадрам завершён - живых клеток %d за %d кадр(ов)/%.2f мс (AddInstances суммарно: %.2f мс)"),
 		Grid->Num(), ChunkedRenderFrameCount, TotalSeconds * 1000.0, RT.AddInstanceSeconds * 1000.0);
-
-	if (bRenderHandoffPending)
-	{
-		// Поколение ждало своей очереди, пока шёл этот "разлив" - тут же
-		// передаём его на рендер (может сразу же снова выставить
-		// bChunkedRenderInProgress = true, запустив новый разлив).
-		bRenderHandoffPending = false;
-		UE_LOG(LogTemp, Log, TEXT("StepAsync: придержанное поколение передано на рендер"));
-		RenderCurrentGrid();
-	}
 }
 
 void AAutomataOrchestrator::FinishChunkedRenderImmediately()
 {
-	if (bRenderHandoffPending)
-	{
-		// Раз мы останавливаемся - отрисовываем придержанное поколение
-		// сейчас, а не оставляем его невидимым навсегда (может запустить
-		// новый чанковый разлив, который цикл ниже тут же довершит одним
-		// разом).
-		bRenderHandoffPending = false;
-		RenderCurrentGrid();
-	}
-
 	if (!bChunkedRenderInProgress)
 	{
 		return;
