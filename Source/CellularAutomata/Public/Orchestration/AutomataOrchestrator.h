@@ -258,12 +258,30 @@ public:
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
 
 	/** Каким методом считается шаг симуляции - CPU (bucket-partitioned
-	 *  параллельный алгоритм) или GPU (пока заглушка, см. EComputeMethod).
-	 *  Пересобирается заново на каждый Next()/StepAsync() (см.
-	 *  CreateComputeStrategy()), как и FCellularAutomatonRule - правки в
-	 *  Details panel подхватываются немедленно. */
+	 *  параллельный алгоритм) или GPU (RDG compute shader, см.
+	 *  FGpuComputeStrategy). Пересобирается заново на каждый Next()/
+	 *  StepAsync() (см. CreateComputeStrategy()), как и
+	 *  FCellularAutomatonRule - правки в Details panel подхватываются
+	 *  немедленно. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	EComputeMethod ComputeMethod = EComputeMethod::Cpu;
+
+	/** Верхняя граница объёма (в клетках) AABB живых клеток+halo, которую
+	 *  FGpuComputeStrategy согласна посчитать на GPU за один Step() - выше
+	 *  неё шаг откатывается на CPU с предупреждением в лог (см.
+	 *  FGpuComputeStrategy::Step()'s OOM guard). Защита нужна на случай,
+	 *  если две живые клетки разлетелись далеко друг от друга в
+	 *  разреженной сетке и раздули AABB до неподъёмного объёма, даже если
+	 *  самих живых клеток мало. Дефолт 512^3 (~134M клеток, ~16MB буфер на
+	 *  вход/выход/readback) - восьмикратный запас над прежним зашитым
+	 *  256^3; поднимать дальше можно, если позволяет GPU-память, само
+	 *  удаление лимита не рассматривалось (тогда пропадает единственная
+	 *  защита от OOM на этом редком сценарии). Передаётся в
+	 *  FGpuComputeStrategy через конструктор в CreateComputeStrategy(),
+	 *  без кеширования - как и остальные параметры симуляции. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU",
+			  meta = (ClampMin = "1"))
+	int64 GpuVolumeCellLimit = 512ll * 512ll * 512ll;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
 	TSubclassOf<UUserWidget> HUDWidgetClass;

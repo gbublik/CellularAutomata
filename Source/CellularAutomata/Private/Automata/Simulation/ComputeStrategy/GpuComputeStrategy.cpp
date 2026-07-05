@@ -78,7 +78,8 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 	// Защита от OOM: две далёкие друг от друга живые клетки в разреженной
 	// сетке могли бы раздуть AABB до неподъёмного объёма - в этом случае
 	// откатываемся на CPU вместо аллокации гигантского битового буфера.
-	constexpr int64 MaxVolumeCells = 256ll * 256ll * 256ll;
+	// Лимит настраивается через AAutomataOrchestrator::GpuVolumeCellLimit
+	// (передан в конструктор), а не зашит константой.
 	if (VolumeCells <= 0 || VolumeCells > MaxVolumeCells)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FGpuComputeStrategy::Step: ограничивающий объём (%lld клеток) превышает лимит GPU-буфера - fallback на CPU"), VolumeCells);

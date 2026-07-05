@@ -249,7 +249,7 @@ TUniquePtr<FCellularAutomatonComputeStrategy> AAutomataOrchestrator::CreateCompu
 	switch (ComputeMethod)
 	{
 	case EComputeMethod::Gpu:
-		return MakeUnique<FGpuComputeStrategy>();
+		return MakeUnique<FGpuComputeStrategy>(GpuVolumeCellLimit);
 	case EComputeMethod::Cpu:
 	default:
 		return MakeUnique<FCpuComputeStrategy>();
@@ -407,7 +407,7 @@ void AAutomataOrchestrator::StepAsync()
 
 	// Правило, стратегия расчёта и буфер следующего поколения строим здесь,
 	// на game thread - все три читают UPROPERTY (BirthCounts/SurvivalCounts/
-	// Neighborhood/ComputeMethod/CellSize/ChunkSize),
+	// Neighborhood/ComputeMethod/GpuVolumeCellLimit/CellSize/ChunkSize),
 	// которые могут одновременно редактироваться в Details panel. После этой
 	// точки фоновый поток их больше не касается - только *Grid (на чтение) и
 	// NextGridBuffer (на запись, свежесозданный, ни с кем не общий).
