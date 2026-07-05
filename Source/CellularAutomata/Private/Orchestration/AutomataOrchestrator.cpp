@@ -10,6 +10,8 @@
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
+#include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
+#include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Async/Async.h"
 
 
@@ -251,6 +253,18 @@ TUniquePtr<FCellGrid> AAutomataOrchestrator::CreateGrid() const
 	}
 }
 
+TUniquePtr<FCellularAutomatonComputeStrategy> AAutomataOrchestrator::CreateComputeStrategy() const
+{
+	switch (ComputeMethod)
+	{
+	case EComputeMethod::Gpu:
+		return MakeUnique<FGpuComputeStrategy>();
+	case EComputeMethod::Cpu:
+	default:
+		return MakeUnique<FCpuComputeStrategy>();
+	}
+}
+
 void AAutomataOrchestrator::GenerateRandom()
 {
 	if (bStepInProgress)
@@ -356,11 +370,12 @@ void AAutomataOrchestrator::Next()
 	// (аналогично тому, как GenerateRandom() каждый раз пересоздаёт Grid,
 	// а не кэширует его)
 	const FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
+	const TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 
 	TUniquePtr<FCellGrid> NextGrid = CreateGrid();
 
 	const double StepStartSeconds = FPlatformTime::Seconds();
-	AutomatonRule.Step(*Grid, *NextGrid);
+	ComputeStrategy->Step(*Grid, *NextGrid, AutomatonRule);
 	const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
 	Grid = MoveTemp(NextGrid);
@@ -399,13 +414,14 @@ void AAutomataOrchestrator::StepAsync()
 		return;
 	}
 
-	// Правило и буфер следующего поколения строим здесь, на game thread -
-	// оба читают UPROPERTY (BirthCounts/SurvivalCounts/Neighborhood/CellSize/
-	// ChunkSize/GridStorageStrategy), которые могут одновременно
-	// редактироваться в Details panel. После этой точки фоновый поток их
-	// больше не касается - только *Grid (на чтение) и NextGridBuffer (на
-	// запись, свежесозданный, ни с кем не общий).
+	// Правило, стратегия расчёта и буфер следующего поколения строим здесь,
+	// на game thread - все три читают UPROPERTY (BirthCounts/SurvivalCounts/
+	// Neighborhood/ComputeMethod/CellSize/ChunkSize/GridStorageStrategy),
+	// которые могут одновременно редактироваться в Details panel. После этой
+	// точки фоновый поток их больше не касается - только *Grid (на чтение) и
+	// NextGridBuffer (на запись, свежесозданный, ни с кем не общий).
 	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
+	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 	TUniquePtr<FCellGrid> NextGridBuffer = CreateGrid();
 
 	bStepInProgress = true;
@@ -417,10 +433,11 @@ void AAutomataOrchestrator::StepAsync()
 	// PendingStepFuture даёт EndPlay() дождаться завершения этого фонового
 	// шага перед тем, как актор (а с ним и Grid) начнёт разрушаться.
 	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
-		[AutomatonRule = MoveTemp(AutomatonRule), NextGridBuffer = MoveTemp(NextGridBuffer), CurrentGridPtr, WeakThis]() mutable
+		[AutomatonRule = MoveTemp(AutomatonRule), ComputeStrategy = MoveTemp(ComputeStrategy),
+		 NextGridBuffer = MoveTemp(NextGridBuffer), CurrentGridPtr, WeakThis]() mutable
 		{
 			const double StepStartSeconds = FPlatformTime::Seconds();
-			AutomatonRule.Step(*CurrentGridPtr, *NextGridBuffer);
+			ComputeStrategy->Step(*CurrentGridPtr, *NextGridBuffer, AutomatonRule);
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
 			// Grid/рендер трогаем только на game thread - AsyncTask сюда и

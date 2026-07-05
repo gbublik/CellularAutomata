@@ -17,6 +17,7 @@ class UInstancedStaticMeshComponent;
 class UHierarchicalInstancedStaticMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
+class FCellularAutomatonComputeStrategy;
 
 /** Стратегия хранения клеток сетки автомата. */
 UENUM(BlueprintType)
@@ -24,6 +25,16 @@ enum class EGridStorageStrategy : uint8
 {
 	Sparse,
 	Dense
+};
+
+/** Метод расчёта шага симуляции. Gpu пока заглушка (см.
+ *  FGpuComputeStrategy) - делегирует на CPU-алгоритм с предупреждением в
+ *  лог, пока не появится реальный compute-shader бэкенд. */
+UENUM(BlueprintType)
+enum class EComputeMethod : uint8
+{
+	Cpu,
+	Gpu
 };
 
 /** Реализация инстансированного компонента для отрисовки клеток. */
@@ -263,6 +274,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
 
+	/** Каким методом считается шаг симуляции - CPU (bucket-partitioned
+	 *  параллельный алгоритм) или GPU (пока заглушка, см. EComputeMethod).
+	 *  Пересобирается заново на каждый Next()/StepAsync() (см.
+	 *  CreateComputeStrategy()), как и FCellularAutomatonRule - правки в
+	 *  Details panel подхватываются немедленно. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
+	EComputeMethod ComputeMethod = EComputeMethod::Cpu;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
 	TSubclassOf<UUserWidget> HUDWidgetClass;
 	
@@ -300,6 +319,11 @@ private:
 	 *  ChunkSize из Details panel. Используется и GenerateRandom() (сетка
 	 *  с нуля), и Next() (буфер для следующего поколения). */
 	TUniquePtr<FCellGrid> CreateGrid() const;
+
+	/** Строит новую стратегию расчёта шага по текущему ComputeMethod из
+	 *  Details panel - зеркалит CreateGrid()'s switch-паттерн. Используется
+	 *  и Next(), и StepAsync(). */
+	TUniquePtr<FCellularAutomatonComputeStrategy> CreateComputeStrategy() const;
 
 	/** UPROPERTY (не голый указатель) - иначе после реинстансинга через
 	 *  Live Coding во время активного PIE значение не переживает пересборку
