@@ -21,7 +21,9 @@ public class CellularAutomata : ModuleRules
 			"Json",
 			"JsonUtilities"
 		});
-		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput" });
+		// RHI/RenderCore - для FGpuComputeStrategy (RDG compute shader dispatch,
+		// см. Automata/Simulation/ComputeStrategy/GpuComputeStrategy.cpp).
+		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput", "RHI", "RenderCore" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

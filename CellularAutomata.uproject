@@ -7,7 +7,7 @@
 		{
 			"Name": "CellularAutomata",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "PostConfigInit"
 		}
 	],
 	"Plugins": [

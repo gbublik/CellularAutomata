@@ -1,0 +1,61 @@
+// Один шаг 3D клеточного автомата: для каждой клетки в VolumeDim считаем
+// живых соседей по NeighborOffsets и решаем рождение/выживание по
+// BirthMask/SurvivalMask (бит i = разрешено i живых соседей).
+// Зеркалит FCpuComputeStrategy::Step() (см. CpuComputeStrategy.cpp) -
+// клетки за пределами буфера трактуются как мёртвые, что соответствует
+// CPU-семантике: клетка вне halo от любой живой клетки не может родиться.
+
+#include "/Engine/Public/Platform.ush"
+
+uint3 VolumeDim;
+uint NeighborOffsetCount;
+int4 NeighborOffsets[26];
+uint BirthMask;
+uint SurvivalMask;
+
+StructuredBuffer<uint> InputBits;
+RWStructuredBuffer<uint> OutputBits;
+
+uint CellIndex(int3 Coord)
+{
+	return (uint)((Coord.z * (int)VolumeDim.y + Coord.y) * (int)VolumeDim.x + Coord.x);
+}
+
+bool IsAliveAt(int3 Coord)
+{
+	if (any(Coord < 0) || any(Coord >= int3(VolumeDim)))
+	{
+		return false;
+	}
+	uint Index = CellIndex(Coord);
+	return (InputBits[Index >> 5] >> (Index & 31u)) & 1u;
+}
+
+[numthreads(4, 4, 4)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (any(DispatchThreadId >= VolumeDim))
+	{
+		return;
+	}
+
+	int3 Coord = int3(DispatchThreadId);
+	uint AliveNeighbors = 0;
+	for (uint i = 0; i < NeighborOffsetCount; ++i)
+	{
+		if (IsAliveAt(Coord + NeighborOffsets[i].xyz))
+		{
+			++AliveNeighbors;
+		}
+	}
+
+	bool bAlive = IsAliveAt(Coord);
+	bool bNextAlive = bAlive ? ((SurvivalMask >> AliveNeighbors) & 1u) != 0
+	                         : ((BirthMask >> AliveNeighbors) & 1u) != 0;
+
+	if (bNextAlive)
+	{
+		uint Index = CellIndex(Coord);
+		InterlockedOr(OutputBits[Index >> 5], 1u << (Index & 31u));
+	}
+}
