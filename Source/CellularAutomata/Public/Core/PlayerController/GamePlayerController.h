@@ -91,6 +91,13 @@ protected:
 	 *  (AAutomataOrchestrator::SetChunkedRenderEnabled()/IsChunkedRenderEnabled()). */
 	void OnToggleChunkedRender();
 
+	/** Хоткей (X) - переключает порядок реавила разлитого по кадрам рендера
+	 *  на следующий по кругу (AAutomataOrchestrator::CycleChunkedRenderOrder(),
+	 *  см. EChunkedRenderOrder) - чтобы подобрать, как клетки появляются по
+	 *  кадрам (блобами/равномерно/от камеры/от центра), не открывая Details
+	 *  panel. */
+	void OnCycleChunkedRenderOrder();
+
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
 	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
 	void OnIncreaseSpeed();
@@ -136,6 +143,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleChunkedRenderAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> CycleChunkedRenderOrderAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> IncreaseSpeedAction;

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Automata/Rendering/CellGridRenderer.h"
+#include "Automata/Rendering/ChunkedRenderOrder.h"
 
 class UInstancedStaticMeshComponent;
 class UStaticMesh;
@@ -18,6 +19,7 @@ struct FRenderTimings
 	double ClearSeconds = 0.0;
 	double ScaleSeconds = 0.0;
 	double GetAliveSeconds = 0.0;
+	double ReorderSeconds = 0.0;
 	double BuildTransformsSeconds = 0.0;
 	double AddInstanceSeconds = 0.0;
 };
@@ -43,8 +45,12 @@ public:
 	 *  часть Render() при больших сетках) по нескольким кадрам вместо
 	 *  одного. Render() сам реализован через BeginRender() + один вызов
 	 *  AdvanceRenderChunk() без ограничения - так оба пути не дублируют
-	 *  логику построения трансформов. */
-	void BeginRender(const FCellGrid& Grid);
+	 *  логику построения трансформов (Order/CameraLocation значения не
+	 *  важны в этом случае - весь массив всё равно уходит одним кадром).
+	 *  Order выбирает, в каком порядке AliveCells раскладываются в
+	 *  PendingTransforms до нарезки на чанки (см. EChunkedRenderOrder);
+	 *  CameraLocation используется только для DistanceFromCamera*-режимов. */
+	void BeginRender(const FCellGrid& Grid, EChunkedRenderOrder Order, const FVector& CameraLocation);
 
 	/** Добавляет очередную порцию (до MaxCellsThisChunk) трансформов,
 	 *  построенных предыдущим BeginRender(). Возвращает true, если после

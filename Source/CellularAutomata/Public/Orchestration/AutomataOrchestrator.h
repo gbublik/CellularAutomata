@@ -9,6 +9,7 @@
 #include "CellularAutomata/Public/Ui/UiController.h"
 #include "Automata/Grid/CellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
+#include "Automata/Rendering/ChunkedRenderOrder.h"
 #include "Automata/Simulation/Neighborhood.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
@@ -204,6 +205,25 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
 			  meta = (ClampMin = "1", EditCondition = "bEnableChunkedRender", EditConditionHides))
 	int32 ChunkedRenderCellsPerFrame = 20000;
+
+	/** Метод по умолчанию, определяющий, в каком порядке живые клетки
+	 *  появляются по кадрам "разлитого" рендера (см. bEnableChunkedRender/
+	 *  EChunkedRenderOrder) - не влияет на однократный Render() (Next()/
+	 *  GenerateRandom()), только на визуальный порядок реавила при
+	 *  непрерывной симуляции. Без EditCondition (в отличие от
+	 *  ChunkedRenderCellsPerFrame выше) - специально всегда виден в Details
+	 *  panel, а не только когда bEnableChunkedRender включён, чтобы дизайнер
+	 *  мог подобрать метод заранее, до включения чанкинга. Переключается на
+	 *  лету: RenderCurrentGrid() читает это значение заново на каждый вызов,
+	 *  без кэширования - как и остальные параметры симуляции. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	EChunkedRenderOrder ChunkedRenderOrder = EChunkedRenderOrder::Sequential;
+
+	/** Переключает ChunkedRenderOrder на следующее значение по кругу (хоткей
+	 *  X, см. AGamePlayerController::OnCycleChunkedRenderOrder()) - чтобы
+	 *  подобрать порядок реавила на лету, не открывая Details panel. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	void CycleChunkedRenderOrder();
 
 	/** Сколько посчитанных поколений пропускать между рендерами: 1 = рендерить
 	 *  каждое (текущее поведение), N>1 - рендерить только каждое N-ое, пока

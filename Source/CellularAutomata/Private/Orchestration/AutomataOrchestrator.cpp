@@ -459,16 +459,20 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 		// сетках, даже когда сам шаг уже посчитан асинхронно. Включение/
 		// выключение - только вручную (Details panel или хоткей Z), без
 		// автоматического порога по числу клеток.
+		const FVector CameraLocation = (GamePC && GamePC->PlayerCameraManager)
+			? GamePC->PlayerCameraManager->GetCameraLocation()
+			: FVector::ZeroVector;
+
 		const double BeginRenderStartSeconds = FPlatformTime::Seconds();
-		Renderer->BeginRender(*Grid);
+		Renderer->BeginRender(*Grid, ChunkedRenderOrder, CameraLocation);
 		const double BeginRenderSeconds = FPlatformTime::Seconds() - BeginRenderStartSeconds;
 
 		bChunkedRenderInProgress = true;
 		ChunkedRenderStartSeconds = FPlatformTime::Seconds();
 		ChunkedRenderFrameCount = 0;
 
-		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d рендерится (подготовка рендера: %.2f мс) - рендер разлит по кадрам (%d инстансов/кадр)"),
-			Grid->Num(), BeginRenderSeconds * 1000.0, ChunkedRenderCellsPerFrame);
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d рендерится (подготовка рендера: %.2f мс) - рендер разлит по кадрам (%d инстансов/кадр, порядок: %s)"),
+			Grid->Num(), BeginRenderSeconds * 1000.0, ChunkedRenderCellsPerFrame, *UEnum::GetValueAsString(ChunkedRenderOrder));
 		return;
 	}
 
@@ -524,6 +528,13 @@ void AAutomataOrchestrator::SetChunkedRenderEnabled(bool bEnabled)
 {
 	bEnableChunkedRender = bEnabled;
 	UE_LOG(LogTemp, Log, TEXT("SetChunkedRenderEnabled: рендер по кадрам %s"), bEnabled ? TEXT("включён") : TEXT("выключен"));
+}
+
+void AAutomataOrchestrator::CycleChunkedRenderOrder()
+{
+	constexpr uint8 NumOrders = (uint8)EChunkedRenderOrder::FromCenterOutward + 1;
+	ChunkedRenderOrder = (EChunkedRenderOrder)(((uint8)ChunkedRenderOrder + 1) % NumOrders);
+	UE_LOG(LogTemp, Log, TEXT("CycleChunkedRenderOrder: порядок реавила -> %s"), *UEnum::GetValueAsString(ChunkedRenderOrder));
 }
 
 void AAutomataOrchestrator::AdvanceChunkedRender()
