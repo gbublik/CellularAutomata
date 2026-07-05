@@ -6,7 +6,6 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Core/PlayerController/GamePlayerController.h"
-#include "Automata/Grid/SparseCellGrid.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
@@ -242,14 +241,7 @@ bool AAutomataOrchestrator::ComputeAliveCellsBounds(FVector& OutCenter, float& O
 
 TUniquePtr<FCellGrid> AAutomataOrchestrator::CreateGrid() const
 {
-	switch (GridStorageStrategy)
-	{
-	case EGridStorageStrategy::Dense:
-		return MakeUnique<FDenseCellGrid>(CellSize, ChunkSize);
-	case EGridStorageStrategy::Sparse:
-	default:
-		return MakeUnique<FSparseCellGrid>(CellSize);
-	}
+	return MakeUnique<FDenseCellGrid>(CellSize, ChunkSize);
 }
 
 TUniquePtr<FCellularAutomatonComputeStrategy> AAutomataOrchestrator::CreateComputeStrategy() const
@@ -415,7 +407,7 @@ void AAutomataOrchestrator::StepAsync()
 
 	// Правило, стратегия расчёта и буфер следующего поколения строим здесь,
 	// на game thread - все три читают UPROPERTY (BirthCounts/SurvivalCounts/
-	// Neighborhood/ComputeMethod/CellSize/ChunkSize/GridStorageStrategy),
+	// Neighborhood/ComputeMethod/CellSize/ChunkSize),
 	// которые могут одновременно редактироваться в Details panel. После этой
 	// точки фоновый поток их больше не касается - только *Grid (на чтение) и
 	// NextGridBuffer (на запись, свежесозданный, ни с кем не общий).

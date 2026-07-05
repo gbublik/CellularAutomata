@@ -19,14 +19,6 @@ class UStaticMesh;
 class UMaterialInterface;
 class FCellularAutomatonComputeStrategy;
 
-/** Стратегия хранения клеток сетки автомата. */
-UENUM(BlueprintType)
-enum class EGridStorageStrategy : uint8
-{
-	Sparse,
-	Dense
-};
-
 /** Метод расчёта шага симуляции. Gpu пока заглушка (см.
  *  FGpuComputeStrategy) - делегирует на CPU-алгоритм с предупреждением в
  *  лог, пока не появится реальный compute-shader бэкенд. */
@@ -160,19 +152,10 @@ public:
 			  meta = (ClampMin = "1", UIMin = "10", UIMax = "500"))
 	FIntVector GridSize = FIntVector(100, 100, 100);
 
-	/** Стратегия хранения живых клеток: Sparse (TSet, эффективна при
-	 *  малой плотности) или Dense (чанками, эффективна при высокой
-	 *  плотности / больших локальных скоплениях клеток) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid")
-	EGridStorageStrategy GridStorageStrategy = EGridStorageStrategy::Sparse;
-
-	/** Размер стороны чанка (в клетках) для Dense-сетки: чанк хранит
-	 *  ChunkSize^3 клеток как плотный битовый массив. Актуально только
-	 *  при GridStorageStrategy == Dense. */
+	/** Размер стороны чанка (в клетках) для сетки: чанк хранит ChunkSize^3
+	 *  клеток как плотный битовый массив. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid",
-			  meta = (ClampMin = "1", UIMin = "4", UIMax = "64",
-					  EditCondition = "GridStorageStrategy == EGridStorageStrategy::Dense",
-					  EditConditionHides))
+			  meta = (ClampMin = "1", UIMin = "4", UIMax = "64"))
 	int32 ChunkSize = 16;
 
 	/** Меш, используемый для отрисовки одной клетки автомата (инстансированный) */
@@ -316,9 +299,9 @@ private:
 	 *  CellMeshComponentType - единственное место, которое решает, какой
 	 *  компонент сейчас "активен". */
 	UInstancedStaticMeshComponent* GetActiveCellsMeshComponent() const;
-	/** Строит новую пустую сетку по текущим GridStorageStrategy/CellSize/
-	 *  ChunkSize из Details panel. Используется и GenerateRandom() (сетка
-	 *  с нуля), и Next() (буфер для следующего поколения). */
+	/** Строит новую пустую сетку по текущим CellSize/ChunkSize из Details
+	 *  panel. Используется и GenerateRandom() (сетка с нуля), и Next()
+	 *  (буфер для следующего поколения). */
 	TUniquePtr<FCellGrid> CreateGrid() const;
 
 	/** Строит новую стратегию расчёта шага по текущему ComputeMethod из

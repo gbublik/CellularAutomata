@@ -162,9 +162,9 @@ void FCpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 	});
 	const double ParallelForSeconds = FPlatformTime::Seconds() - ParallelForStart;
 
-	// Запись в NextGrid - последовательно: TSet/TBitArray внутри
-	// FSparseCellGrid/FDenseCellGrid не потокобезопасны для конкурентной
-	// записи, поэтому SetAlive() нельзя звать прямо из ParallelFor-лямбды.
+	// Запись в NextGrid - последовательно: TBitArray внутри FDenseCellGrid
+	// не потокобезопасен для конкурентной записи, поэтому SetAlive() нельзя
+	// звать прямо из ParallelFor-лямбды.
 	const double WriteBackStart = FPlatformTime::Seconds();
 	for (int32 Index = 0; Index < Candidates.Num(); ++Index)
 	{
