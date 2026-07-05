@@ -40,6 +40,9 @@ void AGamePlayerController::SetupInputComponent()
 	CycleChunkedRenderOrderAction = NewObject<UInputAction>(this, TEXT("IA_CycleChunkedRenderOrder"));
 	CycleChunkedRenderOrderAction->ValueType = EInputActionValueType::Boolean;
 
+	ToggleWaitForChunkedRenderToFinishAction = NewObject<UInputAction>(this, TEXT("IA_ToggleWaitForChunkedRenderToFinish"));
+	ToggleWaitForChunkedRenderToFinishAction->ValueType = EInputActionValueType::Boolean;
+
 	IncreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseSpeed"));
 	IncreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
 
@@ -64,6 +67,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
 	SimulationMappingContext->MapKey(ToggleChunkedRenderAction, EKeys::Z);
 	SimulationMappingContext->MapKey(CycleChunkedRenderOrderAction, EKeys::X);
+	SimulationMappingContext->MapKey(ToggleWaitForChunkedRenderToFinishAction, EKeys::V);
 	// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от того,
 	// есть ли у клавиатуры цифровой блок.
 	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Equals);
@@ -94,6 +98,7 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSpeedBoostEnded);
 		EnhancedInputComp->BindAction(ToggleChunkedRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleChunkedRender);
 		EnhancedInputComp->BindAction(CycleChunkedRenderOrderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnCycleChunkedRenderOrder);
+		EnhancedInputComp->BindAction(ToggleWaitForChunkedRenderToFinishAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish);
 		// Triggered - держа +/-, Speed продолжает меняться каждый кадр, а не
 		// только на однократное нажатие (аналогично F/OnStepOnce()).
 		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
@@ -253,6 +258,18 @@ void AGamePlayerController::OnCycleChunkedRenderOrder()
 	}
 
 	Orchestrator->CycleChunkedRenderOrder();
+}
+
+void AGamePlayerController::OnToggleWaitForChunkedRenderToFinish()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleWaitForChunkedRenderToFinish: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->SetWaitForChunkedRenderToFinish(!Orchestrator->IsWaitingForChunkedRenderToFinish());
 }
 
 void AGamePlayerController::OnIncreaseSpeed()

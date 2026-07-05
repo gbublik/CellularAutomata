@@ -63,12 +63,18 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// Автошаг Shift+F (см. StartFastStep()) - взаимоисключающ с
 	// bSimulationRunning (Start() отказывает, пока это активно, и наоборот),
 	// поэтому безопасно делить TimeSinceLastStep с обычным Play.
+	// Пока включён "ждать разлив" (см. bWaitForChunkedRenderToFinish), не
+	// запускаем следующий шаг, пока предыдущий чанковый "разлив" ещё
+	// рисуется - AdvanceChunkedRender() выше в этом же Tick() уже мог его
+	// как раз завершить, так что проверка сразу актуальна для этого кадра.
+	const bool bBlockedByChunkedRender = bWaitForChunkedRenderToFinish && bChunkedRenderInProgress;
+
 	if (bFastStepActive)
 	{
 		TimeSinceLastStep += DeltaTime;
 		const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
-		if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
+		if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bBlockedByChunkedRender)
 		{
 			TimeSinceLastStep = 0.0f;
 			StepAsync();
@@ -94,13 +100,17 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// Grid), просто ждём. Раньше здесь был while-цикл, "нагоняющий"
 	// пропущенные шаги за один тик - для синхронного Next() это было
 	// безопасно, но для асинхронного шага означало бы запуск нескольких
-	// фоновых Step() поверх друг друга. Рендер (в т.ч. чанковый "разлив") не
-	// гейтит следующий шаг вовсе - если он ещё не закончился, когда готово
-	// новое поколение, ApplyStepResult() сам его прерывает и перезапускает с
-	// нуля на новом состоянии (см. RenderCurrentGrid()/BeginRender()).
-	// Оставшееся время не копится "про запас" - реальная скорость сама
-	// упрётся в то, сколько Step() занимает на этой сетке.
-	if (TimeSinceLastStep >= StepInterval && !bStepInProgress)
+	// фоновых Step() поверх друг друга. По умолчанию (bWaitForChunkedRenderToFinish
+	// == false) рендер (в т.ч. чанковый "разлив") не гейтит следующий шаг
+	// вовсе - если он ещё не закончился, когда готово новое поколение,
+	// ApplyStepResult() сам его прерывает и перезапускает с нуля на новом
+	// состоянии (см. RenderCurrentGrid()/BeginRender()); если же включено,
+	// bBlockedByChunkedRender (выше) держит следующий StepAsync() в ожидании,
+	// пока разлив не дорисуется сам, и тогда ApplyStepResult() уже не застаёт
+	// bChunkedRenderInProgress истинным. Оставшееся время не копится "про
+	// запас" - реальная скорость сама упрётся в то, сколько Step() занимает
+	// на этой сетке (плюс, в режиме ожидания, во сколько занимает разлив).
+	if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bBlockedByChunkedRender)
 	{
 		TimeSinceLastStep = 0.0f;
 		StepAsync();
@@ -506,12 +516,15 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	}
 	StepsSinceLastRender = 0;
 
-	// Если предыдущий чанковый "разлив" ещё не дорисовался - не ждём его
-	// окончания, а прерываем немедленно: RenderCurrentGrid() ниже вызывает
-	// BeginRender(), который сам делает ClearInstances() и перестраивает
-	// PendingTransforms с нуля по уже подставленному Grid, так что
-	// недорисованные инстансы прошлого поколения просто никогда не попадут
-	// на экран.
+	// Если предыдущий чанковый "разлив" ещё не дорисовался - по умолчанию не
+	// ждём его окончания, а прерываем немедленно: RenderCurrentGrid() ниже
+	// вызывает BeginRender(), который сам делает ClearInstances() и
+	// перестраивает PendingTransforms с нуля по уже подставленному Grid, так
+	// что недорисованные инстансы прошлого поколения просто никогда не
+	// попадут на экран. Пока включён bWaitForChunkedRenderToFinish, эта ветка
+	// физически не должна срабатывать - Tick() уже не запускает StepAsync(),
+	// пока bChunkedRenderInProgress истинен (см. bBlockedByChunkedRender в
+	// Tick()), так что сюда мы попадаем только с уже завершённым разливом.
 	if (bChunkedRenderInProgress)
 	{
 		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток]) - предыдущий разлив прерван, рендерим новое состояние"),
@@ -535,6 +548,12 @@ void AAutomataOrchestrator::CycleChunkedRenderOrder()
 	constexpr uint8 NumOrders = (uint8)EChunkedRenderOrder::FromCenterOutward + 1;
 	ChunkedRenderOrder = (EChunkedRenderOrder)(((uint8)ChunkedRenderOrder + 1) % NumOrders);
 	UE_LOG(LogTemp, Log, TEXT("CycleChunkedRenderOrder: порядок реавила -> %s"), *UEnum::GetValueAsString(ChunkedRenderOrder));
+}
+
+void AAutomataOrchestrator::SetWaitForChunkedRenderToFinish(bool bWait)
+{
+	bWaitForChunkedRenderToFinish = bWait;
+	UE_LOG(LogTemp, Log, TEXT("SetWaitForChunkedRenderToFinish: режим ожидания разлива %s"), bWait ? TEXT("включён") : TEXT("выключен"));
 }
 
 void AAutomataOrchestrator::AdvanceChunkedRender()

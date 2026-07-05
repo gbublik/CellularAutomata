@@ -98,6 +98,13 @@ protected:
 	 *  panel. */
 	void OnCycleChunkedRenderOrder();
 
+	/** Хоткей (V) - переключает AAutomataOrchestrator::bWaitForChunkedRenderToFinish
+	 *  через SetWaitForChunkedRenderToFinish()/IsWaitingForChunkedRenderToFinish() -
+	 *  выбор между "прервать недорисованный разлив и сразу перерисовать новое
+	 *  состояние" (по умолчанию) и "дождаться, пока текущий разлив
+	 *  дорисуется, и только потом считать/рисовать следующее". */
+	void OnToggleWaitForChunkedRenderToFinish();
+
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
 	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
 	void OnIncreaseSpeed();
@@ -146,6 +153,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> CycleChunkedRenderOrderAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleWaitForChunkedRenderToFinishAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> IncreaseSpeedAction;

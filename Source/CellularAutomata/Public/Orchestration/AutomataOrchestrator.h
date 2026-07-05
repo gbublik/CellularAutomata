@@ -191,7 +191,7 @@ public:
 	bool bEnableChunkedRender = true;
 
 	/** Включено ли сейчас разлитое по кадрам рендер - нужно внешнему коду
-	 *  (хоткею C), чтобы решить, на что переключать, не трогая
+	 *  (хоткею Z), чтобы решить, на что переключать, не трогая
 	 *  bEnableChunkedRender напрямую. */
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	bool IsChunkedRenderEnabled() const { return bEnableChunkedRender; }
@@ -221,9 +221,42 @@ public:
 
 	/** Переключает ChunkedRenderOrder на следующее значение по кругу (хоткей
 	 *  X, см. AGamePlayerController::OnCycleChunkedRenderOrder()) - чтобы
-	 *  подобрать порядок реавила на лету, не открывая Details panel. */
-	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
+	 *  подобрать порядок реавила на лету, не открывая Details panel. Без
+	 *  CallInEditor (как и SetWaitForChunkedRenderToFinish ниже) - ChunkedRenderOrder
+	 *  и так уже редактируется напрямую как обычный dropdown, отдельная
+	 *  кнопка-функция рядом с ним только дублировала бы её в Details panel. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void CycleChunkedRenderOrder();
+
+	/** Что делать, если очередной шаг досчитался, пока предыдущий чанковый
+	 *  "разлив" ещё не дорисован: false (по умолчанию, текущее поведение) -
+	 *  немедленно прервать недорисованный разлив и тут же перерисовать новое
+	 *  состояние (см. `ApplyStepResult()`); true - не прерывать, а сначала
+	 *  дождаться, пока `AdvanceChunkedRender()` полностью дорисует текущий
+	 *  разлив, и только после этого сбросить/нарисовать новое состояние и
+	 *  запустить расчёт следующего шага. Реализовано без изменений в
+	 *  `ApplyStepResult()` - гейтится на входе, в `Tick()`: пока true и
+	 *  `bChunkedRenderInProgress`, следующий `StepAsync()` просто не
+	 *  запускается (ни в обычном Play, ни в автошаге Shift+F), поэтому
+	 *  `ApplyStepResult()` физически не может увидеть незавершённый разлив в
+	 *  этом режиме. Переключается на лету через хоткей V (см.
+	 *  `AGamePlayerController::OnToggleWaitForChunkedRenderToFinish()`) или
+	 *  Details panel. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	bool bWaitForChunkedRenderToFinish = false;
+
+	/** Включён ли сейчас режим "ждать разлив" (см. bWaitForChunkedRenderToFinish) -
+	 *  нужно внешнему коду (хоткею V), чтобы решить, на что переключать, не
+	 *  трогая bWaitForChunkedRenderToFinish напрямую. */
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsWaitingForChunkedRenderToFinish() const { return bWaitForChunkedRenderToFinish; }
+
+	/** Включает/выключает режим "ждать разлив" (см. bWaitForChunkedRenderToFinish).
+	 *  Без CallInEditor (в отличие от SetChunkedRenderEnabled) - параметр уже
+	 *  редактируется напрямую как чекбокс, отдельная кнопка с полем bWait
+	 *  только дублировала бы её в Details panel. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetWaitForChunkedRenderToFinish(bool bWait);
 
 	/** Сколько посчитанных поколений пропускать между рендерами: 1 = рендерить
 	 *  каждое (текущее поведение), N>1 - рендерить только каждое N-ое, пока
