@@ -206,6 +206,27 @@ public:
 			  meta = (ClampMin = "0.0"))
 	float CellCullEndDistance = 0.0f;
 
+	/** Мастер-переключатель отсечения по расстоянию - если false,
+	 *  InitializeRenderer() применяет к обоим компонентам (0, 0) вместо
+	 *  CellCullStartDistance/CellCullEndDistance, т.е. полностью отключает
+	 *  SetCullDistances(), НЕ трогая сами значения дистанций - удобно
+	 *  быстро сравнить "с отсечением/без", не теряя подобранные числа.
+	 *  Переключается на лету через хоткей B (см.
+	 *  AGamePlayerController::OnToggleCellCulling()) или Details panel. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	bool bEnableCellCulling = true;
+
+	/** Включено ли сейчас отсечение по расстоянию (см. bEnableCellCulling) -
+	 *  нужно внешнему коду (хоткею B), чтобы решить, на что переключать, не
+	 *  трогая bEnableCellCulling напрямую. */
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsCellCullingEnabled() const { return bEnableCellCulling; }
+
+	/** Включает/выключает отсечение по расстоянию (см. bEnableCellCulling).
+	 *  Без CallInEditor - параметр уже редактируется напрямую как чекбокс. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetCellCullingEnabled(bool bEnabled);
+
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
 	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
 	 *  новую сетку одним кадром, как до появления чанкинга. Никакого
@@ -385,6 +406,13 @@ private:
 	void InitializeHUD();
 	void InitializePlayerController();
 	void InitializeRenderer();
+	/** Пересчитывает и применяет CellCullStartDistance/CellCullEndDistance
+	 *  (или (0, 0), если bEnableCellCulling == false) к обоим CellsMeshFlat/
+	 *  CellsMeshHierarchical через SetCullDistances() - выделено из
+	 *  InitializeRenderer() в отдельную функцию, чтобы SetCellCullingEnabled()
+	 *  (хоткей B) могло применить изменение немедленно, не дожидаясь
+	 *  следующего рендера нового поколения. */
+	void ApplyCellCullDistances();
 	/** InitializeRenderer()+SetMesh/SetMaterial+рендер (чанково или сразу) для
 	 *  текущего Grid - общий код, вызываемый из ApplyStepResult() каждый раз,
 	 *  когда готово новое поколение (в т.ч. когда предыдущий чанковый разлив

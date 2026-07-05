@@ -198,19 +198,101 @@ UInstancedStaticMeshComponent* AAutomataOrchestrator::GetActiveCellsMeshComponen
 		: static_cast<UInstancedStaticMeshComponent*>(CellsMeshFlat);
 }
 
-void AAutomataOrchestrator::InitializeRenderer()
+void AAutomataOrchestrator::ApplyCellCullDistances()
 {
 	// Отсечение по расстоянию (не HLOD - см. doc-comment CellCullEndDistance
 	// в заголовке) применяем к ОБОИМ компонентам одинаково, а не только к
 	// активному - если CellMeshComponentType переключат позже, второй
 	// компонент не должен остаться со старыми (или дефолтными) значениями.
 	// SetCullDistances() сама no-op, если значения не изменились, так что
-	// звать её на каждый рендер дёшево и сразу подхватывает правки в Details
-	// panel, как и SetMesh/SetMaterial ниже.
-	const int32 CullStart = FMath::Max(0, FMath::RoundToInt(CellCullStartDistance));
-	const int32 CullEnd = FMath::Max(0, FMath::RoundToInt(CellCullEndDistance));
+	// звать её лишний раз дёшево. Пока bEnableCellCulling == false -
+	// применяем (0, 0), не трогая сами CellCullStartDistance/CellCullEndDistance,
+	// чтобы выключение хоткеем B не сбрасывало подобранные числа.
+	//
+	// Вынесено из InitializeRenderer() в отдельную функцию: SetCullDistances()
+	// обновляет уже существующий SceneProxy на Render Thread немедленно (см.
+	// UInstancedStaticMeshComponent::SetCullDistances()) - ему не нужен новый
+	// AddInstances()/рендер, чтобы подействовать. Раньше это вызывалось только
+	// изнутри InitializeRenderer() (т.е. только во время следующего рендера
+	// поколения), поэтому переключение bEnableCellCulling хоткеем B, пока
+	// генерация не идёт (например, между Next()/GenerateRandom() и следующим
+	// шагом), визуально не менялось до следующего рендера - выглядело как
+	// "нужно перегенерировать кадр, чтобы отключение подействовало". Теперь
+	// SetCellCullingEnabled() зовёт эту функцию сама, сразу, без ожидания
+	// следующего рендера.
+	const int32 CullStart = bEnableCellCulling ? FMath::Max(0, FMath::RoundToInt(CellCullStartDistance)) : 0;
+	const int32 CullEnd = bEnableCellCulling ? FMath::Max(0, FMath::RoundToInt(CellCullEndDistance)) : 0;
+
+	// Логируем только на фактическое изменение (не на каждый вызов) -
+	// сверяемся с уже применённым значением на компоненте, а не храним
+	// отдельное поле-кэш. Именно это "начало отсечения": сам движок решает,
+	// какие конкретно инстансы не рисовать, каждый кадр и без обратной связи
+	// в C++ - здесь мы можем зафиксировать только момент, когда порог
+	// (Start/End) поменялся, т.е. отсечение включилось/выключилось/сдвинулось.
+	int32 PrevCullStart = 0;
+	int32 PrevCullEnd = 0;
+	CellsMeshHierarchical->GetCullDistances(PrevCullStart, PrevCullEnd);
+	if (PrevCullStart != CullStart || PrevCullEnd != CullEnd)
+	{
+		if (CullEnd > 0)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ApplyCellCullDistances: отсечение клеток по расстоянию включено (Start=%d, End=%d)"), CullStart, CullEnd);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Log, TEXT("ApplyCellCullDistances: отсечение клеток по расстоянию выключено"));
+		}
+	}
+
 	CellsMeshHierarchical->SetCullDistances(CullStart, CullEnd);
 	CellsMeshFlat->SetCullDistances(CullStart, CullEnd);
+
+	// Диагностика для отладки отсечения - пока порог включён (CullEnd > 0),
+	// раз в секунду (не на каждый вызов - при высоком Speed это был бы спам)
+	// печатаем всё, что нужно, чтобы понять, ПОЧЕМУ клетки не отсекаются:
+	// позицию камеры, центр/радиус текущей сетки, реальное расстояние между
+	// ними и то, что фактически осело на компоненте после SetCullDistances()
+	// (не просто то, что мы передали - вдруг движок не принял значение).
+	if (CullEnd > 0)
+	{
+		static double LastCullDebugLogSeconds = 0.0;
+		const double NowSeconds = FPlatformTime::Seconds();
+		if (NowSeconds - LastCullDebugLogSeconds >= 1.0)
+		{
+			LastCullDebugLogSeconds = NowSeconds;
+
+			FVector CameraLocation = FVector::ZeroVector;
+			const bool bHaveCamera = (GamePC != nullptr && GamePC->PlayerCameraManager != nullptr);
+			if (bHaveCamera)
+			{
+				CameraLocation = GamePC->PlayerCameraManager->GetCameraLocation();
+			}
+
+			FVector GridCenter = FVector::ZeroVector;
+			float GridRadius = 0.0f;
+			const bool bHaveBounds = ComputeAliveCellsBounds(GridCenter, GridRadius);
+
+			const float DistanceToCenter = (bHaveCamera && bHaveBounds)
+				? FVector::Dist(CameraLocation, GridCenter)
+				: -1.0f;
+
+			int32 ActualStart = 0;
+			int32 ActualEnd = 0;
+			CellsMeshHierarchical->GetCullDistances(ActualStart, ActualEnd);
+
+			UE_LOG(LogTemp, Log, TEXT("ApplyCellCullDistances: [cull debug] камера=%s (есть=%d), центр сетки=%s радиус=%.1f (есть=%d), расстояние камера-центр=%.1f, задано Start/End=%d/%d, реально на CellsMeshHierarchical Start/End=%d/%d"),
+				*CameraLocation.ToString(), bHaveCamera ? 1 : 0,
+				*GridCenter.ToString(), GridRadius, bHaveBounds ? 1 : 0,
+				DistanceToCenter,
+				CullStart, CullEnd,
+				ActualStart, ActualEnd);
+		}
+	}
+}
+
+void AAutomataOrchestrator::InitializeRenderer()
+{
+	ApplyCellCullDistances();
 
 	UInstancedStaticMeshComponent* DesiredComponent = GetActiveCellsMeshComponent();
 
@@ -566,6 +648,17 @@ void AAutomataOrchestrator::SetWaitForChunkedRenderToFinish(bool bWait)
 {
 	bWaitForChunkedRenderToFinish = bWait;
 	UE_LOG(LogTemp, Log, TEXT("SetWaitForChunkedRenderToFinish: режим ожидания разлива %s"), bWait ? TEXT("включён") : TEXT("выключен"));
+}
+
+void AAutomataOrchestrator::SetCellCullingEnabled(bool bEnabled)
+{
+	bEnableCellCulling = bEnabled;
+	UE_LOG(LogTemp, Log, TEXT("SetCellCullingEnabled: отсечение клеток по расстоянию %s"), bEnabled ? TEXT("включено") : TEXT("выключено"));
+
+	// Применяем немедленно, не дожидаясь следующего рендера (см. doc-comment
+	// ApplyCellCullDistances()) - иначе переключение хоткеем B, пока новое
+	// поколение не рендерится, визуально ничего не меняло до следующего шага.
+	ApplyCellCullDistances();
 }
 
 void AAutomataOrchestrator::AdvanceChunkedRender()

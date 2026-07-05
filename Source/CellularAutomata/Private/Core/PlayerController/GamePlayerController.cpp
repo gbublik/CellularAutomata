@@ -43,6 +43,9 @@ void AGamePlayerController::SetupInputComponent()
 	ToggleWaitForChunkedRenderToFinishAction = NewObject<UInputAction>(this, TEXT("IA_ToggleWaitForChunkedRenderToFinish"));
 	ToggleWaitForChunkedRenderToFinishAction->ValueType = EInputActionValueType::Boolean;
 
+	ToggleCellCullingAction = NewObject<UInputAction>(this, TEXT("IA_ToggleCellCulling"));
+	ToggleCellCullingAction->ValueType = EInputActionValueType::Boolean;
+
 	IncreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseSpeed"));
 	IncreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
 
@@ -68,6 +71,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(ToggleChunkedRenderAction, EKeys::Z);
 	SimulationMappingContext->MapKey(CycleChunkedRenderOrderAction, EKeys::X);
 	SimulationMappingContext->MapKey(ToggleWaitForChunkedRenderToFinishAction, EKeys::V);
+	SimulationMappingContext->MapKey(ToggleCellCullingAction, EKeys::B);
 	// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от того,
 	// есть ли у клавиатуры цифровой блок.
 	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Equals);
@@ -99,6 +103,7 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(ToggleChunkedRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleChunkedRender);
 		EnhancedInputComp->BindAction(CycleChunkedRenderOrderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnCycleChunkedRenderOrder);
 		EnhancedInputComp->BindAction(ToggleWaitForChunkedRenderToFinishAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish);
+		EnhancedInputComp->BindAction(ToggleCellCullingAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleCellCulling);
 		// Triggered - держа +/-, Speed продолжает меняться каждый кадр, а не
 		// только на однократное нажатие (аналогично F/OnStepOnce()).
 		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
@@ -270,6 +275,18 @@ void AGamePlayerController::OnToggleWaitForChunkedRenderToFinish()
 	}
 
 	Orchestrator->SetWaitForChunkedRenderToFinish(!Orchestrator->IsWaitingForChunkedRenderToFinish());
+}
+
+void AGamePlayerController::OnToggleCellCulling()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleCellCulling: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->SetCellCullingEnabled(!Orchestrator->IsCellCullingEnabled());
 }
 
 void AGamePlayerController::OnIncreaseSpeed()

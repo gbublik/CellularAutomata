@@ -105,6 +105,12 @@ protected:
 	 *  дорисуется, и только потом считать/рисовать следующее". */
 	void OnToggleWaitForChunkedRenderToFinish();
 
+	/** Хоткей (B) - переключает AAutomataOrchestrator::bEnableCellCulling
+	 *  через SetCellCullingEnabled()/IsCellCullingEnabled() - включает/
+	 *  выключает отсечение клеток по расстоянию, не трогая подобранные
+	 *  CellCullStartDistance/CellCullEndDistance. */
+	void OnToggleCellCulling();
+
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
 	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
 	void OnIncreaseSpeed();
@@ -156,6 +162,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleWaitForChunkedRenderToFinishAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleCellCullingAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> IncreaseSpeedAction;
