@@ -417,6 +417,13 @@ void AAutomataOrchestrator::RenderSelectionOverlay()
 {
 	EnsureSelectionMeshComponent();
 
+	if (SelectedCells.Num() > 0 && !SelectionMaterial)
+	{
+		// Иначе подсветка молча не рисуется, и выглядит это как "выделение
+		// не работает" - уже кусало при настройке.
+		UE_LOG(LogTemp, Warning, TEXT("RenderSelectionOverlay: SelectionMaterial не назначен - подсветка выделения не будет видна, назначьте материал в Details panel"));
+	}
+
 	if (!Grid || SelectedCells.Num() == 0 || !SelectionMaterial)
 	{
 		SelectionMeshComponent->ClearInstances();
@@ -444,6 +451,9 @@ void AAutomataOrchestrator::RenderSelectionOverlay()
 
 	SelectionRenderer->SetMesh(CellMesh);
 	SelectionRenderer->SetMaterial(SelectionMaterial);
+	// Чуть крупнее обычного кубика - иначе поверхности совпадают и мерцают
+	// (z-fighting), см. doc-comment SelectionScaleMultiplier.
+	SelectionRenderer->SetScaleMultiplier(SelectionScaleMultiplier);
 
 	FFilteredCellGridView SelectionView(*Grid, MoveTemp(AliveSelected));
 	// Всегда одним снимком - выделение всегда маленькое, чанкинг не нужен
@@ -499,6 +509,37 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 		SelectedCells.Num(), *UEnum::GetValueAsString(CombineMode));
 }
 
+void AAutomataOrchestrator::InvertSelection()
+{
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("InvertSelection: сетка не инициализирована"));
+		return;
+	}
+
+	// TSet по текущему выделению - O(1) проверка на каждую живую клетку,
+	// та же причина, что и в Add/Subtract-ветках SelectCellsInScreenRect().
+	const TSet<FIntVector> CurrentlySelected(SelectedCells);
+
+	TArray<FIntVector> AliveCells;
+	Grid->GetAliveCells(AliveCells);
+
+	TArray<FIntVector> Inverted;
+	Inverted.Reserve(FMath::Max(0, AliveCells.Num() - SelectedCells.Num()));
+	for (const FIntVector& Cell : AliveCells)
+	{
+		if (!CurrentlySelected.Contains(Cell))
+		{
+			Inverted.Add(Cell);
+		}
+	}
+
+	SelectedCells = MoveTemp(Inverted);
+	RenderSelectionOverlay();
+
+	UE_LOG(LogTemp, Log, TEXT("InvertSelection: выделено %d клеток (из %d живых)"), SelectedCells.Num(), AliveCells.Num());
+}
+
 void AAutomataOrchestrator::StartFromSelection()
 {
 	// Фоновый шаг (Next()/StepAsync()) в этот момент читает *Grid - замена
@@ -512,7 +553,7 @@ void AAutomataOrchestrator::StartFromSelection()
 
 	if (SelectedCells.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: нет выделенных клеток - сначала выделите что-нибудь мышкой в режиме выделения (C)"));
+		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: нет выделенных клеток - сначала выделите что-нибудь мышкой в режиме выделения (Tab)"));
 		return;
 	}
 

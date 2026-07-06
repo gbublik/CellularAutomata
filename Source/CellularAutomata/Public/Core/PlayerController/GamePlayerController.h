@@ -161,8 +161,8 @@ protected:
 	void OnIncreaseStepsPerRender();
 	void OnDecreaseStepsPerRender();
 
-	/** Хоткей (C) - переключает режим выделения клеток мышкой (см.
-	 *  SetSelectionModeActive()). */
+	/** Хоткей (Tab, изначально была C - перевязана рукой во время тестов) -
+	 *  переключает режим выделения клеток мышкой (см. SetSelectionModeActive()). */
 	void OnToggleSelectionMode();
 
 	/** ЛКМ, Started/Completed - работают только пока bSelectionModeActive.
@@ -180,6 +180,12 @@ protected:
 	/** Хоткей (Enter) - AAutomataOrchestrator::StartFromSelection(), делает
 	 *  выделенные клетки единственным содержимым новой сетки. */
 	void OnExtractSelection();
+
+	/** Хоткей (I) - AAutomataOrchestrator::InvertSelection(), инвертирует
+	 *  выделение относительно живых клеток. Как и Enter, не гейтится на
+	 *  bSelectionModeActive - выделение существует независимо от того,
+	 *  включён ли сейчас режим мышиного выделения. */
+	void OnInvertSelection();
 
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
@@ -234,6 +240,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ExtractSelectionAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> InvertSelectionAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;

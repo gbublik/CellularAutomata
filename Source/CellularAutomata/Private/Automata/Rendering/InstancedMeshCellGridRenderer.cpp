@@ -23,6 +23,11 @@ void FInstancedMeshCellGridRenderer::SetMaterial(UMaterialInterface* InMaterial)
 	Material = InMaterial;
 }
 
+void FInstancedMeshCellGridRenderer::SetScaleMultiplier(float InScaleMultiplier)
+{
+	ScaleMultiplier = InScaleMultiplier;
+}
+
 void FInstancedMeshCellGridRenderer::Render(const FCellGrid& Grid)
 {
 	// Order/CameraLocation не влияют на однократный Render() - весь массив
@@ -79,6 +84,9 @@ void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid, EChunked
 			InstanceScale = FVector(Grid.GetCellSize()) / MeshSize;
 		}
 	}
+	// Поверх точной подгонки под CellSize - см. SetScaleMultiplier() (1.0
+	// для обычных клеток, чуть больше для подсветки выделения).
+	InstanceScale *= ScaleMultiplier;
 	LastTimings.ScaleSeconds = FPlatformTime::Seconds() - ScaleStartSeconds;
 
 	const double GetAliveStartSeconds = FPlatformTime::Seconds();

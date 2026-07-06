@@ -162,6 +162,14 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
 	void StartFromSelection();
 
+	/** Инвертирует текущее выделение относительно живых клеток (хоткей I):
+	 *  выделенные становятся невыделенными, все остальные живые - выделенными.
+	 *  Пустое выделение после инверсии = "выделить всё" - это осознанно
+	 *  (стандартная семантика инверсии), а не ошибка. Сразу перерисовывает
+	 *  подсветку, как и SelectCellsInScreenRect(). */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
+	void InvertSelection();
+
 	/** Хоткей R: если StartFromSelection() уже извлекал паттерн ранее
 	 *  (InitialStateCells непуст), пересоздаёт сетку заново из ЭТОГО
 	 *  сохранённого набора клеток (возраст снова сброшен в 0) - то есть R
@@ -177,6 +185,16 @@ public:
 	 *  SelectionRenderer), рисуется тем же CellMesh, что и обычные клетки. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Selection")
 	UMaterialInterface* SelectionMaterial = nullptr;
+
+	/** Во сколько раз кубик подсветки выделения крупнее обычного кубика
+	 *  клетки. Ровно 1.0 нельзя: кубик подсветки тогда совпадает с обычным
+	 *  поверхность-в-поверхность и мерцает (z-fighting) - поэтому по
+	 *  умолчанию 1.1: подсветка обволакивает клетку и видна с любого угла.
+	 *  Читается заново на каждый RenderSelectionOverlay(), без кэширования -
+	 *  как и остальные параметры рендера. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Selection",
+			  meta = (ClampMin = "1.0", UIMax = "1.5"))
+	float SelectionScaleMultiplier = 1.1f;
 
 	/** Скорость симуляции (шагов в секунду) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata",

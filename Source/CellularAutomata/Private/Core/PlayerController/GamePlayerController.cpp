@@ -69,6 +69,9 @@ void AGamePlayerController::SetupInputComponent()
 	ExtractSelectionAction = NewObject<UInputAction>(this, TEXT("IA_ExtractSelection"));
 	ExtractSelectionAction->ValueType = EInputActionValueType::Boolean;
 
+	InvertSelectionAction = NewObject<UInputAction>(this, TEXT("IA_InvertSelection"));
+	InvertSelectionAction->ValueType = EInputActionValueType::Boolean;
+
 	// P (пауза) намеренно не маппится сюда - см. InputKey() ниже, она
 	// перехватывается на уровне сырых оконных событий в обход Enhanced Input.
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
@@ -93,6 +96,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(ToggleSelectionModeAction, EKeys::Tab);
 	SimulationMappingContext->MapKey(SelectDragAction, EKeys::LeftMouseButton);
 	SimulationMappingContext->MapKey(ExtractSelectionAction, EKeys::Enter);
+	SimulationMappingContext->MapKey(InvertSelectionAction, EKeys::I);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -128,6 +132,7 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSelectDragStarted);
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSelectDragFinished);
 		EnhancedInputComp->BindAction(ExtractSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnExtractSelection);
+		EnhancedInputComp->BindAction(InvertSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnInvertSelection);
 	}
 }
 
@@ -523,6 +528,18 @@ void AGamePlayerController::OnExtractSelection()
 	}
 
 	Orchestrator->StartFromSelection();
+}
+
+void AGamePlayerController::OnInvertSelection()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnInvertSelection: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->InvertSelection();
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

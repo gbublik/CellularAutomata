@@ -37,6 +37,14 @@ public:
 	void SetMesh(UStaticMesh* InMesh);
 	void SetMaterial(UMaterialInterface* InMaterial);
 
+	/** Дополнительный множитель поверх масштаба "подогнать меш под CellSize"
+	 *  (см. BeginRender()). 1.0 (по умолчанию) - инстанс ровно в размер
+	 *  клетки, как всегда и было. Нужен рендереру подсветки выделения:
+	 *  кубик того же размера в том же месте, что и обычный кубик клетки,
+	 *  даёт z-fighting (мерцание двух совпадающих поверхностей) - множитель
+	 *  чуть больше 1 обволакивает обычный кубик и виден с любого угла. */
+	void SetScaleMultiplier(float InScaleMultiplier);
+
 	virtual void Render(const FCellGrid& Grid) override;
 
 	/** Готовит трансформы для Grid и один раз чистит компонент, но не
@@ -70,6 +78,8 @@ private:
 	TWeakObjectPtr<UInstancedStaticMeshComponent> Component;
 	TWeakObjectPtr<UStaticMesh> Mesh;
 	TWeakObjectPtr<UMaterialInterface> Material;
+	/** См. SetScaleMultiplier(). */
+	float ScaleMultiplier = 1.0f;
 	FRenderTimings LastTimings;
 
 	/** Трансформы, построенные последним BeginRender() - AdvanceRenderChunk()
