@@ -467,6 +467,15 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 
 void AAutomataOrchestrator::StartFromSelection()
 {
+	// Фоновый шаг (Next()/StepAsync()) в этот момент читает *Grid - замена
+	// сетки у него под ногами разыменует освобождённую память. Тот же guard,
+	// что и в Next()/GenerateRandom()/ResetToInitialState().
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: фоновый шаг ещё считается - подождите его завершения"));
+		return;
+	}
+
 	if (SelectedCells.Num() == 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: нет выделенных клеток - сначала выделите что-нибудь мышкой в режиме выделения (C)"));
@@ -724,23 +733,75 @@ void AAutomataOrchestrator::Next()
 	// SurvivalCounts/Neighborhood в Details panel подхватывались немедленно
 	// (аналогично тому, как GenerateRandom() каждый раз пересоздаёт Grid,
 	// а не кэширует его)
-	const FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
-	const TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
+	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
+	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 
-	TUniquePtr<FCellGrid> NextGrid = CreateGrid();
+	// Ручной шаг считает StepsPerRender поколений за одно нажатие (то же
+	// значение, что крутится хоткеями T/G) и рендерит только итоговое -
+	// промежуточные поколения на экран не попадают, ровно как поколения,
+	// пропускаемые StepsPerRender'ом в непрерывном Play. При
+	// StepsPerRender == 1 поведение прежнее: один шаг - один рендер.
+	const int32 NumSteps = FMath::Max(1, StepsPerRender);
 
-	const double StepStartSeconds = FPlatformTime::Seconds();
-	ComputeStrategy->Step(*Grid, *NextGrid, AutomatonRule);
-	CellAging::ComputeAges(Grid.Get(), *NextGrid);
-	const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
+	// Счёт уходит в фоновый пул потоков, как и в StepAsync() - раньше Next()
+	// считал синхронно на game thread, и с NumSteps > 1 нажатие F замораживало
+	// экран на всё время счёта (в Play такого нет именно потому, что там счёт
+	// фоновый). Промежуточные буферы поколений создаются уже в фоне, поэтому
+	// CellSize/ChunkSize (UPROPERTY, могут править в Details panel) снимаем
+	// здесь - фоновый поток не должен их читать.
+	const float CellSizeSnapshot = CellSize;
+	const int32 ChunkSizeSnapshot = ChunkSize;
 
-	Grid = MoveTemp(NextGrid);
-	SelectedCells.Reset();
+	bStepInProgress = true;
 
-	RenderGridImmediate();
+	FCellGrid* CurrentGridPtr = Grid.Get();
+	TWeakObjectPtr<AAutomataOrchestrator> WeakThis(this);
 
-	UE_LOG(LogTemp, Log, TEXT("Next: живых клеток %d после шага (шаг: %.2f мс)"),
-		Grid->Num(), StepSeconds * 1000.0);
+	// Сырой указатель на *Grid без защиты времени жизни - как и в StepAsync(),
+	// EndPlay() дожидается PendingStepFuture перед разрушением актора, а все
+	// остальные пути замены Grid отказываются работать при bStepInProgress.
+	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
+		[AutomatonRule = MoveTemp(AutomatonRule), ComputeStrategy = MoveTemp(ComputeStrategy),
+		 CurrentGridPtr, WeakThis, NumSteps, CellSizeSnapshot, ChunkSizeSnapshot]() mutable
+		{
+			const double StepStartSeconds = FPlatformTime::Seconds();
+
+			TUniquePtr<FCellGrid> ResultGrid;
+			const FCellGrid* SourceGrid = CurrentGridPtr;
+			for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
+			{
+				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot);
+				ComputeStrategy->Step(*SourceGrid, *NextGrid, AutomatonRule);
+				CellAging::ComputeAges(SourceGrid, *NextGrid);
+				ResultGrid = MoveTemp(NextGrid);
+				SourceGrid = ResultGrid.Get();
+			}
+
+			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
+
+			// Grid/рендер трогаем только на game thread (см. StepAsync()).
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, NumSteps]() mutable
+			{
+				AAutomataOrchestrator* StrongThis = WeakThis.Get();
+				if (!StrongThis)
+				{
+					return;
+				}
+
+				StrongThis->Grid = MoveTemp(ResultGrid);
+				StrongThis->SelectedCells.Reset();
+				StrongThis->bStepInProgress = false;
+
+				// Всегда немедленно и целиком, в отличие от ApplyStepResult() -
+				// ручной шаг игнорирует и bEnableChunkedRender, и счётчик
+				// StepsSinceLastRender (пропуск рендера здесь уже "прожит"
+				// самим циклом NumSteps выше).
+				StrongThis->RenderGridImmediate();
+
+				UE_LOG(LogTemp, Log, TEXT("Next: живых клеток %d после %d шаг(ов) (счёт: %.2f мс [фоновый поток])"),
+					StrongThis->Grid->Num(), NumSteps, StepSeconds * 1000.0);
+			});
+		});
 }
 
 void AAutomataOrchestrator::StepAsync()

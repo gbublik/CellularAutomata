@@ -117,7 +117,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	bool ComputeAliveCellsBounds(FVector& OutCenter, float& OutRadius) const;
 
-	/** Выполнить один шаг симуляции */
+	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
+	 *  поколений подряд (то же значение, что крутится хоткеями T/G) и
+	 *  рендерит только итоговое, одним снимком - при StepsPerRender == 1
+	 *  это прежний одиночный шаг. */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void Next();
 	
