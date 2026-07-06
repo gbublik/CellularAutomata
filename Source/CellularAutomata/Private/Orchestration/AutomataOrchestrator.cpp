@@ -14,6 +14,8 @@
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Automata/Selection/CellSelection.h"
+#include "Automata/Meshing/CellMeshBuilder.h"
+#include "ProceduralMeshComponent.h"
 #include "Async/Async.h"
 
 
@@ -540,6 +542,130 @@ void AAutomataOrchestrator::InvertSelection()
 	UE_LOG(LogTemp, Log, TEXT("InvertSelection: выделено %d клеток (из %d живых)"), SelectedCells.Num(), AliveCells.Num());
 }
 
+void AAutomataOrchestrator::EnsureBakedMeshComponent()
+{
+	if (BakedMeshComponent)
+	{
+		return;
+	}
+
+	BakedMeshComponent = NewObject<UProceduralMeshComponent>(this);
+	BakedMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	BakedMeshComponent->SetupAttachment(CellsMeshHierarchical);
+	BakedMeshComponent->RegisterComponent();
+}
+
+void AAutomataOrchestrator::ClearBakedMesh()
+{
+	if (BakedMeshComponent)
+	{
+		BakedMeshComponent->ClearAllMeshSections();
+	}
+}
+
+void AAutomataOrchestrator::BakeCellsToMesh()
+{
+	// Мы освобождаем Grid ниже - фоновый шаг (Next()/StepAsync()) в этот
+	// момент его читает, тот же guard, что у всех путей замены Grid.
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: фоновый шаг ещё считается - подождите его завершения"));
+		return;
+	}
+
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: сетка не инициализирована"));
+		return;
+	}
+
+	// Снимок несовместим с продолжением симуляции (сетки после него уже
+	// нет) - останавливаем и Play, и автошаг Shift+F, если шли.
+	if (bSimulationRunning)
+	{
+		Stop();
+	}
+	if (bFastStepActive)
+	{
+		StopFastStep();
+	}
+
+	// Есть активное выделение - запекаем только его (отфильтрованное до
+	// реально живых, как в StartFromSelection()); иначе все живые клетки.
+	TArray<FIntVector> CellsToBake;
+	if (SelectedCells.Num() > 0)
+	{
+		CellsToBake.Reserve(SelectedCells.Num());
+		for (const FIntVector& Cell : SelectedCells)
+		{
+			if (Grid->IsAlive(Cell))
+			{
+				CellsToBake.Add(Cell);
+			}
+		}
+	}
+	else
+	{
+		Grid->GetAliveCells(CellsToBake);
+	}
+
+	if (CellsToBake.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: нечего запекать - нет ни выделенных, ни живых клеток"));
+		return;
+	}
+
+	UMaterialInterface* MeshMaterial = BakedMeshMaterial;
+	if (!MeshMaterial && AgeMaterials.Num() > 0)
+	{
+		MeshMaterial = AgeMaterials[0];
+		UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: BakedMeshMaterial не назначен - использую AgeMaterials[0]"));
+	}
+
+	const double BakeStartSeconds = FPlatformTime::Seconds();
+	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(*Grid, CellsToBake);
+	const double BuildSeconds = FPlatformTime::Seconds() - BakeStartSeconds;
+
+	EnsureBakedMeshComponent();
+	BakedMeshComponent->ClearAllMeshSections();
+	const double SectionStartSeconds = FPlatformTime::Seconds();
+	BakedMeshComponent->CreateMeshSection_LinearColor(0, MeshData.Vertices, MeshData.Triangles, MeshData.Normals, MeshData.UVs,
+		TArray<FLinearColor>(), TArray<FProcMeshTangent>(), /*bCreateCollision=*/false);
+	if (MeshMaterial)
+	{
+		BakedMeshComponent->SetMaterial(0, MeshMaterial);
+	}
+	const double SectionSeconds = FPlatformTime::Seconds() - SectionStartSeconds;
+
+	// Выгрузка: инстансы всех клеточных компонентов и сама сетка. Флаги
+	// чанкового разлива сбрасываем тоже - иначе недоигранный разлив
+	// (AdvanceChunkedRender() в Tick()) досыпал бы инстансы обратно уже
+	// ПОСЛЕ очистки.
+	for (UInstancedStaticMeshComponent* AgeComponent : AgeMeshComponents)
+	{
+		if (AgeComponent)
+		{
+			AgeComponent->ClearInstances();
+		}
+	}
+	if (SelectionMeshComponent)
+	{
+		SelectionMeshComponent->ClearInstances();
+	}
+	if (UInstancedStaticMeshComponent* BaseComponent = GetActiveCellsMeshComponent())
+	{
+		BaseComponent->ClearInstances();
+	}
+	bChunkedRenderInProgress = false;
+	SelectedCells.Reset();
+	// InitialStateCells намеренно НЕ трогаем - R после осмотра снимка
+	// вернёт извлечённый паттерн, если он был (см. ResetToInitialState()).
+	Grid.Reset();
+
+	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: %d клеток -> %d вершин / %d треугольников (геометрия: %.2f мс, секция: %.2f мс); сетка и инстансы выгружены, R начнёт новый прогон"),
+		CellsToBake.Num(), MeshData.Vertices.Num(), MeshData.Triangles.Num() / 3, BuildSeconds * 1000.0, SectionSeconds * 1000.0);
+}
+
 void AAutomataOrchestrator::StartFromSelection()
 {
 	// Фоновый шаг (Next()/StepAsync()) в этот момент читает *Grid - замена
@@ -592,6 +718,9 @@ void AAutomataOrchestrator::StartFromSelection()
 	Grid = MoveTemp(NewGrid);
 	SelectedCells.Reset();
 	StepsSinceLastRender = 0;
+	// Новый прогон убирает запечённый меш-снимок, если он был (см.
+	// BakeCellsToMesh()) - как и в GenerateRandom()/ResetToInitialState().
+	ClearBakedMesh();
 
 	if (GamePC)
 	{
@@ -630,6 +759,10 @@ void AAutomataOrchestrator::ResetToInitialState()
 		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
 		return;
 	}
+
+	// Новый прогон убирает запечённый меш-снимок, если он был (см.
+	// BakeCellsToMesh()) - как и в GenerateRandom().
+	ClearBakedMesh();
 
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
@@ -721,6 +854,10 @@ void AAutomataOrchestrator::GenerateRandom()
 		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
 		return;
 	}
+
+	// Новый прогон убирает запечённый меш-снимок, если он был (см.
+	// BakeCellsToMesh()) - иначе новые клетки рисовались бы сквозь него.
+	ClearBakedMesh();
 
 	// GenerateRandom() всегда генерирует новое состояние с нуля и подхватывает
 	// актуальный CellSize, если его поменяли в Details panel

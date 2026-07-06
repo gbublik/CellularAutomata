@@ -17,6 +17,7 @@
 
 class UInstancedStaticMeshComponent;
 class UHierarchicalInstancedStaticMeshComponent;
+class UProceduralMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
 class FCellularAutomatonComputeStrategy;
@@ -161,6 +162,24 @@ public:
 	 *  ResetToInitialState() (хоткей R). */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
 	void StartFromSelection();
+
+	/** Запекает текущее состояние в один цельный меш (хоткей M): только
+	 *  наружные грани (face culling, см. CellMeshBuilder::BuildFromCells()),
+	 *  внутренность полая. Если есть активное выделение (SelectedCells) -
+	 *  запекается только оно, иначе все живые клетки. После запекания
+	 *  инстансы-кубики И САМА СЕТКА выгружаются из памяти (Grid.Reset()) -
+	 *  это снимок-"скульптура" для осмотра больших областей, продолжить
+	 *  симуляцию с него нельзя; R (ResetToInitialState()) убирает меш и
+	 *  начинает новый прогон. Play/автошаг останавливаются принудительно.
+	 *  Материал - BakedMeshMaterial, при неназначенном - фолбэк на
+	 *  AgeMaterials[0]. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Baking")
+	void BakeCellsToMesh();
+
+	/** Материал запечённого меша (см. BakeCellsToMesh()). Не обязателен -
+	 *  если не назначен, берётся AgeMaterials[0] (старейший), с логом. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Baking")
+	UMaterialInterface* BakedMeshMaterial = nullptr;
 
 	/** Инвертирует текущее выделение относительно живых клеток (хоткей I):
 	 *  выделенные становятся невыделенными, все остальные живые - выделенными.
@@ -547,6 +566,22 @@ private:
 	 *  обращении, если их ещё нет - вызывается из BeginPlay()/OnConstruction()
 	 *  и защитно в начале RenderSelectionOverlay(). */
 	void EnsureSelectionMeshComponent();
+
+	/** Меш-снимок BakeCellsToMesh() (хоткей M). Создаётся лениво
+	 *  (EnsureBakedMeshComponent()), один раз. UPROPERTY - та же причина,
+	 *  что у GamePC/SelectionMeshComponent (переживает реинстансинг Live
+	 *  Coding). */
+	UPROPERTY(Transient)
+	UProceduralMeshComponent* BakedMeshComponent = nullptr;
+
+	/** Создаёт BakedMeshComponent при первом обращении - зеркалит
+	 *  EnsureSelectionMeshComponent(). */
+	void EnsureBakedMeshComponent();
+
+	/** Убирает запечённый меш-снимок, если он есть - вызывается в начале
+	 *  GenerateRandom()/ResetToInitialState()/StartFromSelection(): новый
+	 *  прогон не должен рисоваться сквозь/поверх старого снимка. */
+	void ClearBakedMesh();
 
 	/** Рендерит SelectedCells (отфильтрованные до реально живых - на случай
 	 *  рассинхрона) через SelectionRenderer с материалом SelectionMaterial,

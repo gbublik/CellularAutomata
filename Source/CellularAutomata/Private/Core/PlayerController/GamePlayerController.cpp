@@ -72,6 +72,9 @@ void AGamePlayerController::SetupInputComponent()
 	InvertSelectionAction = NewObject<UInputAction>(this, TEXT("IA_InvertSelection"));
 	InvertSelectionAction->ValueType = EInputActionValueType::Boolean;
 
+	BakeCellsToMeshAction = NewObject<UInputAction>(this, TEXT("IA_BakeCellsToMesh"));
+	BakeCellsToMeshAction->ValueType = EInputActionValueType::Boolean;
+
 	// P (пауза) намеренно не маппится сюда - см. InputKey() ниже, она
 	// перехватывается на уровне сырых оконных событий в обход Enhanced Input.
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
@@ -97,6 +100,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(SelectDragAction, EKeys::LeftMouseButton);
 	SimulationMappingContext->MapKey(ExtractSelectionAction, EKeys::Enter);
 	SimulationMappingContext->MapKey(InvertSelectionAction, EKeys::I);
+	SimulationMappingContext->MapKey(BakeCellsToMeshAction, EKeys::M);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -133,6 +137,7 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSelectDragFinished);
 		EnhancedInputComp->BindAction(ExtractSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnExtractSelection);
 		EnhancedInputComp->BindAction(InvertSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnInvertSelection);
+		EnhancedInputComp->BindAction(BakeCellsToMeshAction, ETriggerEvent::Started, this, &AGamePlayerController::OnBakeCellsToMesh);
 	}
 }
 
@@ -540,6 +545,18 @@ void AGamePlayerController::OnInvertSelection()
 	}
 
 	Orchestrator->InvertSelection();
+}
+
+void AGamePlayerController::OnBakeCellsToMesh()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnBakeCellsToMesh: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->BakeCellsToMesh();
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

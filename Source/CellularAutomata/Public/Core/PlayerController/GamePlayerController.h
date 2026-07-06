@@ -187,6 +187,11 @@ protected:
 	 *  включён ли сейчас режим мышиного выделения. */
 	void OnInvertSelection();
 
+	/** Хоткей (M) - AAutomataOrchestrator::BakeCellsToMesh(), запекает
+	 *  текущее состояние (или выделение, если оно есть) в один цельный меш
+	 *  и выгружает клетки из памяти - снимок-"скульптура" для осмотра. */
+	void OnBakeCellsToMesh();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. Пауза (P) больше не среди них - см. InputKey(). */
@@ -243,6 +248,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> InvertSelectionAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> BakeCellsToMeshAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;

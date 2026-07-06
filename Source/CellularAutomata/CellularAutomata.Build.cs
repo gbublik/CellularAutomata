@@ -23,7 +23,10 @@ public class CellularAutomata : ModuleRules
 		});
 		// RHI/RenderCore - для FGpuComputeStrategy (RDG compute shader dispatch,
 		// см. Automata/Simulation/ComputeStrategy/GpuComputeStrategy.cpp).
-		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput", "RHI", "RenderCore" });
+		// ProceduralMeshComponent - для BakeCellsToMesh() (запекание клеток в
+		// цельный меш, см. Automata/Meshing/CellMeshBuilder и
+		// AAutomataOrchestrator::BakedMeshComponent).
+		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput", "RHI", "RenderCore", "ProceduralMeshComponent" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
