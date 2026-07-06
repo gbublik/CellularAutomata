@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Automata/Selection/SelectionCombineMode.h"
 #include "GamePlayerController.generated.h"
 
 /**
@@ -165,11 +166,14 @@ protected:
 	void OnToggleSelectionMode();
 
 	/** ЛКМ, Started/Completed - работают только пока bSelectionModeActive.
-	 *  OnSelectDragStarted() запоминает экранную точку старта драга;
-	 *  OnSelectDragFinished() строит итоговый прямоугольник (старт vs.
-	 *  текущая позиция мыши) и передаёт его в AAutomataOrchestrator::
-	 *  SelectCellsInScreenRect() вместе с матрицей вида-проекции, посчитанной
-	 *  один раз на всю операцию (не на клетку). */
+	 *  OnSelectDragStarted() запоминает экранную точку старта драга и снимает
+	 *  зажатый модификатор (Shift - добавить к выделению, Ctrl - убрать из
+	 *  него, без модификатора - заменить, см. ESelectionCombineMode) в
+	 *  PendingSelectionCombineMode; OnSelectDragFinished() строит итоговый
+	 *  прямоугольник (старт vs. текущая позиция мыши) и передаёт его вместе с
+	 *  этим режимом в AAutomataOrchestrator::SelectCellsInScreenRect() вместе
+	 *  с матрицей вида-проекции, посчитанной один раз на всю операцию (не на
+	 *  клетку). */
 	void OnSelectDragStarted();
 	void OnSelectDragFinished();
 
@@ -242,6 +246,12 @@ protected:
 	/** Экранная точка старта текущего драг-выделения (пиксели, viewport-
 	 *  relative), зафиксированная в OnSelectDragStarted(). */
 	FVector2D DragStartScreenPos = FVector2D::ZeroVector;
+
+	/** Режим комбинирования текущего драг-выделения с уже выделенным (Shift -
+	 *  добавить, Ctrl - убрать, иначе заменить) - снимается по зажатым
+	 *  модификаторам в момент старта драга (OnSelectDragStarted()), а не
+	 *  отпускания, и передаётся в SelectCellsInScreenRect() на mouse-up. */
+	ESelectionCombineMode PendingSelectionCombineMode = ESelectionCombineMode::Replace;
 
 	/** true между OnToggleSelectionMode()-включением и выключением - гейтит
 	 *  OnSelectDragStarted()/OnSelectDragFinished(), чтобы ЛКМ не запускала

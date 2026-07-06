@@ -10,6 +10,7 @@
 #include "Automata/Grid/CellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Rendering/ChunkedRenderOrder.h"
+#include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
@@ -138,13 +139,15 @@ public:
 
 	/** Выбирает живые клетки, чья экранная проекция попадает в прямоугольник
 	 *  [RectMin, RectMax] (без ограничения по глубине - см. CellSelection::
-	 *  SelectCellsInScreenRect()), кладёт результат в SelectedCells и сразу
-	 *  перерисовывает подсветку (RenderSelectionOverlay()), не дожидаясь
-	 *  следующего шага симуляции. Матрицу вида-проекции строит вызывающий код
+	 *  SelectCellsInScreenRect()), комбинирует результат с текущим SelectedCells
+	 *  по CombineMode (заменить/добавить/убрать - Shift/Ctrl-модификаторы
+	 *  драга, см. ESelectionCombineMode) и сразу перерисовывает подсветку
+	 *  (RenderSelectionOverlay()), не дожидаясь следующего шага симуляции.
+	 *  Матрицу вида-проекции строит вызывающий код
 	 *  (AGamePlayerController::OnSelectDragFinished()) один раз на всю
 	 *  операцию, не на клетку. */
 	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
-	void SelectCellsInScreenRect(const FMatrix& ViewProjectionMatrix, const FVector2D& ViewportSize, const FVector2D& RectMin, const FVector2D& RectMax);
+	void SelectCellsInScreenRect(const FMatrix& ViewProjectionMatrix, const FVector2D& ViewportSize, const FVector2D& RectMin, const FVector2D& RectMax, ESelectionCombineMode CombineMode = ESelectionCombineMode::Replace);
 
 	/** Делает клетки из SelectedCells единственным содержимым новой сетки
 	 *  (возраст сброшен - как только что родившиеся) и выходит из режима

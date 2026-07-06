@@ -445,6 +445,21 @@ void AGamePlayerController::OnSelectDragStarted()
 	{
 		DragStartScreenPos = FVector2D(MouseX, MouseY);
 		bIsDraggingSelection = true;
+
+		// Модификатор снимается в момент старта драга, не отпускания (как в
+		// большинстве редакторов) - Ctrl приоритетнее Shift, если зажаты оба.
+		if (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))
+		{
+			PendingSelectionCombineMode = ESelectionCombineMode::Subtract;
+		}
+		else if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+		{
+			PendingSelectionCombineMode = ESelectionCombineMode::Add;
+		}
+		else
+		{
+			PendingSelectionCombineMode = ESelectionCombineMode::Replace;
+		}
 	}
 }
 
@@ -495,7 +510,7 @@ void AGamePlayerController::OnSelectDragFinished()
 	const FMatrix ViewProjectionMatrix = ProjectionData.ComputeViewProjectionMatrix();
 	const FVector2D ViewportSize(ProjectionData.GetConstrainedViewRect().Width(), ProjectionData.GetConstrainedViewRect().Height());
 
-	Orchestrator->SelectCellsInScreenRect(ViewProjectionMatrix, ViewportSize, RectMin, RectMax);
+	Orchestrator->SelectCellsInScreenRect(ViewProjectionMatrix, ViewportSize, RectMin, RectMax, PendingSelectionCombineMode);
 }
 
 void AGamePlayerController::OnExtractSelection()
