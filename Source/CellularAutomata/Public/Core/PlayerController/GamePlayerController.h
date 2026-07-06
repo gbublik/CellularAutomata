@@ -37,6 +37,13 @@ public:
 
 	virtual void BeginPlay() override;
 
+	/** Перехватывает P на уровне сырых оконных событий, в обход Enhanced
+	 *  Input - см. подробный комментарий в реализации: при лагах (тяжёлый
+	 *  AddInstances/перестройка HISM-дерева на игровом потоке) короткое
+	 *  нажатие+отпускание P может целиком уместиться между двумя выборками
+	 *  состояния Enhanced Input за кадр и никогда не сработать. */
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
+
 protected:
 	bool bCanLookAround = false;
 
@@ -172,10 +179,7 @@ protected:
 
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
-	 *  отдельные .uasset. */
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleSimulationAction;
-
+	 *  отдельные .uasset. Пауза (P) больше не среди них - см. InputKey(). */
 	UPROPERTY()
 	TObjectPtr<class UInputAction> FastStepAction;
 

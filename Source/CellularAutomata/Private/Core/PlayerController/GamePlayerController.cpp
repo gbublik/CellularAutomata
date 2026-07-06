@@ -18,9 +18,6 @@ void AGamePlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 
-	ToggleSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ToggleSimulation"));
-	ToggleSimulationAction->ValueType = EInputActionValueType::Boolean;
-
 	FastStepAction = NewObject<UInputAction>(this, TEXT("IA_FastStep"));
 	FastStepAction->ValueType = EInputActionValueType::Boolean;
 
@@ -72,8 +69,9 @@ void AGamePlayerController::SetupInputComponent()
 	ExtractSelectionAction = NewObject<UInputAction>(this, TEXT("IA_ExtractSelection"));
 	ExtractSelectionAction->ValueType = EInputActionValueType::Boolean;
 
+	// P (пауза) намеренно не маппится сюда - см. InputKey() ниже, она
+	// перехватывается на уровне сырых оконных событий в обход Enhanced Input.
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
-	SimulationMappingContext->MapKey(ToggleSimulationAction, EKeys::P);
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
 	SimulationMappingContext->MapKey(ResetSimulationAction, EKeys::R);
 	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
@@ -92,7 +90,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(FrameAllCellsAction, EKeys::Home);
 	SimulationMappingContext->MapKey(IncreaseStepsPerRenderAction, EKeys::T);
 	SimulationMappingContext->MapKey(DecreaseStepsPerRenderAction, EKeys::G);
-	SimulationMappingContext->MapKey(ToggleSelectionModeAction, EKeys::C);
+	SimulationMappingContext->MapKey(ToggleSelectionModeAction, EKeys::Tab);
 	SimulationMappingContext->MapKey(SelectDragAction, EKeys::LeftMouseButton);
 	SimulationMappingContext->MapKey(ExtractSelectionAction, EKeys::Enter);
 
@@ -103,7 +101,6 @@ void AGamePlayerController::SetupInputComponent()
 
 	if (UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent))
 	{
-		EnhancedInputComp->BindAction(ToggleSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSimulation);
 		// Started/Completed (не Triggered) - F теперь тумблер (обычное
 		// нажатие) или hold-режим (Shift+F), а не "срабатывает каждый кадр,
 		// пока зажата", как раньше.
@@ -132,6 +129,27 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSelectDragFinished);
 		EnhancedInputComp->BindAction(ExtractSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnExtractSelection);
 	}
+}
+
+bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+	// Enhanced Input оценивает свои триггеры (Started/Triggered/...) раз за
+	// кадр, по текущему состоянию клавиши "нажата сейчас или нет" - если
+	// игровой поток лагает (тяжёлый AddInstances/перестройка HISM-дерева при
+	// большом числе клеток), один кадр может растянуться настолько, что
+	// короткое нажатие+отпускание P целиком уместится между двумя такими
+	// выборками и не будет замечено вообще - пауза "не срабатывает", и чем
+	// сильнее лаг, тем чаще. InputKey() же вызывается немедленно на каждое
+	// оконное сообщение (WM_KEYDOWN/WM_KEYUP), независимо от длины кадра, до
+	// периодической выборки Enhanced Input - поэтому пауза обрабатывается
+	// здесь напрямую, в обход маппинга. IE_Pressed (не IE_Repeat) - как и
+	// раньше, срабатывает один раз на нажатие, не повторяется при удержании.
+	if (Params.Key == EKeys::P && Params.Event == IE_Pressed)
+	{
+		OnToggleSimulation();
+	}
+
+	return Super::InputKey(Params);
 }
 
 void AGamePlayerController::OnToggleSimulation()
