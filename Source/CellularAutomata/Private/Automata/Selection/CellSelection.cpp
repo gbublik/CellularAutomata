@@ -50,3 +50,84 @@ TArray<FIntVector> CellSelection::SelectCellsInScreenRect(
 	}
 	return Result;
 }
+
+bool CellSelection::PickCellAlongRay(
+	const FCellGrid& Grid,
+	const FVector& RayOrigin,
+	const FVector& RayDirection,
+	double MaxDistance,
+	FIntVector& OutCell)
+{
+	const double CellSize = Grid.GetCellSize();
+	if (CellSize <= 0.0 || MaxDistance <= 0.0)
+	{
+		return false;
+	}
+
+	const FVector Direction = RayDirection.GetSafeNormal();
+	if (Direction.IsNearlyZero())
+	{
+		return false;
+	}
+
+	// Переходим в клеточное пространство: GridToWorld() по умолчанию даёт
+	// Cell * CellSize как ЦЕНТР клетки, т.е. клетка i занимает
+	// [i - 0.5, i + 0.5) в этих координатах - границы клеток на полуцелых.
+	const FVector Position = RayOrigin / CellSize;
+
+	FIntVector Cell(
+		FMath::RoundToInt(Position.X),
+		FMath::RoundToInt(Position.Y),
+		FMath::RoundToInt(Position.Z));
+
+	// Классический Amanatides-Woo: для каждой оси - расстояние вдоль луча до
+	// ближайшего пересечения границы клетки (TMax) и шаг расстояния между
+	// последовательными границами этой оси (TDelta). На каждой итерации
+	// продвигаемся по оси с наименьшим TMax.
+	FIntVector StepSign(0, 0, 0);
+	FVector TMax(TNumericLimits<double>::Max(), TNumericLimits<double>::Max(), TNumericLimits<double>::Max());
+	FVector TDelta(TNumericLimits<double>::Max(), TNumericLimits<double>::Max(), TNumericLimits<double>::Max());
+
+	for (int32 Axis = 0; Axis < 3; ++Axis)
+	{
+		if (FMath::IsNearlyZero(Direction[Axis]))
+		{
+			continue;
+		}
+
+		StepSign[Axis] = Direction[Axis] > 0.0 ? 1 : -1;
+		const double NextBoundary = Cell[Axis] + StepSign[Axis] * 0.5;
+		TMax[Axis] = (NextBoundary - Position[Axis]) / Direction[Axis];
+		TDelta[Axis] = 1.0 / FMath::Abs(Direction[Axis]);
+	}
+
+	// T - в клеточных единицах (Direction нормализован, Position поделён на
+	// CellSize), поэтому и лимит переводим в клетки.
+	const double MaxT = MaxDistance / CellSize;
+	double T = 0.0;
+
+	while (T <= MaxT)
+	{
+		if (Grid.IsAlive(Cell))
+		{
+			OutCell = Cell;
+			return true;
+		}
+
+		int32 MinAxis = 0;
+		if (TMax.Y < TMax[MinAxis])
+		{
+			MinAxis = 1;
+		}
+		if (TMax.Z < TMax[MinAxis])
+		{
+			MinAxis = 2;
+		}
+
+		T = TMax[MinAxis];
+		TMax[MinAxis] += TDelta[MinAxis];
+		Cell[MinAxis] += StepSign[MinAxis];
+	}
+
+	return false;
+}

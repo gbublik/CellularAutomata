@@ -472,16 +472,62 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 	}
 
 	TArray<FIntVector> RectCells = CellSelection::SelectCellsInScreenRect(*Grid, ViewProjectionMatrix, ViewportSize, RectMin, RectMax);
+	CombineWithSelection(MoveTemp(RectCells), CombineMode);
 
+	RenderSelectionOverlay();
+
+	UE_LOG(LogTemp, Log, TEXT("SelectCellsInScreenRect: выделено %d клеток (режим: %s)"),
+		SelectedCells.Num(), *UEnum::GetValueAsString(CombineMode));
+}
+
+void AAutomataOrchestrator::SelectCellUnderCursor(const FVector& RayOrigin, const FVector& RayDirection, ESelectionCombineMode CombineMode)
+{
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SelectCellUnderCursor: сетка не инициализирована"));
+		return;
+	}
+
+	// Лимит обхода DDA: до дальнего края описанной сферы живых клеток -
+	// дальше живых клеток гарантированно нет, шагать бессмысленно.
+	FVector BoundsCenter = FVector::ZeroVector;
+	float BoundsRadius = 0.0f;
+	if (!ComputeAliveCellsBounds(BoundsCenter, BoundsRadius))
+	{
+		UE_LOG(LogTemp, Log, TEXT("SelectCellUnderCursor: живых клеток нет - выделять нечего"));
+		return;
+	}
+	const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + Grid->GetCellSize();
+
+	TArray<FIntVector> PickedCells;
+	FIntVector PickedCell;
+	if (CellSelection::PickCellAlongRay(*Grid, RayOrigin, RayDirection, MaxDistance, PickedCell))
+	{
+		PickedCells.Add(PickedCell);
+	}
+
+	// Пустой PickedCells (клик в пустоту) - тоже валидный ввод: Replace
+	// очистит выделение (стандартное "кликнул мимо - снял выделение"),
+	// Add/Subtract ничего не изменят.
+	CombineWithSelection(MoveTemp(PickedCells), CombineMode);
+
+	RenderSelectionOverlay();
+
+	UE_LOG(LogTemp, Log, TEXT("SelectCellUnderCursor: выделено %d клеток (режим: %s)"),
+		SelectedCells.Num(), *UEnum::GetValueAsString(CombineMode));
+}
+
+void AAutomataOrchestrator::CombineWithSelection(TArray<FIntVector>&& NewCells, ESelectionCombineMode CombineMode)
+{
 	switch (CombineMode)
 	{
 	case ESelectionCombineMode::Add:
 	{
 		// Объединение без дублей: TSet по уже выделенным даёт O(1) проверку
-		// на каждую клетку прямоугольника - выделения могут быть миллионными,
+		// на каждую новую клетку - выделения могут быть миллионными,
 		// квадратичный Contains по TArray здесь недопустим.
 		TSet<FIntVector> ExistingCells(SelectedCells);
-		for (const FIntVector& Cell : RectCells)
+		for (const FIntVector& Cell : NewCells)
 		{
 			if (!ExistingCells.Contains(Cell))
 			{
@@ -492,7 +538,7 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 	}
 	case ESelectionCombineMode::Subtract:
 	{
-		const TSet<FIntVector> CellsToRemove(RectCells);
+		const TSet<FIntVector> CellsToRemove(NewCells);
 		SelectedCells.RemoveAll([&CellsToRemove](const FIntVector& Cell)
 		{
 			return CellsToRemove.Contains(Cell);
@@ -501,14 +547,9 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 	}
 	case ESelectionCombineMode::Replace:
 	default:
-		SelectedCells = MoveTemp(RectCells);
+		SelectedCells = MoveTemp(NewCells);
 		break;
 	}
-
-	RenderSelectionOverlay();
-
-	UE_LOG(LogTemp, Log, TEXT("SelectCellsInScreenRect: выделено %d клеток (режим: %s)"),
-		SelectedCells.Num(), *UEnum::GetValueAsString(CombineMode));
 }
 
 void AAutomataOrchestrator::InvertSelection()

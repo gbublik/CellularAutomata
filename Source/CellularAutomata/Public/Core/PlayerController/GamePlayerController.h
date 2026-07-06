@@ -169,7 +169,10 @@ protected:
 	 *  OnSelectDragStarted() запоминает экранную точку старта драга и снимает
 	 *  зажатый модификатор (Shift - добавить к выделению, Ctrl - убрать из
 	 *  него, без модификатора - заменить, см. ESelectionCombineMode) в
-	 *  PendingSelectionCombineMode; OnSelectDragFinished() строит итоговый
+	 *  PendingSelectionCombineMode; OnSelectDragFinished() различает клик и
+	 *  драг по сдвигу мыши (ClickDragThresholdPixels): клик выбирает
+	 *  одиночную клетку под курсором (депроецированный луч ->
+	 *  AAutomataOrchestrator::SelectCellUnderCursor()), драг строит итоговый
 	 *  прямоугольник (старт vs. текущая позиция мыши) и передаёт его вместе с
 	 *  этим режимом в AAutomataOrchestrator::SelectCellsInScreenRect() вместе
 	 *  с матрицей вида-проекции, посчитанной один раз на всю операцию (не на
@@ -277,6 +280,11 @@ protected:
 
 	/** Шаг изменения Speed за одно нажатие +/-. */
 	static constexpr float SpeedAdjustStep = 0.5f;
+
+	/** Максимальный сдвиг мыши (в пикселях) между нажатием и отпусканием
+	 *  ЛКМ, при котором жест считается кликом (выбор одиночной клетки под
+	 *  курсором), а не драгом-прямоугольником - см. OnSelectDragFinished(). */
+	static constexpr float ClickDragThresholdPixels = 4.0f;
 
 	/** Запас поверх точного расстояния кадрирования (OnFrameAllCells()) -
 	 *  без него сетка ровно касалась бы краёв кадра. */

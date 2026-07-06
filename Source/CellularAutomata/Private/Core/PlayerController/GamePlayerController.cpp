@@ -499,6 +499,26 @@ void AGamePlayerController::OnSelectDragFinished()
 		return;
 	}
 
+	// Мышь между нажатием и отпусканием почти не сдвинулась - это клик, а
+	// не драг: выбираем одиночную клетку под курсором (луч через решётку,
+	// см. AAutomataOrchestrator::SelectCellUnderCursor()), а не пустой
+	// прямоугольник нулевой площади, в который не попал бы ни один центр
+	// клетки. Модификаторы (Shift/Ctrl) работают те же - режим уже снят в
+	// OnSelectDragStarted().
+	if (FVector2D::Distance(DragStartScreenPos, CurrentScreenPos) <= ClickDragThresholdPixels)
+	{
+		FVector RayOrigin = FVector::ZeroVector;
+		FVector RayDirection = FVector::ZeroVector;
+		if (!DeprojectMousePositionToWorld(RayOrigin, RayDirection))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("OnSelectDragFinished: не удалось депроецировать курсор в мировой луч"));
+			return;
+		}
+
+		Orchestrator->SelectCellUnderCursor(RayOrigin, RayDirection, PendingSelectionCombineMode);
+		return;
+	}
+
 	ULocalPlayer* LP = GetLocalPlayer();
 	if (!LP || !LP->ViewportClient || !LP->ViewportClient->Viewport)
 	{

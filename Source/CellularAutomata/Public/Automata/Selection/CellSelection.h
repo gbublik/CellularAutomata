@@ -24,4 +24,22 @@ namespace CellSelection
 		const FVector2D& ViewportSize,
 		const FVector2D& RectMin,
 		const FVector2D& RectMax);
+
+	/** Пикинг одиночной клетки кликом: идёт по лучу (RayOrigin/RayDirection -
+	 *  депроецированный курсор мыши) через клеточную решётку алгоритмом
+	 *  Amanatides-Woo (voxel DDA - шаг ровно по границам клеток, ни одна
+	 *  клетка на пути луча не пропускается и не проверяется дважды) и
+	 *  возвращает ПЕРВУЮ живую клетку, т.е. ровно ту, чью грань пользователь
+	 *  видит под курсором. Трассировка движка не подходит - у всех клеточных
+	 *  компонентов коллизия выключена (NoCollision, см. конструктор
+	 *  AAutomataOrchestrator). MaxDistance (в мировых единицах) ограничивает
+	 *  обход - вызывающая сторона передаёт дистанцию до дальнего края AABB
+	 *  живых клеток (см. AAutomataOrchestrator::SelectCellUnderCursor()).
+	 *  false - на пути луча живых клеток нет. */
+	CELLULARAUTOMATA_API bool PickCellAlongRay(
+		const FCellGrid& Grid,
+		const FVector& RayOrigin,
+		const FVector& RayDirection,
+		double MaxDistance,
+		FIntVector& OutCell);
 }

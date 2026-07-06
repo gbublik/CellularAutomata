@@ -150,6 +150,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
 	void SelectCellsInScreenRect(const FMatrix& ViewProjectionMatrix, const FVector2D& ViewportSize, const FVector2D& RectMin, const FVector2D& RectMax, ESelectionCombineMode CombineMode = ESelectionCombineMode::Replace);
 
+	/** Выбор одиночной клетки кликом (не драгом): луч - депроецированный
+	 *  курсор мыши (AGamePlayerController::OnSelectDragFinished() различает
+	 *  клик и драг по сдвигу мыши, см. ClickDragThresholdPixels) - идёт через
+	 *  решётку voxel-DDA (CellSelection::PickCellAlongRay()), первая живая
+	 *  клетка на пути и есть "клетка под курсором". Результат (одна клетка
+	 *  или ни одной, если кликнули в пустоту) комбинируется с текущим
+	 *  SelectedCells по тому же CombineMode, что и прямоугольник: клик -
+	 *  заменить (пустой клик очищает выделение), Shift+клик - добавить,
+	 *  Ctrl+клик - убрать. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
+	void SelectCellUnderCursor(const FVector& RayOrigin, const FVector& RayDirection, ESelectionCombineMode CombineMode = ESelectionCombineMode::Replace);
+
 	/** Делает клетки из SelectedCells единственным содержимым новой сетки
 	 *  (возраст сброшен - как только что родившиеся) и выходит из режима
 	 *  выделения. Мировые координаты НЕ переносятся к началу координат -
@@ -588,6 +600,13 @@ private:
 	 *  одним снимком (без чанкинга - выделение всегда маленькое). Не-op, если
 	 *  SelectedCells пуст или SelectionMaterial не назначен. */
 	void RenderSelectionOverlay();
+
+	/** Комбинирует NewCells с текущим SelectedCells по CombineMode
+	 *  (заменить/добавить/убрать, см. ESelectionCombineMode) - общий код
+	 *  прямоугольного выделения (SelectCellsInScreenRect()) и одиночного
+	 *  клика (SelectCellUnderCursor()). Только комбинирование - перерисовку
+	 *  подсветки и лог делает вызывающая сторона. */
+	void CombineWithSelection(TArray<FIntVector>&& NewCells, ESelectionCombineMode CombineMode);
 
 	void InitializeHUD();
 	void InitializePlayerController();
