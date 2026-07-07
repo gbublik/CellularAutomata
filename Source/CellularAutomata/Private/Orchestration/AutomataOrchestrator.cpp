@@ -552,6 +552,50 @@ void AAutomataOrchestrator::CombineWithSelection(TArray<FIntVector>&& NewCells, 
 	}
 }
 
+void AAutomataOrchestrator::DeleteSelectedCells()
+{
+	// Мутируем Grid - фоновый шаг (Next()/StepAsync()) в этот момент его
+	// читает, тот же guard, что у всех путей изменения сетки.
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DeleteSelectedCells: фоновый шаг ещё считается - подождите его завершения"));
+		return;
+	}
+
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DeleteSelectedCells: сетка не инициализирована"));
+		return;
+	}
+
+	if (SelectedCells.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DeleteSelectedCells: нет выделенных клеток - сначала выделите что-нибудь мышкой в режиме выделения (Tab)"));
+		return;
+	}
+
+	if (AgeMaterials.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DeleteSelectedCells: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		return;
+	}
+
+	int32 KilledCount = 0;
+	for (const FIntVector& Cell : SelectedCells)
+	{
+		if (Grid->IsAlive(Cell))
+		{
+			Grid->SetAlive(Cell, false);
+			++KilledCount;
+		}
+	}
+
+	SelectedCells.Reset();
+	RenderGridImmediate();
+
+	UE_LOG(LogTemp, Log, TEXT("DeleteSelectedCells: удалено %d клеток, живых осталось %d"), KilledCount, Grid->Num());
+}
+
 void AAutomataOrchestrator::InvertSelection()
 {
 	if (!Grid)

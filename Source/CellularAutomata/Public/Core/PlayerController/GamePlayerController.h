@@ -195,6 +195,11 @@ protected:
 	 *  и выгружает клетки из памяти - снимок-"скульптура" для осмотра. */
 	void OnBakeCellsToMesh();
 
+	/** Хоткей (Delete) - AAutomataOrchestrator::DeleteSelectedCells(),
+	 *  убивает выделенные клетки прямо в текущей сетке (ручная правка
+	 *  состояния, симуляция не сбрасывается). */
+	void OnDeleteSelectedCells();
+
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
 	 *  отдельные .uasset. Пауза (P) больше не среди них - см. InputKey(). */
@@ -254,6 +259,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> BakeCellsToMeshAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> DeleteSelectedCellsAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;

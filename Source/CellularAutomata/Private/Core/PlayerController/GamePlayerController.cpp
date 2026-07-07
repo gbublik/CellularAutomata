@@ -75,6 +75,9 @@ void AGamePlayerController::SetupInputComponent()
 	BakeCellsToMeshAction = NewObject<UInputAction>(this, TEXT("IA_BakeCellsToMesh"));
 	BakeCellsToMeshAction->ValueType = EInputActionValueType::Boolean;
 
+	DeleteSelectedCellsAction = NewObject<UInputAction>(this, TEXT("IA_DeleteSelectedCells"));
+	DeleteSelectedCellsAction->ValueType = EInputActionValueType::Boolean;
+
 	// P (пауза) намеренно не маппится сюда - см. InputKey() ниже, она
 	// перехватывается на уровне сырых оконных событий в обход Enhanced Input.
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
@@ -101,6 +104,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(ExtractSelectionAction, EKeys::Enter);
 	SimulationMappingContext->MapKey(InvertSelectionAction, EKeys::I);
 	SimulationMappingContext->MapKey(BakeCellsToMeshAction, EKeys::M);
+	SimulationMappingContext->MapKey(DeleteSelectedCellsAction, EKeys::Delete);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -138,6 +142,7 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(ExtractSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnExtractSelection);
 		EnhancedInputComp->BindAction(InvertSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnInvertSelection);
 		EnhancedInputComp->BindAction(BakeCellsToMeshAction, ETriggerEvent::Started, this, &AGamePlayerController::OnBakeCellsToMesh);
+		EnhancedInputComp->BindAction(DeleteSelectedCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDeleteSelectedCells);
 	}
 }
 
@@ -577,6 +582,18 @@ void AGamePlayerController::OnBakeCellsToMesh()
 	}
 
 	Orchestrator->BakeCellsToMesh();
+}
+
+void AGamePlayerController::OnDeleteSelectedCells()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnDeleteSelectedCells: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->DeleteSelectedCells();
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)
