@@ -962,26 +962,39 @@ bool AAutomataOrchestrator::CaptureThumbnailPng(TArray64<uint8>& OutPngBytes) co
 		Pixel.A = 255;
 	}
 
-	// Безусловное масштабирование (не только "если больше") - большая
-	// сторона всегда становится РОВНО ThumbnailMaxEdgePixels, независимо от
-	// текущего разрешения вьюпорта: единый стандартный размер миниатюры.
-	int32 EncodeWidth = ViewportSize.X;
-	int32 EncodeHeight = ViewportSize.Y;
-	TArray<FColor> ResizedPixels;
-	const TArray<FColor>* PixelsToEncode = &RawPixels;
+	// Обрезаем до квадрата ПО ЦЕНТРУ: короткая сторона вьюпорта берётся
+	// целиком, длинная обрезается симметрично по краям - никакого искажения
+	// пропорций, просто теряются края кадра. Строка за строкой memcpy прямо
+	// из RawPixels, отдельный проход resize не нужен для самой обрезки.
+	const int32 CropSize = FMath::Min(ViewportSize.X, ViewportSize.Y);
+	const int32 CropOffsetX = (ViewportSize.X - CropSize) / 2;
+	const int32 CropOffsetY = (ViewportSize.Y - CropSize) / 2;
 
-	const int32 LongestEdge = FMath::Max(ViewportSize.X, ViewportSize.Y);
-	if (LongestEdge != ThumbnailMaxEdgePixels)
+	TArray<FColor> CroppedPixels;
+	CroppedPixels.SetNumUninitialized(CropSize * CropSize);
+	for (int32 Row = 0; Row < CropSize; ++Row)
 	{
-		const float Scale = static_cast<float>(ThumbnailMaxEdgePixels) / static_cast<float>(LongestEdge);
-		EncodeWidth = FMath::Max(1, FMath::RoundToInt(ViewportSize.X * Scale));
-		EncodeHeight = FMath::Max(1, FMath::RoundToInt(ViewportSize.Y * Scale));
-		FImageUtils::ImageResize(ViewportSize.X, ViewportSize.Y, RawPixels, EncodeWidth, EncodeHeight,
+		const FColor* SrcRow = RawPixels.GetData() + (CropOffsetY + Row) * ViewportSize.X + CropOffsetX;
+		FColor* DstRow = CroppedPixels.GetData() + Row * CropSize;
+		FMemory::Memcpy(DstRow, SrcRow, CropSize * sizeof(FColor));
+	}
+
+	// Безусловное масштабирование (не только "если больше") - сторона
+	// квадрата всегда становится РОВНО ThumbnailSizePixels, независимо от
+	// текущего разрешения вьюпорта: единый стандартный размер миниатюры.
+	TArray<FColor> ResizedPixels;
+	const TArray<FColor>* PixelsToEncode = &CroppedPixels;
+	int32 EncodeSize = CropSize;
+
+	if (CropSize != ThumbnailSizePixels)
+	{
+		EncodeSize = FMath::Max(1, ThumbnailSizePixels);
+		FImageUtils::ImageResize(CropSize, CropSize, CroppedPixels, EncodeSize, EncodeSize,
 			ResizedPixels, /*bResizeSRGBinLinearSpace=*/true, /*bForceOpaqueOutput=*/true);
 		PixelsToEncode = &ResizedPixels;
 	}
 
-	FImageUtils::PNGCompressImageArray(EncodeWidth, EncodeHeight,
+	FImageUtils::PNGCompressImageArray(EncodeSize, EncodeSize,
 		TArrayView64<const FColor>(PixelsToEncode->GetData(), PixelsToEncode->Num()), OutPngBytes);
 
 	if (OutPngBytes.Num() == 0)
