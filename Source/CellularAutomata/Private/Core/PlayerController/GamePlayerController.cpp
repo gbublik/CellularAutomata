@@ -78,6 +78,12 @@ void AGamePlayerController::SetupInputComponent()
 	DeleteSelectedCellsAction = NewObject<UInputAction>(this, TEXT("IA_DeleteSelectedCells"));
 	DeleteSelectedCellsAction->ValueType = EInputActionValueType::Boolean;
 
+	SaveStateAction = NewObject<UInputAction>(this, TEXT("IA_SaveState"));
+	SaveStateAction->ValueType = EInputActionValueType::Boolean;
+
+	LoadStateAction = NewObject<UInputAction>(this, TEXT("IA_LoadState"));
+	LoadStateAction->ValueType = EInputActionValueType::Boolean;
+
 	// P (пауза) намеренно не маппится сюда - см. InputKey() ниже, она
 	// перехватывается на уровне сырых оконных событий в обход Enhanced Input.
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
@@ -105,6 +111,14 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(InvertSelectionAction, EKeys::I);
 	SimulationMappingContext->MapKey(BakeCellsToMeshAction, EKeys::M);
 	SimulationMappingContext->MapKey(DeleteSelectedCellsAction, EKeys::Delete);
+	// S/O замапплены БЕЗ модификатора - Enhanced Input не даёт потребовать
+	// Ctrl прямо в маппинге ключа (в отличие от старых FInputChord).
+	// Ctrl(+Shift) проверяется внутри OnSaveOrSaveAs()/OnLoadState() - та же
+	// идиома, что у Ctrl/Shift в OnSelectDragStarted(). Голый S по-прежнему
+	// уходит камере (DefaultPawn, движение назад) - это осознанный
+	// побочный эффект удержания Ctrl+S во время полёта, см. doc-comment.
+	SimulationMappingContext->MapKey(SaveStateAction, EKeys::S);
+	SimulationMappingContext->MapKey(LoadStateAction, EKeys::O);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
@@ -143,6 +157,8 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(InvertSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnInvertSelection);
 		EnhancedInputComp->BindAction(BakeCellsToMeshAction, ETriggerEvent::Started, this, &AGamePlayerController::OnBakeCellsToMesh);
 		EnhancedInputComp->BindAction(DeleteSelectedCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDeleteSelectedCells);
+		EnhancedInputComp->BindAction(SaveStateAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSaveOrSaveAs);
+		EnhancedInputComp->BindAction(LoadStateAction, ETriggerEvent::Started, this, &AGamePlayerController::OnLoadState);
 	}
 }
 
@@ -373,18 +389,28 @@ void AGamePlayerController::OnFrameAllCells()
 		return;
 	}
 
+	FrameAllCells(Orchestrator);
+}
+
+bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator)
+{
+	if (!Orchestrator)
+	{
+		return false;
+	}
+
 	FVector Center;
 	float Radius;
 	if (!Orchestrator->ComputeAliveCellsBounds(Center, Radius))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("OnFrameAllCells: сетка пуста - кадрировать нечего"));
-		return;
+		UE_LOG(LogTemp, Warning, TEXT("FrameAllCells: сетка пуста - кадрировать нечего"));
+		return false;
 	}
 
 	APawn* FlyingPawn = GetPawn();
 	if (!FlyingPawn || !PlayerCameraManager)
 	{
-		return;
+		return false;
 	}
 
 	// Расстояние, на котором сфера радиуса Radius целиком видна под углом
@@ -398,7 +424,8 @@ void AGamePlayerController::OnFrameAllCells()
 	const FVector ViewDirection = PlayerCameraManager->GetCameraRotation().Vector();
 	FlyingPawn->SetActorLocation(Center - ViewDirection * Distance);
 
-	UE_LOG(LogTemp, Log, TEXT("OnFrameAllCells: камера поставлена на расстояние %.1f от центра сетки (радиус %.1f)"), Distance, Radius);
+	UE_LOG(LogTemp, Log, TEXT("FrameAllCells: камера поставлена на расстояние %.1f от центра сетки (радиус %.1f)"), Distance, Radius);
+	return true;
 }
 
 void AGamePlayerController::OnIncreaseStepsPerRender()
@@ -594,6 +621,54 @@ void AGamePlayerController::OnDeleteSelectedCells()
 	}
 
 	Orchestrator->DeleteSelectedCells();
+}
+
+void AGamePlayerController::OnSaveOrSaveAs()
+{
+	// Действие на S замаппено без модификатора (см. SetupInputComponent()) -
+	// голый S должен молча уйти камере (DefaultPawn), а не сработать как
+	// сохранение.
+	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (!bCtrl)
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnSaveOrSaveAs: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	const bool bShift = IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
+	if (bShift)
+	{
+		Orchestrator->SaveStateAs(); // Ctrl+Shift+S
+	}
+	else
+	{
+		Orchestrator->SaveState(); // Ctrl+S
+	}
+}
+
+void AGamePlayerController::OnLoadState()
+{
+	// Как и у S - маппинг сам ключа без модификатора, Ctrl проверяется здесь.
+	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (!bCtrl)
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnLoadState: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->LoadStateFromFile();
 }
 
 void AGamePlayerController::SetCameraControlEnabled(bool bEnable)

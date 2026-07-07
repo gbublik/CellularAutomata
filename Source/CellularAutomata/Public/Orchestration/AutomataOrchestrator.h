@@ -10,6 +10,7 @@
 #include "Automata/Grid/CellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Rendering/ChunkedRenderOrder.h"
+#include "Automata/Persistence/AutomatonSaveHeader.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
 #include "GameFramework/PlayerController.h"
@@ -193,6 +194,64 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Baking")
 	UMaterialInterface* BakedMeshMaterial = nullptr;
 
+	/** "Сохранить" (хоткей Ctrl+S, стандартная комбинация): если в этой
+	 *  сессии уже есть путь от предыдущего SaveStateAs()/LoadStateFromFile()
+	 *  (LastSaveFilePath) - перезаписывает его БЕЗ диалога; иначе не знает,
+	 *  куда писать, и делегирует в SaveStateAs() (т.е. первый Ctrl+S всё
+	 *  равно спросит путь один раз - дальше тихо перезаписывает). В файл
+	 *  идёт ИЗНАЧАЛЬНЫЙ паттерн (InitialStateCells - см. подробности в
+	 *  doc-comment WriteStateToFile()), а миниатюра - скриншот ТЕКУЩЕГО вида
+	 *  (какая сейчас камера и какая сейчас живая симуляция на экране); сама
+	 *  сетка при этом НИКАК не трогается - Guard'а bStepInProgress здесь нет
+	 *  сознательно: сохранение только читает InitialStateCells (плюс
+	 *  снимает уже отрисованный кадр), не мутирует Grid, а InitialStateCells
+	 *  пишут только StartFromSelection()/LoadStateFromFile()/GenerateRandom()
+	 *  (см. её doc-comment) - все строго на game thread, том же потоке, что
+	 *  и эта функция. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|SaveLoad")
+	void SaveState();
+
+	/** "Сохранить как" (хоткей Ctrl+Shift+S): ВСЕГДА открывает системный
+	 *  диалог "Сохранить как" (по умолчанию Saved/AutomataSaves/), даже если
+	 *  LastSaveFilePath уже известен - в отличие от SaveState(). В файл идёт
+	 *  ИЗНАЧАЛЬНЫЙ паттерн, миниатюра - скриншот текущего вида - см.
+	 *  WriteStateToFile(). Формат - JSON-шапка (FAutomatonSaveHeader) +
+	 *  бинарная полезная нагрузка клеток + PNG-миниатюра (см.
+	 *  AutomatonStateSerializer). Успешная запись обновляет LastSaveFilePath,
+	 *  так что последующий Ctrl+S будет тихо перезаписывать этот файл. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|SaveLoad")
+	void SaveStateAs();
+
+	/** "Открыть" (хоткей Ctrl+O): системный диалог "Открыть", затем
+	 *  применяет параметры из JSON-шапки к UPROPERTY (правила,
+	 *  CellSize/ChunkSize/GridSize, параметры генерации - СТРОГО до
+	 *  CreateGrid(), который их читает), пересоздаёт сетку и заливает клетки
+	 *  с их сохранёнными возрастами. Play/автошаг принудительно
+	 *  останавливаются (как в BakeCellsToMesh()); guard bStepInProgress здесь
+	 *  ОБЯЗАТЕЛЕН (в отличие от SaveState()/SaveStateAs() - те не трогают
+	 *  Grid вовсе) - загрузка СВАПАЕТ Grid, который фоновый шаг может
+	 *  читать в этот момент. До успешного разбора файла никакое состояние не
+	 *  трогается - любой отказ (не тот файл, версия новее, порча) безопасен.
+	 *  InitialStateCells (точка возврата R, и одновременно то, что уйдёт в
+	 *  файл при следующем Save - см. WriteStateToFile()) восстанавливается
+	 *  ИЗ ФАЙЛА как отдельный раздел (см. AutomatonStateSerializer.h) - не
+	 *  выводится заново из загруженного снимка, иначе R после загрузки
+	 *  возвращал бы не к изначальному паттерну, а к уже
+	 *  проэволюционировавшему состоянию на момент сохранения. R реиграет с
+	 *  возрастами 0, как обычно; точные возрасты снимка - повторный Ctrl+O.
+	 *  Успешная загрузка тоже обновляет LastSaveFilePath - последующий
+	 *  Ctrl+S перезапишет именно загруженный файл. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|SaveLoad")
+	void LoadStateFromFile();
+
+	/** Наибольшая сторона PNG-миниатюры сохранения (см. CaptureThumbnailPng()) -
+	 *  снятый с вьюпорта скриншот БЕЗУСЛОВНО масштабируется так, чтобы его
+	 *  большая сторона была РОВНО этим значением (сохраняя пропорции
+	 *  вьюпорта) - единый стандартный размер для всех сохранений независимо
+	 *  от текущего разрешения окна, а не просто "не больше чем". */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|SaveLoad", meta = (ClampMin = "32", UIMin = "128", UIMax = "1024"))
+	int32 ThumbnailMaxEdgePixels = 512;
+
 	/** Убивает выделенные клетки (хоткей Delete): каждая клетка из
 	 *  SelectedCells становится мёртвой прямо в текущей сетке, выделение
 	 *  сбрасывается, сетка перерисовывается немедленно. Симуляция при этом
@@ -211,13 +270,17 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
 	void InvertSelection();
 
-	/** Хоткей R: если StartFromSelection() уже извлекал паттерн ранее
-	 *  (InitialStateCells непуст), пересоздаёт сетку заново из ЭТОГО
-	 *  сохранённого набора клеток (возраст снова сброшен в 0) - то есть R
-	 *  теперь "сброс к тому состоянию, которое я выбрал и запустил через
-	 *  Enter", а не к новому случайному спавну. Если InitialStateCells пуст
-	 *  (StartFromSelection() ещё ни разу не вызывался в этой сессии) -
-	 *  ведёт себя как раньше и просто делегирует в GenerateRandom(). */
+	/** Хоткей R: пересоздаёт сетку заново из InitialStateCells (возраст снова
+	 *  сброшен в 0) - "точки возврата", заполненной последним
+	 *  StartFromSelection() (Enter), LoadStateFromFile() (Ctrl+O) или
+	 *  GenerateRandom() (в т.ч. автоматическим вызовом из BeginPlay - см.
+	 *  doc-comment InitialStateCells) - то есть R "сброс к тому состоянию,
+	 *  которое сейчас числится изначальным", будь то выбранный паттерн,
+	 *  загруженный файл или просто последняя случайная генерация. Если
+	 *  InitialStateCells пуст (на практике недостижимо в обычном потоке -
+	 *  BeginPlay сам генерирует) - делегирует в GenerateRandom(). В обоих
+	 *  случаях в конце камера сама кадрируется на результат (как хоткей
+	 *  Home, через GamePC->FrameAllCells()). */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
 	void ResetToInitialState();
 
@@ -561,14 +624,21 @@ private:
 	 *  -> извлечение", не "выделение во время бесконечного Play"). */
 	TArray<FIntVector> SelectedCells;
 
-	/** Сохранённый набор клеток последнего StartFromSelection() - в отличие
-	 *  от SelectedCells, НЕ сбрасывается ни шагом симуляции, ни новым
-	 *  выделением мышкой (только новым вызовом StartFromSelection() или
-	 *  GenerateRandom(), см. их реализацию) - это долгоживущая "точка
-	 *  возврата", которую ResetToInitialState() (хоткей R) переигрывает.
-	 *  Пустой массив означает "точка возврата ещё не задавалась в этой
-	 *  сессии" - тогда ResetToInitialState() ведёт себя как раньше и просто
-	 *  делегирует в GenerateRandom(). */
+	/** "Изначальный паттерн" - точка возврата ResetToInitialState() (хоткей
+	 *  R) и то, что уходит в файл при Save (см. WriteStateToFile()).
+	 *  Заполняется тремя равноправными источниками, каждый раз целиком
+	 *  перезаписывая предыдущее значение: StartFromSelection() (Enter -
+	 *  извлечённое выделение), LoadStateFromFile() (Ctrl+O - раздел
+	 *  InitialCells загруженного файла) и GenerateRandom() (в т.ч. через
+	 *  NewSeed() и автоматический вызов из BeginPlay - фактически осевшие
+	 *  после генерации клетки, не сырое Amount). В отличие от SelectedCells,
+	 *  НЕ сбрасывается ни шагом симуляции (Next()/StepAsync()), ни новым
+	 *  выделением мышкой - переживает сколько угодно поколений эволюции.
+	 *  Пустой массив означает "ни разу не генерировали/извлекали/грузили в
+	 *  этой сессии" - на практике недостижимо в обычном потоке
+	 *  использования, так как BeginPlay сам вызывает GenerateRandom(); тогда
+	 *  ResetToInitialState() делегирует в GenerateRandom(), а Save
+	 *  вежливо отказывает. */
 	TArray<FIntVector> InitialStateCells;
 
 	/** Компонент подсветки выделения - всегда обычный (не HISM)
@@ -604,6 +674,68 @@ private:
 	 *  GenerateRandom()/ResetToInitialState()/StartFromSelection(): новый
 	 *  прогон не должен рисоваться сквозь/поверх старого снимка. */
 	void ClearBakedMesh();
+
+	/** Гарантирует существование Saved/AutomataSaves/ и возвращает её
+	 *  абсолютный путь - стартовая папка диалогов Save/Load. */
+	FString EnsureSaveDirectory() const;
+
+	/** Собирает JSON-шапку сохранения из текущих UPROPERTY. CellSize берётся
+	 *  из Grid->GetCellSize(), а НЕ из UPROPERTY - сетка могла быть создана
+	 *  со старым значением, а файл должен фиксировать её фактическую
+	 *  геометрию. Добавление нового сохраняемого параметра = одно UPROPERTY в
+	 *  FAutomatonSaveHeader + по строке копирования здесь и в
+	 *  ApplySaveHeader(). */
+	FAutomatonSaveHeader BuildSaveHeader() const;
+
+	/** Применяет параметры из шапки к UPROPERTY - с защитными клампами
+	 *  (JSON-шапка правится руками в текстовом редакторе, значениям нельзя
+	 *  доверять): CellSize/ChunkSize/Amount/SpawnRadius >= 1,
+	 *  ClusterFactor в [0, 1]. Вызывать СТРОГО до CreateGrid() - тот читает
+	 *  живые CellSize/ChunkSize. */
+	void ApplySaveHeader(const FAutomatonSaveHeader& Header);
+
+	/** Путь последнего успешного сохранения/загрузки в этой сессии - по нему
+	 *  SaveState() (Ctrl+S) тихо перезаписывает без диалога. Пусто, пока ни
+	 *  разу не сохраняли/загружали. UPROPERTY(Transient) - переживает
+	 *  реинстансинг Live Coding (иначе Ctrl+S молча "забыл" бы путь после
+	 *  хот-патча и незаметно съехал бы на поведение SaveStateAs()). */
+	UPROPERTY(Transient)
+	FString LastSaveFilePath;
+
+	/** Общий код "записать InitialStateCells + скриншот текущего вида в
+	 *  конкретный FilePath" - без диалога. Используется и SaveState() (путь
+	 *  уже известен из LastSaveFilePath), и SaveStateAs() (путь только что
+	 *  выбран в диалоге). В файл идёт InitialStateCells (изначальный
+	 *  паттерн - тот же набор, что и точка возврата R; заполняется
+	 *  StartFromSelection(), LoadStateFromFile() или GenerateRandom() - см.
+	 *  её doc-comment) - строится напрямую из этого массива, БЕЗ какого-либо
+	 *  обращения к Grid: сетка не сбрасывается, не перерисовывается и никак
+	 *  не трогается. Отказ (нет паттерна для сохранения - InitialStateCells
+	 *  пуст, на практике недостижимо после первого запуска - см. её
+	 *  doc-comment) - причина уже в
+	 *  логе, файл не пишется. Миниатюра - CaptureThumbnailPng() снимает
+	 *  ровно то, что СЕЙЧАС отрисовано (текущая камера, текущая живая
+	 *  симуляция, какой бы она ни была) - не то, что записывается в
+	 *  .casave: файл может, например, содержать свежеизвлечённый глайдер, а
+	 *  превьюшка - вид на уже проэволюционировавший рой, если пользователь
+	 *  успел отлететь и дать симуляции поработать перед нажатием Ctrl+S. При
+	 *  успехе обновляет LastSaveFilePath. */
+	bool WriteStateToFile(const FString& FilePath);
+
+	/** Снимает скриншот текущего вьюпорта (GEngine->GameViewport->Viewport->
+	 *  ReadPixels(), синхронно на игровом потоке, как и весь остальной путь
+	 *  сохранения) и кодирует его в PNG (FImageUtils::PNGCompressImageArray),
+	 *  масштабируя так, чтобы БОЛЬШАЯ СТОРОНА была РОВНО ThumbnailMaxEdgePixels
+	 *  (FImageUtils::ImageResize, с сохранением пропорций, безусловно - не
+	 *  только "если больше" - иначе размер миниатюры плавал бы вместе с
+	 *  текущим разрешением окна вместо единого стандартного формата). Альфа
+	 *  бэкбуфера принудительно выставляется в 255 - иначе PNG вышел бы
+	 *  прозрачным. Миниатюра - косметика, НЕ часть состояния автомата: любой
+	 *  отказ (нет вьюпорта - не PIE; нулевой размер; ReadPixels/кодирование
+	 *  не удались) логируется как Warning, OutPngBytes.Reset(), false -
+	 *  вызывающая сторона (WriteStateToFile()) обязана продолжить сохранение
+	 *  с пустым разделом миниатюры, а не проваливать сохранение целиком. */
+	bool CaptureThumbnailPng(TArray64<uint8>& OutPngBytes) const;
 
 	/** Рендерит SelectedCells (отфильтрованные до реально живых - на случай
 	 *  рассинхрона) через SelectionRenderer с материалом SelectionMaterial,

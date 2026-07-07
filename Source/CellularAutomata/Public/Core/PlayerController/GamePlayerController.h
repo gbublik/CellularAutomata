@@ -7,18 +7,34 @@
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "GamePlayerController.generated.h"
 
+class AAutomataOrchestrator;
+
 /**
- * 
+ *
  */
 UCLASS()
 class CELLULARAUTOMATA_API AGamePlayerController : public APlayerController
 {
 	GENERATED_BODY()
-	
+
 public:
 
 	UFUNCTION(BlueprintCallable, Category = "Input")
 	void SetCameraControlEnabled(bool bEnable);
+
+	/** Кадрирует камеру на все живые клетки Orchestrator - общий код хоткея
+	 *  Home (OnFrameAllCells()) и авто-кадрирования после
+	 *  AAutomataOrchestrator::ResetToInitialState() (хоткей R - в конце
+	 *  сброса камера сама встаёт на результат, как по Home). НЕ вызывается
+	 *  из сохранения (SaveState()/SaveStateAs()) - Save больше не трогает
+	 *  Grid/камеру вовсе, миниатюра снимает ровно тот вид, что уже был на
+	 *  экране (см. AAutomataOrchestrator::WriteStateToFile()). Подъезжает
+	 *  камерой вдоль текущего направления взгляда (не меняя ракурс, только
+	 *  расстояние) так, чтобы вся сетка Orchestrator поместилась в кадр -
+	 *  см. AAutomataOrchestrator::ComputeAliveCellsBounds()/FramingPadding.
+	 *  false, если Orchestrator пуст, сетка пуста, или пешка/камера ещё не
+	 *  готовы - кадрировать нечего/некем. */
+	bool FrameAllCells(AAutomataOrchestrator* Orchestrator);
 
 	/** Включает/выключает режим выделения клеток мышкой - оборачивает
 	 *  SetCameraControlEnabled() (камера стоп/едет, курсор скрыт/показан),
@@ -144,14 +160,10 @@ protected:
 	void OnIncreaseSpeed();
 	void OnDecreaseSpeed();
 
-	/** Хоткей (Home) - подъезжает камерой вдоль текущего направления взгляда
-	 *  (не меняя ракурс, только расстояние) так, чтобы вся сетка автомата
-	 *  поместилась в кадр. Использует AAutomataOrchestrator::
-	 *  ComputeAliveCellsBounds() (описанная сфера вокруг живых клеток) и
-	 *  текущий FOV камеры (PlayerCameraManager->GetFOVAngle()) - расстояние
-	 *  считается из условия, что сфера радиуса R видна целиком под углом
-	 *  FOV/2 (Distance = R / sin(FOV/2)), с небольшим запасом
-	 *  (FramingPadding), чтобы клетки не упирались точно в край кадра. */
+	/** Хоткей (Home) - резолвит AAutomataOrchestrator и делегирует в
+	 *  публичный FrameAllCells() (см. её doc-comment для деталей математики
+	 *  кадрирования) - тонкий обработчик, вся логика теперь переиспользуема
+	 *  и вызывается также из AAutomataOrchestrator::ResetToInitialState(). */
 	void OnFrameAllCells();
 
 	/** Хоткеи (T и G) - меняют StepsPerRender автомата на ±1 через
@@ -199,6 +211,23 @@ protected:
 	 *  убивает выделенные клетки прямо в текущей сетке (ручная правка
 	 *  состояния, симуляция не сбрасывается). */
 	void OnDeleteSelectedCells();
+
+	/** Хоткей S (Ctrl+S / Ctrl+Shift+S, стандартная комбинация) -
+	 *  AAutomataOrchestrator::SaveState()/SaveStateAs(). Действие на клавише
+	 *  S привязано БЕЗ модификатора (Enhanced Input не умеет требовать Ctrl
+	 *  прямо в маппинге ключа), поэтому голый S по-прежнему уходит камере
+	 *  (движение назад, DefaultPawn) - обработчик сам проверяет Ctrl через
+	 *  IsInputKeyDown() и молча выходит, если Ctrl не зажат (та же идиома,
+	 *  что у Shift-модификатора OnFastStepPressed() и Ctrl/Shift в
+	 *  OnSelectDragStarted()). При зажатом Ctrl: без Shift - "Сохранить"
+	 *  (SaveState(), тихая перезапись последнего пути), с Shift - "Сохранить
+	 *  как" (SaveStateAs(), всегда диалог). */
+	void OnSaveOrSaveAs();
+
+	/** Хоткей O (Ctrl+O, стандартная комбинация) -
+	 *  AAutomataOrchestrator::LoadStateFromFile(). Как и у S, маппинг сам
+	 *  ключа без модификатора - Ctrl проверяется внутри обработчика. */
+	void OnLoadState();
 
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
@@ -262,6 +291,12 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> DeleteSelectedCellsAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> SaveStateAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> LoadStateAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;

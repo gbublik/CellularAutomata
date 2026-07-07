@@ -26,7 +26,10 @@ public class CellularAutomata : ModuleRules
 		// ProceduralMeshComponent - для BakeCellsToMesh() (запекание клеток в
 		// цельный меш, см. Automata/Meshing/CellMeshBuilder и
 		// AAutomataOrchestrator::BakedMeshComponent).
-		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput", "RHI", "RenderCore", "ProceduralMeshComponent" });
+		// DesktopPlatform - системные диалоги выбора файла для
+		// SaveStateToFile()/LoadStateFromFile(); Developer-модуль, в Shipping
+		// недоступен (проект живёт в editor/PIE, этого достаточно).
+		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput", "RHI", "RenderCore", "ProceduralMeshComponent", "DesktopPlatform" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
