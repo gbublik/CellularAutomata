@@ -46,6 +46,18 @@ public:
 
 	bool IsSelectionModeActive() const { return bSelectionModeActive; }
 
+	/** Включает/выключает режим взаимодействия с HUD (клик по кнопкам/
+	 *  панелям) - как и SetSelectionModeActive(), в итоге управляет тем же
+	 *  курсором/input mode через RefreshCameraControlState() (см. её
+	 *  doc-comment): оба режима хотят одного и того же "курсор виден,
+	 *  камера не летает" и не должны гасить друг друга, если открыты
+	 *  одновременно (например, открыли HUD прямо во время выделения
+	 *  мышкой). */
+	UFUNCTION(BlueprintCallable, Category = "Input")
+	void SetHudInteractionModeActive(bool bActive);
+
+	bool IsHudInteractionModeActive() const { return bHudInteractionModeActive; }
+
 	/** Для AGameHud::DrawHUD() - рамка выделения рисуется, пока тянется мышь;
 	 *  текущая позиция мыши читается HUD'ом самостоятельно каждый кадр через
 	 *  GetMousePosition(), сюда выносится только неподвижная стартовая точка. */
@@ -68,6 +80,16 @@ protected:
 
 	void RestoreGameInputMode();
 	void DisableGameInputMode();
+
+	/** Пересчитывает SetCameraControlEnabled() из ДВУХ независимых причин
+	 *  (bSelectionModeActive/bHudInteractionModeActive) - камера отключена
+	 *  (курсор виден), если активна хотя бы одна причина, и включается
+	 *  обратно только когда обе выключены. Общий код для
+	 *  SetSelectionModeActive()/SetHudInteractionModeActive(), чтобы они не
+	 *  гасили курсор друг у друга при одновременной активности. */
+	void RefreshCameraControlState();
+
+	bool bHudInteractionModeActive = false;
 
 	/** Хоткей (Space) для Start()/Stop() автомата прямо в PIE, через
 	 *  UGameplayStatics::GetActorOfClass - а не через CallInEditor-кнопку в
@@ -162,6 +184,12 @@ protected:
 	 *  который переключает пост-хок отсечение по расстоянию на уже
 	 *  построенных инстансах). */
 	void OnToggleRenderCullVolume();
+
+	/** Хоткей (H) - переключает SetHudInteractionModeActive() (клик по
+	 *  HUD-кнопкам/панелям, см. UMainHudWidget) - отдельно от Tab (режим
+	 *  выделения мышкой), но оба в итоге управляют одним и тем же
+	 *  курсором/input mode через RefreshCameraControlState(). */
+	void OnToggleHudInteractionMode();
 
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
 	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
@@ -269,6 +297,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleRenderCullVolumeAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleHudInteractionModeAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> IncreaseSpeedAction;

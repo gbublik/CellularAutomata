@@ -31,6 +31,11 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
 
+// Сглаженный FPS движка - определён в UnrealEngine.cpp, без публичного
+// заголовка, объявляется локально там, где используется (тот же паттерн,
+// что и в самом движке, см. напр. EngineAnalyticsSessionSummary.cpp) - см.
+// FHudStats::CurrentFPS в Tick().
+extern ENGINE_API float GAverageFPS;
 
 // Sets default values
 AAutomataOrchestrator::AAutomataOrchestrator()
@@ -64,12 +69,28 @@ void AAutomataOrchestrator::BeginPlay()
 	RebuildAgeMeshComponents();
 	EnsureSelectionMeshComponent();
 	GenerateRandom();
+
+	// Раньше вызывалось из PostActorCreated(), который срабатывает при любом
+	// создании актора - в т.ч. просто при расстановке в редакторе вне PIE, не
+	// только в игре. HUD-виджет никогда не должен всплывать вне реальной
+	// игровой сессии - BeginPlay() гарантированно только PIE/игра.
+	InitializeHUD();
 }
 
 // Called every frame
 void AAutomataOrchestrator::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// HUD-сводка (см. FHudStats) обновляется каждый тик, ДО веток
+	// bFastStepActive/!bSimulationRunning ниже (у обеих есть ранний return) -
+	// HUD должен показывать FPS/занятость даже когда симуляция на паузе, не
+	// только пока Play/автошаг активны.
+	LastHudStats.bIsComputing = bStepInProgress;
+	LastHudStats.bIsRendering = bChunkedRenderInProgress;
+	LastHudStats.CurrentFPS = GAverageFPS;
+	LastHudStats.GenerationCount = GenerationCount;
+	UpdateGenerationsPerSecond();
 
 	// Разлитый по кадрам рендер (см. bEnableChunkedRender) продолжается
 	// независимо от bSimulationRunning - если игру остановили посреди
@@ -135,6 +156,35 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		TimeSinceLastStep = 0.0f;
 		StepAsync();
 	}
+}
+
+void AAutomataOrchestrator::UpdateGenerationsPerSecond()
+{
+	const double Now = FPlatformTime::Seconds();
+	const double Elapsed = Now - LastGenerationCountSampleSeconds;
+
+	// Раз в секунду, не каждый кадр - на коротких интервалах (доли секунды)
+	// частота "поколений в секунду" скачет шумно (особенно при малых Speed),
+	// секундное окно даёт стабильное на глаз число, тот же дух, что и
+	// остальные "раз в N" пересчёты в проекте (см. AdvanceChunkedRender()'s
+	// итоговый лог только по завершении разлива, не каждый кадр).
+	if (Elapsed < 1.0)
+	{
+		return;
+	}
+
+	LastHudStats.GenerationsPerSecond = float((GenerationCount - LastGenerationCountSample) / Elapsed);
+	LastGenerationCountSample = GenerationCount;
+	LastGenerationCountSampleSeconds = Now;
+}
+
+void AAutomataOrchestrator::ResetGenerationCounter()
+{
+	GenerationCount = 0;
+	LastGenerationCountSample = 0;
+	LastGenerationCountSampleSeconds = FPlatformTime::Seconds();
+	LastHudStats.GenerationCount = 0;
+	LastHudStats.GenerationsPerSecond = 0.0f;
 }
 
 void AAutomataOrchestrator::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -219,12 +269,6 @@ void AAutomataOrchestrator::InitializePlayerController()
 			UE_LOG(LogTemp, Error, TEXT("Wrong PlayerController class! Using: %s"), *PC->GetClass()->GetName());
 		}
 	}
-}
-
-void AAutomataOrchestrator::PostActorCreated()
-{
-	Super::PostActorCreated();
-	InitializeHUD();
 }
 
 UInstancedStaticMeshComponent* AAutomataOrchestrator::GetActiveCellsMeshComponent() const
@@ -816,6 +860,7 @@ void AAutomataOrchestrator::StartFromSelection()
 	Grid = MoveTemp(NewGrid);
 	SelectedCells.Reset();
 	StepsSinceLastRender = 0;
+	ResetGenerationCounter();
 	// Новый прогон убирает запечённый меш-снимок, если он был (см.
 	// BakeCellsToMesh()) - как и в GenerateRandom()/ResetToInitialState().
 	ClearBakedMesh();
@@ -870,6 +915,7 @@ void AAutomataOrchestrator::ResetToInitialState()
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
 	SelectedCells.Reset();
+	ResetGenerationCounter();
 
 	for (const FIntVector& Cell : InitialStateCells)
 	{
@@ -1218,6 +1264,7 @@ void AAutomataOrchestrator::LoadStateFromFile()
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
 	SelectedCells.Reset();
+	ResetGenerationCounter();
 
 	const double ApplyStartSeconds = FPlatformTime::Seconds();
 	AutomatonStateSerializer::ApplyCells(Cells, *Grid);
@@ -1324,6 +1371,9 @@ void AAutomataOrchestrator::GenerateRandom()
 	// актуальный CellSize, если его поменяли в Details panel
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
+	// Новый прогон - новый отсчёт поколений для HUD (см. GenerationCount/
+	// FHudStats/ResetGenerationCounter()).
+	ResetGenerationCounter();
 	// Новая сетка делает старое выделение бессмысленным (координаты уже не
 	// про эту сетку) - см. doc-comment SelectedCells в заголовке.
 	SelectedCells.Reset();
@@ -1470,6 +1520,10 @@ void AAutomataOrchestrator::Next()
 				StrongThis->Grid = MoveTemp(ResultGrid);
 				StrongThis->SelectedCells.Reset();
 				StrongThis->bStepInProgress = false;
+
+				// NumSteps реально посчитанных поколений за одно нажатие F -
+				// см. GenerationCount/FHudStats.
+				StrongThis->GenerationCount += NumSteps;
 
 				// Всегда немедленно и целиком, в отличие от ApplyStepResult() -
 				// ручной шаг игнорирует и bEnableChunkedRender, и счётчик
@@ -1736,6 +1790,11 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// StepAsync() может стартовать независимо от того, что происходит с
 	// рендером ниже.
 	bStepInProgress = false;
+
+	// Одно реально посчитанное поколение - считаем для HUD независимо от
+	// того, пропустит ли StepsSinceLastRender ниже фактический рендер этого
+	// поколения (см. GenerationCount/FHudStats).
+	++GenerationCount;
 
 	++StepsSinceLastRender;
 	if (StepsSinceLastRender < StepsPerRender)

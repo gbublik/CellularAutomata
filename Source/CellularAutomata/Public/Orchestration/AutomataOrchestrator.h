@@ -71,6 +71,40 @@ struct FCellRenderStats
 	int32 BytesPerInstance = 0;
 };
 
+/** Сводка для HUD (см. AAutomataOrchestrator::GetHudStats()) - в отличие от
+ *  FCellRenderStats (плайн C++, читает только UE_LOG) это USTRUCT(BlueprintType)
+ *  с BlueprintReadOnly-полями, потому что читать её будет UMG/Blueprint-виджет
+ *  (UMainHudWidget), а не только нативный код. Считается один раз за тик/шаг
+ *  и хранится на оркестраторе - виджет её просто читает через GetHudStats(),
+ *  ничего сам не пересчитывает. */
+USTRUCT(BlueprintType)
+struct FHudStats
+{
+	GENERATED_BODY()
+
+	/** Фоновый StepAsync()/Next() сейчас считает поколение - см. bStepInProgress. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bIsComputing = false;
+
+	/** Чанковый рендер сейчас "разливается" по кадрам - см. bChunkedRenderInProgress. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bIsRendering = false;
+
+	/** Сглаженный FPS движка (GAverageFPS) - не считаем сами, берём готовое. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	float CurrentFPS = 0.0f;
+
+	/** Сколько поколений посчитано с последнего GenerateRandom()/
+	 *  ResetToInitialState() - см. AAutomataOrchestrator::GenerationCount. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	int64 GenerationCount = 0;
+
+	/** Скользящая частота поколений в секунду - обновляется раз в секунду,
+	 *  не каждый кадр (см. UpdateGenerationsPerSecond()). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	float GenerationsPerSecond = 0.0f;
+};
+
 UCLASS()
 class CELLULARAUTOMATA_API AAutomataOrchestrator : public AActor
 {
@@ -83,7 +117,6 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void OnConstruction(const FTransform& Transform) override;
-	virtual void PostActorCreated() override;
 #if WITH_EDITOR
 	/** Правки AgeMaterials в Details panel (добавили/убрали элемент) должны
 	 *  сразу же создать/удалить соответствующие AgeMeshComponents - не
@@ -492,10 +525,30 @@ public:
 	 *  читает уже посчитанное, ничего не пересчитывает. Не UFUNCTION -
 	 *  FCellRenderStats плайн C++ структура, не USTRUCT (тот же идиом, что
 	 *  FRenderTimings/GetLastRenderTimings() у FInstancedMeshCellGridRenderer);
-	 *  будущий HUD (AGameHud) - нативный C++ Canvas-рендер, как и
-	 *  существующая отрисовка рамки выделения, так что Blueprint-видимость
-	 *  здесь не нужна. */
+	 *  единственный потребитель пока UE_LOG. Если понадобится показать эти
+	 *  цифры в HUD (UMainHudWidget, см. FHudStats ниже) - тогда стоит
+	 *  перевести саму FCellRenderStats на USTRUCT(BlueprintType), как уже
+	 *  сделано для FHudStats, а не городить отдельные BlueprintCallable-обёртки. */
 	const FCellRenderStats& GetLastRenderStats() const { return LastRenderStats; }
+
+	/** Фоновый StepAsync()/Next() сейчас считает поколение - см. doc-comment
+	 *  bStepInProgress. Раньше был чисто внутренним guard'ом, теперь нужен и
+	 *  наружу - HUD показывает это как индикатор занятости "считаем". */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	bool IsStepInProgress() const { return bStepInProgress; }
+
+	/** Чанковый рендер сейчас "разливается" по кадрам - см. doc-comment
+	 *  bChunkedRenderInProgress. HUD показывает это как индикатор занятости
+	 *  "рисуем" (отдельно от "считаем" выше - это разные фазы, могут идти
+	 *  параллельно, см. StepsPerRender/bRenderHandoffPending). */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	bool IsChunkedRenderInProgress() const { return bChunkedRenderInProgress; }
+
+	/** Сводка для HUD (см. doc-comment FHudStats) - читает уже посчитанное
+	 *  (обновляется в Tick()/ApplyStepResult()/Next(), не пересчитывается
+	 *  на каждый вызов из Blueprint). */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudStats& GetHudStats() const { return LastHudStats; }
 
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
 	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
@@ -912,6 +965,39 @@ private:
 	 *  переживать реинстансинг Live Coding (просто пересчитается на
 	 *  следующем рендере). */
 	FCellRenderStats LastRenderStats;
+
+	/** См. GetHudStats()/FHudStats. UPROPERTY (не плайн член, в отличие от
+	 *  LastRenderStats выше) - FHudStats это USTRUCT, а её GenerationCount/
+	 *  GenerationsPerSecond должны переживать реинстансинг Live Coding
+	 *  между кадрами (иначе, в отличие от LastRenderStats, они не
+	 *  пересчитываются каждый рендер - только раз в секунду и на шаге). */
+	UPROPERTY(Transient)
+	FHudStats LastHudStats;
+
+	/** Сквозной счётчик поколений с последнего GenerateRandom()/
+	 *  ResetToInitialState() - в отличие от StepsSinceLastRender (сбрасывается
+	 *  на каждом рендере) этот только растёт, пока не начат новый прогон.
+	 *  Инкрементируется в завершении ApplyStepResult() (путь Play/автошаг) и
+	 *  в завершении Next() (ручной шаг) - в обоих местах ровно по одному
+	 *  разу за реально посчитанное поколение (Next() сам крутит NumSteps
+	 *  поколений за одно нажатие - см. её тело - поэтому там инкремент на
+	 *  NumSteps, а не на 1). */
+	int64 GenerationCount = 0;
+
+	/** Для UpdateGenerationsPerSecond() (см. Tick()) - снимок GenerationCount/
+	 *  времени на момент последнего пересчёта частоты, не каждый кадр. */
+	int64 LastGenerationCountSample = 0;
+	double LastGenerationCountSampleSeconds = 0.0;
+
+	/** Раз в секунду (не каждый кадр) пересчитывает LastHudStats.
+	 *  GenerationsPerSecond из GenerationCount - вызывается из Tick(). */
+	void UpdateGenerationsPerSecond();
+
+	/** Сбрасывает GenerationCount и точку отсчёта GenerationsPerSecond в 0 -
+	 *  общий код для всех мест, начинающих новый прогон "с нуля" (GenerateRandom()/
+	 *  StartFromSelection()/LoadStateFromFile()/ResetToInitialState() - те же
+	 *  четыре места, что перезаписывают InitialStateCells, см. её doc-comment). */
+	void ResetGenerationCounter();
 
 	/** true между Start() и Stop() - Tick() копит DeltaTime и вызывает
 	 *  StepAsync() с интервалом 1/Speed секунд, пока флаг не сброшен. */
