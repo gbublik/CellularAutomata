@@ -9,6 +9,8 @@
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Rendering/FilteredCellGridView.h"
+#include "Automata/Rendering/RenderCullVolume.h"
+#include "Kismet/GameplayStatics.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
@@ -1547,7 +1549,7 @@ void AAutomataOrchestrator::StepAsync()
 		});
 }
 
-TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets() const
+TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
 {
 	const int32 NumBuckets = AgeMaterials.Num();
 
@@ -1556,7 +1558,20 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets() const
 	// первый - клеткам, доживших до (N-1) эпох и старше (см. doc-comment
 	// AgeMaterials).
 	TArray<FIntVector> AliveCells;
-	Grid->GetAliveCells(AliveCells);
+
+	// Если включено и в уровне есть ARenderCullVolume - отсекаем клетки вне
+	// его границ ДО бакетирования/построения трансформов (см. doc-comment
+	// bEnableRenderCullVolume) - иначе (выключено или актёра нет) рендерим
+	// всё как раньше.
+	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	if (CullVolume)
+	{
+		Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), AliveCells);
+	}
+	else
+	{
+		Grid->GetAliveCells(AliveCells);
+	}
 
 	TArray<TArray<FIntVector>> Buckets;
 	Buckets.SetNum(NumBuckets);
@@ -1568,6 +1583,15 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets() const
 	}
 
 	return Buckets;
+}
+
+ARenderCullVolume* AAutomataOrchestrator::EnsureRenderCullVolume()
+{
+	if (!IsValid(CachedRenderCullVolume))
+	{
+		CachedRenderCullVolume = Cast<ARenderCullVolume>(UGameplayStatics::GetActorOfClass(GetWorld(), ARenderCullVolume::StaticClass()));
+	}
+	return CachedRenderCullVolume;
 }
 
 void AAutomataOrchestrator::RenderGridImmediate()
@@ -1751,6 +1775,36 @@ void AAutomataOrchestrator::SetCellCullingEnabled(bool bEnabled)
 	// ApplyCellCullDistances()) - иначе переключение хоткеем B, пока новое
 	// поколение не рендерится, визуально ничего не меняло до следующего шага.
 	ApplyCellCullDistances();
+}
+
+void AAutomataOrchestrator::SetRenderCullVolumeEnabled(bool bEnabled)
+{
+	bEnableRenderCullVolume = bEnabled;
+	UE_LOG(LogTemp, Log, TEXT("SetRenderCullVolumeEnabled: отсечение по ARenderCullVolume %s"), bEnabled ? TEXT("включено") : TEXT("выключено"));
+	RefreshRenderCullVolume();
+}
+
+void AAutomataOrchestrator::RefreshRenderCullVolume()
+{
+	if (!Grid)
+	{
+		// Ещё нет сетки (до первого GenerateRandom()) - перерисовывать
+		// нечего, следующий GenerateRandom()/Next() и так учтёт актуальные
+		// границы куба сам.
+		return;
+	}
+
+	// В отличие от ApplyCellCullDistances() (который просто перевызывает
+	// SetCullDistances() на уже построенных инстансах), изменение куба
+	// меняет САМ набор клеток, попадающих в AddInstances - недостаточно
+	// применить настройку "на лету" без полного набора инстансов, нужно
+	// заново пройти BuildAgeBuckets()/AddInstances() для текущего состояния
+	// (не считая новое поколение - RenderGridImmediate() рендерит уже
+	// посчитанный Grid как есть, тот же путь, что Next()/GenerateRandom()).
+	// Иначе переключение хоткеем C или перетаскивание ARenderCullVolume
+	// визуально ничего не меняло бы до следующего шага симуляции - ровно
+	// то же соображение, что и у SetCellCullingEnabled() выше.
+	RenderGridImmediate();
 }
 
 void AAutomataOrchestrator::AdvanceChunkedRender()

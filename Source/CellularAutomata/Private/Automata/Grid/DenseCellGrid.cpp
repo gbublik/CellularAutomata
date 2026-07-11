@@ -149,3 +149,63 @@ void FDenseCellGrid::GetAliveCells(TArray<FIntVector>& OutCells) const
 		}
 	}
 }
+
+void FDenseCellGrid::GetAliveCellsInBounds(const FBox& WorldBounds, TArray<FIntVector>& OutCells) const
+{
+	OutCells.Reset();
+
+	// WorldBounds -> границы в клеточном пространстве. Min - floor, Max -
+	// ceil, чтобы ни одна частично захваченная клетка не потерялась на
+	// краю (сама по-клеточная проверка ниже, для граничных чанков, уже
+	// точная - здесь достаточно консервативной, чуть более широкой рамки).
+	const FIntVector MinCell(
+		FMath::FloorToInt(WorldBounds.Min.X / CellSize),
+		FMath::FloorToInt(WorldBounds.Min.Y / CellSize),
+		FMath::FloorToInt(WorldBounds.Min.Z / CellSize));
+	const FIntVector MaxCell(
+		FMath::CeilToInt(WorldBounds.Max.X / CellSize),
+		FMath::CeilToInt(WorldBounds.Max.Y / CellSize),
+		FMath::CeilToInt(WorldBounds.Max.Z / CellSize));
+
+	for (const TPair<FIntVector, FChunk>& ChunkPair : Chunks)
+	{
+		const FIntVector ChunkOrigin = ChunkPair.Key * ChunkSize;
+		const FIntVector ChunkMax = ChunkOrigin + FIntVector(ChunkSize - 1, ChunkSize - 1, ChunkSize - 1);
+
+		// Чанк вообще не пересекает запрошенные границы - пропускаем
+		// целиком, ни один бит не читаем.
+		const bool bOverlaps =
+			ChunkOrigin.X <= MaxCell.X && ChunkMax.X >= MinCell.X &&
+			ChunkOrigin.Y <= MaxCell.Y && ChunkMax.Y >= MinCell.Y &&
+			ChunkOrigin.Z <= MaxCell.Z && ChunkMax.Z >= MinCell.Z;
+		if (!bOverlaps)
+		{
+			continue;
+		}
+
+		// Чанк целиком внутри границ - каждая живая клетка в нём гарантированно
+		// проходит фильтр, поклеточная проверка не нужна (как в GetAliveCells()).
+		const bool bFullyContained =
+			ChunkOrigin.X >= MinCell.X && ChunkMax.X <= MaxCell.X &&
+			ChunkOrigin.Y >= MinCell.Y && ChunkMax.Y <= MaxCell.Y &&
+			ChunkOrigin.Z >= MinCell.Z && ChunkMax.Z <= MaxCell.Z;
+
+		const FChunk& Chunk = ChunkPair.Value;
+		for (TConstSetBitIterator<> It(Chunk.Bits); It; ++It)
+		{
+			const int32 LocalIndex = It.GetIndex();
+			const int32 LocalX = LocalIndex % ChunkSize;
+			const int32 LocalY = (LocalIndex / ChunkSize) % ChunkSize;
+			const int32 LocalZ = LocalIndex / (ChunkSize * ChunkSize);
+			const FIntVector Cell = ChunkOrigin + FIntVector(LocalX, LocalY, LocalZ);
+
+			if (bFullyContained ||
+				(Cell.X >= MinCell.X && Cell.X <= MaxCell.X &&
+				 Cell.Y >= MinCell.Y && Cell.Y <= MaxCell.Y &&
+				 Cell.Z >= MinCell.Z && Cell.Z <= MaxCell.Z))
+			{
+				OutCells.Add(Cell);
+			}
+		}
+	}
+}

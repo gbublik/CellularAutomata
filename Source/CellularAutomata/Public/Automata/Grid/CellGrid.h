@@ -46,6 +46,30 @@ public:
 		return FVector(Cell.X, Cell.Y, Cell.Z) * CellSize;
 	}
 
+	/** Как GetAliveCells(), но только клетки, чей мировой GridToWorld()
+	 *  попадает внутрь WorldBounds - используется рендером для отсечения
+	 *  клеток вне ARenderCullVolume ДО построения FTransform/AddInstances
+	 *  (см. AAutomataOrchestrator::BuildAgeBuckets()), а не после, как
+	 *  CellCullStartDistance/CellCullEndDistance. Виртуальный с наивной
+	 *  реализацией по умолчанию (полный GetAliveCells() + фильтр по
+	 *  каждой клетке) - конкретные реализации со spatial-структурой (см.
+	 *  FDenseCellGrid, которая может отбраковывать целые чанки) переопределяют
+	 *  более дешёвым путём; тот же паттерн, что и у GridToWorld(). */
+	virtual void GetAliveCellsInBounds(const FBox& WorldBounds, TArray<FIntVector>& OutCells) const
+	{
+		TArray<FIntVector> AllCells;
+		GetAliveCells(AllCells);
+
+		OutCells.Reset();
+		for (const FIntVector& Cell : AllCells)
+		{
+			if (WorldBounds.IsInside(GridToWorld(Cell)))
+			{
+				OutCells.Add(Cell);
+			}
+		}
+	}
+
 protected:
 	float CellSize;
 };

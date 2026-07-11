@@ -28,6 +28,13 @@ public:
 	virtual uint8 GetAge(const FIntVector& Cell) const override;
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) override;
 
+	/** Чанк-осведомлённый override - отбраковывает целиком чанки, не
+	 *  пересекающие WorldBounds (ни один бит не читается), и разбирает
+	 *  побитово только реально пересекающиеся; для чанков, целиком
+	 *  лежащих внутри границ, пропускает поклеточную проверку (как
+	 *  обычный GetAliveCells()). См. doc-comment в FCellGrid. */
+	virtual void GetAliveCellsInBounds(const FBox& WorldBounds, TArray<FIntVector>& OutCells) const override;
+
 private:
 	/** Плотный чанк ChunkSize^3 клеток. AliveCount кэширует число живых
 	 *  бит, чтобы SetAlive(false) мог дёшево (O(1)) определить, опустел

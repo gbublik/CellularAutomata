@@ -155,6 +155,14 @@ protected:
 	 *  CellCullStartDistance/CellCullEndDistance. */
 	void OnToggleCellCulling();
 
+	/** Хоткей (C) - переключает AAutomataOrchestrator::bEnableRenderCullVolume
+	 *  через SetRenderCullVolumeEnabled()/IsRenderCullVolumeEnabled() -
+	 *  включает/выключает отсечение клеток вне ARenderCullVolume ДО
+	 *  построения инстансов (в отличие от OnToggleCellCulling() выше,
+	 *  который переключает пост-хок отсечение по расстоянию на уже
+	 *  построенных инстансах). */
+	void OnToggleRenderCullVolume();
+
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
 	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
 	void OnIncreaseSpeed();
@@ -258,6 +266,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleCellCullingAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleRenderCullVolumeAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> IncreaseSpeedAction;

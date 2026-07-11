@@ -22,6 +22,7 @@ class UProceduralMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
 class FCellularAutomatonComputeStrategy;
+class ARenderCullVolume;
 
 /** Метод расчёта шага симуляции. Gpu пока заглушка (см.
  *  FGpuComputeStrategy) - делегирует на CPU-алгоритм с предупреждением в
@@ -424,6 +425,45 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void SetCellCullingEnabled(bool bEnabled);
 
+	/** Мастер-переключатель отсечения клеток по ARenderCullVolume - если
+	 *  выключено или актёра нет в уровне, BuildAgeBuckets() рендерит все
+	 *  живые клетки как раньше (никогда не "рендерит тихо ничего"). В
+	 *  отличие от CellCullStartDistance/CellCullEndDistance (пост-хок,
+	 *  на уже построенных инстансах), этот фильтр применяется ДО
+	 *  построения FTransform/AddInstances - см. FCellGrid::
+	 *  GetAliveCellsInBounds() и BuildAgeBuckets(). Переключается на лету
+	 *  через хоткей C (см. AGamePlayerController::OnToggleRenderCullVolume())
+	 *  или Details panel. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rendering")
+	bool bEnableRenderCullVolume = true;
+
+	/** Включено ли сейчас отсечение по ARenderCullVolume (см.
+	 *  bEnableRenderCullVolume) - нужно внешнему коду (хоткею C), чтобы
+	 *  решить, на что переключать, не трогая bEnableRenderCullVolume
+	 *  напрямую. */
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsRenderCullVolumeEnabled() const { return bEnableRenderCullVolume; }
+
+	/** Включает/выключает отсечение по ARenderCullVolume (см.
+	 *  bEnableRenderCullVolume). Без CallInEditor - параметр уже
+	 *  редактируется напрямую как чекбокс. Не inline (в отличие от
+	 *  IsRenderCullVolumeEnabled() выше) - сразу зовёт
+	 *  RefreshRenderCullVolume(), а не ждёт следующего посчитанного
+	 *  поколения, тем же способом, что SetCellCullingEnabled() применяет
+	 *  ApplyCellCullDistances() немедленно. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetRenderCullVolumeEnabled(bool bEnabled);
+
+	/** Немедленно перерисовывает ТЕКУЩЕЕ состояние сетки (RenderGridImmediate(),
+	 *  без пересчёта нового поколения) - публичный метод специально для
+	 *  ARenderCullVolume::PostEditMove()/PostEditChangeProperty(), которые
+	 *  зовут его извне класса, когда пользователь закончил двигать/
+	 *  масштабировать куб отсечения, чтобы новые границы сразу отразились
+	 *  на экране. Тоже зовётся из SetRenderCullVolumeEnabled(). No-op, если
+	 *  сетка ещё не создана (до первого GenerateRandom()). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void RefreshRenderCullVolume();
+
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
 	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
 	 *  новую сетку одним кадром, как до появления чанкинга. Никакого
@@ -773,11 +813,24 @@ private:
 	 *  AgeRenderers с AgeMeshComponents, если они разошлись по количеству
 	 *  (см. doc-comment AgeMeshComponents про реинстансинг Live Coding). */
 	void RebuildAgeMeshComponents();
-	/** Раскладывает Grid->GetAliveCells() на AgeMaterials.Num() бакетов по
-	 *  MaterialIndex = N-1-min(Age, N-1) (см. doc-comment AgeMaterials) -
-	 *  общий код для RenderCurrentGrid() (Play) и RenderGridImmediate()
-	 *  (Next()/GenerateRandom()), чтобы не дублировать сам цикл бакетирования. */
-	TArray<TArray<FIntVector>> BuildAgeBuckets() const;
+	/** Раскладывает Grid->GetAliveCells()/GetAliveCellsInBounds() на
+	 *  AgeMaterials.Num() бакетов по MaterialIndex = N-1-min(Age, N-1) (см.
+	 *  doc-comment AgeMaterials) - общий код для RenderCurrentGrid() (Play)
+	 *  и RenderGridImmediate() (Next()/GenerateRandom()), чтобы не
+	 *  дублировать сам цикл бакетирования. Если bEnableRenderCullVolume и в
+	 *  уровне есть ARenderCullVolume (см. EnsureRenderCullVolume()) - список
+	 *  живых клеток сперва отсекается по его границам (GetAliveCellsInBounds()),
+	 *  до какого-либо бакетирования/построения трансформов. Не const (в
+	 *  отличие от прежней версии) - EnsureRenderCullVolume() лениво кэширует
+	 *  найденный актёр, тот же idiom, что EnsureSelectionMeshComponent(); оба
+	 *  вызывающих (RenderCurrentGrid()/RenderGridImmediate()) и так не const. */
+	TArray<TArray<FIntVector>> BuildAgeBuckets();
+	/** Лениво находит и кэширует ARenderCullVolume в мире через
+	 *  UGameplayStatics::GetActorOfClass() (тот же идиом, что
+	 *  AGamePlayerController использует для поиска САМОГО оркестратора) -
+	 *  ревалидирует IsValid() на каждый вызов на случай, если актёр удалён
+	 *  в рантайме, и повторно ищет, если кэш пуст/протух. */
+	ARenderCullVolume* EnsureRenderCullVolume();
 	/** Раскладывает живые клетки по AgeMaterials.Num() бакетам по возрасту
 	 *  (см. AgeMaterials/BuildAgeBuckets()) и рендерит каждый бакет через свой
 	 *  AgeRenderers[i] на AgeMeshComponents[i] - разлитый по кадрам рендер
@@ -814,6 +867,12 @@ private:
 	 *  роняет редактор Access Violation. */
 	UPROPERTY(Transient)
 	AGamePlayerController* GamePC = nullptr;
+
+	/** Кэш EnsureRenderCullVolume() - UPROPERTY(Transient) по той же
+	 *  причине, что GamePC выше (переживает реинстансинг Live Coding, не
+	 *  остаётся мусором). */
+	UPROPERTY(Transient)
+	ARenderCullVolume* CachedRenderCullVolume = nullptr;
 
 	/** true между Start() и Stop() - Tick() копит DeltaTime и вызывает
 	 *  StepAsync() с интервалом 1/Speed секунд, пока флаг не сброшен. */
