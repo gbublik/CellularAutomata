@@ -49,6 +49,9 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 
 	if (AliveCells.Num() == 0)
 	{
+		// Пустая сетка - никакого GPU-буфера не строим, обнуляем прошлое
+		// значение (см. GetLastComputeUploadBytes()'s doc-comment).
+		LastInputBufferBytes = 0;
 		return;
 	}
 
@@ -83,6 +86,9 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 	if (VolumeCells <= 0 || VolumeCells > MaxVolumeCells)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FGpuComputeStrategy::Step: ограничивающий объём (%lld клеток) превышает лимит GPU-буфера - fallback на CPU"), VolumeCells);
+		// Фолбэк на CPU не строит GPU-буфер в этот раз - та же причина, что
+		// и на пустой сетке выше.
+		LastInputBufferBytes = 0;
 		FCpuComputeStrategy CpuFallback;
 		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
 		return;
@@ -90,6 +96,9 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 
 	const int32 VolumeCellsI32 = (int32)VolumeCells;
 	const int32 WordCount = FMath::DivideAndRoundUp(VolumeCellsI32, 32);
+	// См. GetLastComputeUploadBytes() - размер входного битового буфера,
+	// который ниже реально уходит в CreateStructuredBuffer().
+	LastInputBufferBytes = int64(WordCount) * sizeof(uint32);
 
 	TArray<uint32> InputWords;
 	InputWords.SetNumZeroed(WordCount);

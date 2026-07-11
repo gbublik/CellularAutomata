@@ -90,6 +90,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	LastHudStats.bIsRendering = bChunkedRenderInProgress;
 	LastHudStats.CurrentFPS = GAverageFPS;
 	LastHudStats.GenerationCount = GenerationCount;
+	LastHudStats.EstimatedGpuComputeUploadMB = LastGpuComputeUploadBytes / (1024.0 * 1024.0);
 	UpdateGenerationsPerSecond();
 
 	// Разлитый по кадрам рендер (см. bEnableChunkedRender) продолжается
@@ -185,6 +186,8 @@ void AAutomataOrchestrator::ResetGenerationCounter()
 	LastGenerationCountSampleSeconds = FPlatformTime::Seconds();
 	LastHudStats.GenerationCount = 0;
 	LastHudStats.GenerationsPerSecond = 0.0f;
+	LastGpuComputeUploadBytes = 0;
+	LastHudStats.EstimatedGpuComputeUploadMB = 0.0;
 }
 
 void AAutomataOrchestrator::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -1508,8 +1511,14 @@ void AAutomataOrchestrator::Next()
 
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
+			// Снимаем ещё здесь, в фоновом потоке, пока ComputeStrategy жива -
+			// она уничтожится вместе с этой лямбдой, дальше её не будет
+			// (см. FHudStats::EstimatedGpuComputeUploadMB). Отражает только
+			// ПОСЛЕДНИЙ из NumSteps шагов - для HUD-индикатора этого достаточно.
+			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
+
 			// Grid/рендер трогаем только на game thread (см. StepAsync()).
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, NumSteps]() mutable
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, NumSteps, ComputeUploadBytes]() mutable
 			{
 				AAutomataOrchestrator* StrongThis = WeakThis.Get();
 				if (!StrongThis)
@@ -1524,6 +1533,7 @@ void AAutomataOrchestrator::Next()
 				// NumSteps реально посчитанных поколений за одно нажатие F -
 				// см. GenerationCount/FHudStats.
 				StrongThis->GenerationCount += NumSteps;
+				StrongThis->LastGpuComputeUploadBytes = ComputeUploadBytes;
 
 				// Всегда немедленно и целиком, в отличие от ApplyStepResult() -
 				// ручной шаг игнорирует и bEnableChunkedRender, и счётчик
@@ -1590,14 +1600,18 @@ void AAutomataOrchestrator::StepAsync()
 			CellAging::ComputeAges(CurrentGridPtr, *NextGridBuffer);
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
+			// Снимаем ещё здесь, пока ComputeStrategy жива (уничтожится вместе
+			// с этой лямбдой) - см. FHudStats::EstimatedGpuComputeUploadMB.
+			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
+
 			// Grid/рендер трогаем только на game thread - AsyncTask сюда и
 			// маршрутизирует. WeakThis - на случай, если актор уничтожили
 			// (например, level unload) пока фоновый Step() ещё считался.
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, NextGridBuffer = MoveTemp(NextGridBuffer), StepSeconds]() mutable
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, NextGridBuffer = MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes]() mutable
 			{
 				if (AAutomataOrchestrator* StrongThis = WeakThis.Get())
 				{
-					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds);
+					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes);
 				}
 			});
 		});
@@ -1777,9 +1791,10 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 	}
 }
 
-void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds)
+void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes)
 {
 	Grid = MoveTemp(NewGrid);
+	LastGpuComputeUploadBytes = ComputeUploadBytes;
 	// Новое поколение делает старое выделение бессмысленным - сбрасываем
 	// сразу, независимо от того, дойдёт ли дело до фактического рендера ниже
 	// (см. doc-comment SelectedCells в заголовке).

@@ -57,26 +57,34 @@ enum class ECellMeshComponentType : uint8
  *  уходят в AddInstances() (т.е. посчитана от RenderedCellCount, не от
  *  TotalCellCount) - как размер файла: единая величина, а не "до/после".
  *  Считается один раз и хранится здесь, а не пересчитывается заново на
- *  каждого потребителя - сейчас единственный потребитель это UE_LOG в
- *  BuildAgeBuckets() (читает из этой же структуры, не заново из локальных
- *  переменных), а будущий HUD (AGameHud) станет вторым потребителем через
- *  GetLastRenderStats(), без дублирования подсчёта и риска разъехаться в
- *  цифрах с логом - тот же идиом, что FRenderTimings у
- *  FInstancedMeshCellGridRenderer. */
+ *  каждого потребителя - читают её и UE_LOG в BuildAgeBuckets(), и HUD
+ *  (UMainHudWidget) через GetLastRenderStats(), без дублирования подсчёта
+ *  и риска разъехаться в цифрах между логом и экраном - тот же идиом, что
+ *  FRenderTimings у FInstancedMeshCellGridRenderer. USTRUCT(BlueprintType) -
+ *  т.к. читает Blueprint-виджет, не только нативный код (см. FHudStats
+ *  ниже за тем же решением). */
+USTRUCT(BlueprintType)
 struct FCellRenderStats
 {
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rendering")
 	int32 RenderedCellCount = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rendering")
 	int32 TotalCellCount = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rendering")
 	double EstimatedUploadMB = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rendering")
 	int32 BytesPerInstance = 0;
 };
 
-/** Сводка для HUD (см. AAutomataOrchestrator::GetHudStats()) - в отличие от
- *  FCellRenderStats (плайн C++, читает только UE_LOG) это USTRUCT(BlueprintType)
- *  с BlueprintReadOnly-полями, потому что читать её будет UMG/Blueprint-виджет
- *  (UMainHudWidget), а не только нативный код. Считается один раз за тик/шаг
- *  и хранится на оркестраторе - виджет её просто читает через GetHudStats(),
- *  ничего сам не пересчитывает. */
+/** Сводка для HUD (см. AAutomataOrchestrator::GetHudStats()) - USTRUCT(BlueprintType)
+ *  с BlueprintReadOnly-полями, читает её UMG/Blueprint-виджет (UMainHudWidget).
+ *  Считается один раз за тик/шаг и хранится на оркестраторе - виджет её
+ *  просто читает через GetHudStats(), ничего сам не пересчитывает. */
 USTRUCT(BlueprintType)
 struct FHudStats
 {
@@ -103,6 +111,18 @@ struct FHudStats
 	 *  не каждый кадр (см. UpdateGenerationsPerSecond()). */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	float GenerationsPerSecond = 0.0f;
+
+	/** Простая оценка объёма данных, загружаемых в GPU-буфер для
+	 *  compute-шейдера на последнем шаге (FGpuComputeStrategy::Step()'s
+	 *  битовый входной буфер) - 0, если последний шаг считался на CPU
+	 *  (там нет такой загрузки вовсе) или сетка ещё не запускалась.
+	 *  Специально НЕ пересчитывается отдельным сканированием сетки -
+	 *  FGpuComputeStrategy и так строит этот буфер каждый GPU-шаг, здесь
+	 *  просто читается уже посчитанное им число (см.
+	 *  FCellularAutomatonComputeStrategy::GetLastComputeUploadBytes()),
+	 *  без лишней нагрузки на многомиллионных сетках. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	double EstimatedGpuComputeUploadMB = 0.0;
 };
 
 UCLASS()
@@ -521,14 +541,10 @@ public:
 	void RefreshRenderCullVolume();
 
 	/** Метрики последнего BuildAgeBuckets() (клетки/МБ, "отрисовано/всего") -
-	 *  см. doc-comment FCellRenderStats. Точка входа для будущего HUD -
-	 *  читает уже посчитанное, ничего не пересчитывает. Не UFUNCTION -
-	 *  FCellRenderStats плайн C++ структура, не USTRUCT (тот же идиом, что
-	 *  FRenderTimings/GetLastRenderTimings() у FInstancedMeshCellGridRenderer);
-	 *  единственный потребитель пока UE_LOG. Если понадобится показать эти
-	 *  цифры в HUD (UMainHudWidget, см. FHudStats ниже) - тогда стоит
-	 *  перевести саму FCellRenderStats на USTRUCT(BlueprintType), как уже
-	 *  сделано для FHudStats, а не городить отдельные BlueprintCallable-обёртки. */
+	 *  см. doc-comment FCellRenderStats. Читает уже посчитанное, ничего не
+	 *  пересчитывает - используется и UE_LOG внутри BuildAgeBuckets(), и
+	 *  HUD (UMainHudWidget) через этот геттер. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Rendering")
 	const FCellRenderStats& GetLastRenderStats() const { return LastRenderStats; }
 
 	/** Фоновый StepAsync()/Next() сейчас считает поколение - см. doc-comment
@@ -974,6 +990,13 @@ private:
 	UPROPERTY(Transient)
 	FHudStats LastHudStats;
 
+	/** Байты последнего GPU-compute входного буфера (см.
+	 *  FHudStats::EstimatedGpuComputeUploadMB) - обновляется в
+	 *  ApplyStepResult() (Play/автошаг) и в завершении Next() (ручной шаг),
+	 *  читается в Tick() в LastHudStats. 0, если последний шаг считался на
+	 *  CPU или сетка ещё не запускалась. */
+	int64 LastGpuComputeUploadBytes = 0;
+
 	/** Сквозной счётчик поколений с последнего GenerateRandom()/
 	 *  ResetToInitialState() - в отличие от StepsSinceLastRender (сбрасывается
 	 *  на каждом рендере) этот только растёт, пока не начат новый прогон.
@@ -1041,8 +1064,12 @@ private:
 
 	/** Завершение StepAsync() - выполняется на game thread через
 	 *  AsyncTask(ENamedThreads::GameThread, ...), т.к. UInstancedStaticMeshComponent
-	 *  (и HISM) не потокобезопасны. Подставляет посчитанный NewGrid и рендерит его. */
-	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds);
+	 *  (и HISM) не потокобезопасны. Подставляет посчитанный NewGrid и рендерит его.
+	 *  ComputeUploadBytes - см. LastGpuComputeUploadBytes, снят с ComputeStrategy
+	 *  ещё в фоновом потоке (см. FCellularAutomatonComputeStrategy::
+	 *  GetLastComputeUploadBytes()), до того как сама стратегия будет
+	 *  уничтожена по завершении фоновой лямбды. */
+	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes);
 
 	/** Future от Async() в StepAsync() - StepAsync() передаёт фоновому потоку
 	 *  сырой Grid.Get() (см. StepAsync()), поэтому EndPlay() обязан дождаться

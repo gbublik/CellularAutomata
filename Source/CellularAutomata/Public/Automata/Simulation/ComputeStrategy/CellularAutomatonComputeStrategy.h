@@ -27,4 +27,13 @@ public:
 	FCellularAutomatonComputeStrategy& operator=(const FCellularAutomatonComputeStrategy&) = delete;
 
 	virtual void Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid, const FCellularAutomatonRule& Rule) const = 0;
+
+	/** Простая оценка объёма данных, загруженных в GPU-буфер на последнем
+	 *  Step() (см. AAutomataOrchestrator::FHudStats::EstimatedGpuComputeUploadMB) -
+	 *  0 по умолчанию (честный ответ "нет такой загрузки", а не то же
+	 *  число, посчитанное иначе) - CPU-стратегия ничего не грузит в GPU для
+	 *  расчёта, так что не переопределяет. FGpuComputeStrategy переопределяет
+	 *  и возвращает уже посчитанный внутри Step() размер входного битового
+	 *  буфера - без лишнего сканирования сетки специально ради этой цифры. */
+	virtual int64 GetLastComputeUploadBytes() const { return 0; }
 };
