@@ -48,9 +48,6 @@ void AGamePlayerController::SetupInputComponent()
 	ToggleRenderCullVolumeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleRenderCullVolume"));
 	ToggleRenderCullVolumeAction->ValueType = EInputActionValueType::Boolean;
 
-	ToggleHudInteractionModeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleHudInteractionMode"));
-	ToggleHudInteractionModeAction->ValueType = EInputActionValueType::Boolean;
-
 	IncreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseSpeed"));
 	IncreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
 
@@ -103,7 +100,6 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(ToggleWaitForChunkedRenderToFinishAction, EKeys::V);
 	SimulationMappingContext->MapKey(ToggleCellCullingAction, EKeys::B);
 	SimulationMappingContext->MapKey(ToggleRenderCullVolumeAction, EKeys::C);
-	SimulationMappingContext->MapKey(ToggleHudInteractionModeAction, EKeys::H);
 	// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от того,
 	// есть ли у клавиатуры цифровой блок.
 	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Equals);
@@ -150,7 +146,6 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(ToggleWaitForChunkedRenderToFinishAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish);
 		EnhancedInputComp->BindAction(ToggleCellCullingAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleCellCulling);
 		EnhancedInputComp->BindAction(ToggleRenderCullVolumeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleRenderCullVolume);
-		EnhancedInputComp->BindAction(ToggleHudInteractionModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleHudInteractionMode);
 		// Triggered - держа +/-, Speed продолжает меняться каждый кадр, а не
 		// только на однократное нажатие (аналогично F/OnStepOnce()).
 		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
@@ -479,11 +474,6 @@ void AGamePlayerController::OnToggleSelectionMode()
 	SetSelectionModeActive(!bSelectionModeActive);
 }
 
-void AGamePlayerController::OnToggleHudInteractionMode()
-{
-	SetHudInteractionModeActive(!bHudInteractionModeActive);
-}
-
 void AGamePlayerController::SetSelectionModeActive(bool bActive)
 {
 	if (bSelectionModeActive == bActive)
@@ -496,27 +486,11 @@ void AGamePlayerController::SetSelectionModeActive(bool bActive)
 	// пользователь вышел из режима прямо во время удержания ЛКМ.
 	bIsDraggingSelection = false;
 
-	RefreshCameraControlState();
+	// Единый режим взаимодействия мышкой - и клетки, и HUD (см. doc-comment
+	// в заголовке).
+	SetCameraControlEnabled(!bActive);
 
-	UE_LOG(LogTemp, Log, TEXT("Режим выделения клеток: %s"), bActive ? TEXT("включён") : TEXT("выключен"));
-}
-
-void AGamePlayerController::SetHudInteractionModeActive(bool bActive)
-{
-	if (bHudInteractionModeActive == bActive)
-	{
-		return;
-	}
-
-	bHudInteractionModeActive = bActive;
-	RefreshCameraControlState();
-
-	UE_LOG(LogTemp, Log, TEXT("Режим взаимодействия с HUD: %s"), bActive ? TEXT("включён") : TEXT("выключен"));
-}
-
-void AGamePlayerController::RefreshCameraControlState()
-{
-	SetCameraControlEnabled(!(bSelectionModeActive || bHudInteractionModeActive));
+	UE_LOG(LogTemp, Log, TEXT("Режим выделения клеток/HUD: %s"), bActive ? TEXT("включён") : TEXT("выключен"));
 }
 
 void AGamePlayerController::OnSelectDragStarted()
