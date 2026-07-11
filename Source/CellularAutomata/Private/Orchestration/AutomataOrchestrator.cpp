@@ -1582,6 +1582,17 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
 		Buckets[MaterialIndex].Add(Cell);
 	}
 
+	// Дешёвая оценка "сколько данных мы сами просим GPU принять" - не
+	// настоящий занятый VRAM (не учитывает оверхед LOD-дерева HISM, ресурсы
+	// меша/материала и накладные расходы драйвера), а именно размер TArray
+	// <FTransform>, который renderers ниже строят и передают в AddInstances() -
+	// опережающий индикатор нагрузки, растущий вместе с реальным риском
+	// GPU-краша (см. ARenderCullVolume/GPUCrash в истории проекта). Дешева -
+	// чистая арифметика на уже посчитанных числах, без RHI-запросов.
+	const SIZE_T EstimatedUploadBytes = SIZE_T(AliveCells.Num()) * sizeof(FTransform);
+	UE_LOG(LogTemp, Log, TEXT("BuildAgeBuckets: %d инстансов на выгрузку в AddInstances - оценка ~%.2f МБ (%d байт/инстанс, TArray<FTransform>, без учёта оверхеда HISM/драйвера)"),
+		AliveCells.Num(), EstimatedUploadBytes / (1024.0 * 1024.0), (int32)sizeof(FTransform));
+
 	return Buckets;
 }
 
