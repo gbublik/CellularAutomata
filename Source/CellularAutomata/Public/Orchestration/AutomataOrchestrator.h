@@ -48,6 +48,29 @@ enum class ECellMeshComponentType : uint8
 	HierarchicalInstanced
 };
 
+/** Метрики последнего BuildAgeBuckets() (см. doc-comment внутри неё).
+ *  Два разных вида числа с разным смыслом: RenderedCellCount/TotalCellCount -
+ *  ПАРА (живых отрисовано/живых всего в сетке, после отсечения
+ *  ARenderCullVolume вс. без него) - показывает масштаб расчётов, сколько
+ *  из всей симуляции реально видно на экране. EstimatedUploadMB - ОДНО
+ *  общее число, не пара - это оценка размера данных, которые реально
+ *  уходят в AddInstances() (т.е. посчитана от RenderedCellCount, не от
+ *  TotalCellCount) - как размер файла: единая величина, а не "до/после".
+ *  Считается один раз и хранится здесь, а не пересчитывается заново на
+ *  каждого потребителя - сейчас единственный потребитель это UE_LOG в
+ *  BuildAgeBuckets() (читает из этой же структуры, не заново из локальных
+ *  переменных), а будущий HUD (AGameHud) станет вторым потребителем через
+ *  GetLastRenderStats(), без дублирования подсчёта и риска разъехаться в
+ *  цифрах с логом - тот же идиом, что FRenderTimings у
+ *  FInstancedMeshCellGridRenderer. */
+struct FCellRenderStats
+{
+	int32 RenderedCellCount = 0;
+	int32 TotalCellCount = 0;
+	double EstimatedUploadMB = 0.0;
+	int32 BytesPerInstance = 0;
+};
+
 UCLASS()
 class CELLULARAUTOMATA_API AAutomataOrchestrator : public AActor
 {
@@ -464,6 +487,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void RefreshRenderCullVolume();
 
+	/** Метрики последнего BuildAgeBuckets() (клетки/МБ, "отрисовано/всего") -
+	 *  см. doc-comment FCellRenderStats. Точка входа для будущего HUD -
+	 *  читает уже посчитанное, ничего не пересчитывает. Не UFUNCTION -
+	 *  FCellRenderStats плайн C++ структура, не USTRUCT (тот же идиом, что
+	 *  FRenderTimings/GetLastRenderTimings() у FInstancedMeshCellGridRenderer);
+	 *  будущий HUD (AGameHud) - нативный C++ Canvas-рендер, как и
+	 *  существующая отрисовка рамки выделения, так что Blueprint-видимость
+	 *  здесь не нужна. */
+	const FCellRenderStats& GetLastRenderStats() const { return LastRenderStats; }
+
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
 	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
 	 *  новую сетку одним кадром, как до появления чанкинга. Никакого
@@ -873,6 +906,12 @@ private:
 	 *  остаётся мусором). */
 	UPROPERTY(Transient)
 	ARenderCullVolume* CachedRenderCullVolume = nullptr;
+
+	/** См. GetLastRenderStats()/FCellRenderStats - плайн член (не
+	 *  UPROPERTY), заполняется заново в каждом BuildAgeBuckets(), не нужно
+	 *  переживать реинстансинг Live Coding (просто пересчитается на
+	 *  следующем рендере). */
+	FCellRenderStats LastRenderStats;
 
 	/** true между Start() и Stop() - Tick() копит DeltaTime и вызывает
 	 *  StepAsync() с интервалом 1/Speed секунд, пока флаг не сброшен. */
