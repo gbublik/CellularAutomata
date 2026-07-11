@@ -35,6 +35,11 @@ public:
 	 *  обычный GetAliveCells()). См. doc-comment в FCellGrid. */
 	virtual void GetAliveCellsInBounds(const FBox& WorldBounds, TArray<FIntVector>& OutCells) const override;
 
+	/** Дёшево - Chunks уже хранит нужные ключи, никакого нового
+	 *  сканирования клеток (см. doc-comment в FCellGrid). */
+	virtual void GetOccupiedChunkCoords(TArray<FIntVector>& OutChunkCoords) const override;
+	virtual float GetChunkWorldSize() const override { return ChunkSize * CellSize; }
+
 private:
 	/** Плотный чанк ChunkSize^3 клеток. AliveCount кэширует число живых
 	 *  бит, чтобы SetAlive(false) мог дёшево (O(1)) определить, опустел

@@ -17,6 +17,7 @@
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Automata/Selection/CellSelection.h"
 #include "Automata/Meshing/CellMeshBuilder.h"
+#include "Automata/Meshing/ChunkGridView.h"
 #include "Automata/Persistence/AutomatonStateSerializer.h"
 #include "ProceduralMeshComponent.h"
 #include "Async/Async.h"
@@ -708,6 +709,105 @@ void AAutomataOrchestrator::ClearBakedMesh()
 	}
 }
 
+void AAutomataOrchestrator::EnsureGhostMeshComponent()
+{
+	if (GhostMeshComponent)
+	{
+		return;
+	}
+
+	GhostMeshComponent = NewObject<UProceduralMeshComponent>(this);
+	GhostMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	GhostMeshComponent->SetupAttachment(CellsMeshHierarchical);
+	GhostMeshComponent->RegisterComponent();
+}
+
+void AAutomataOrchestrator::ClearGhostShape()
+{
+	if (GhostMeshComponent)
+	{
+		GhostMeshComponent->ClearAllMeshSections();
+	}
+	GhostShapeGenerationsSinceRefresh = 0;
+}
+
+void AAutomataOrchestrator::RefreshGhostShape()
+{
+	if (!bEnableGhostShape || !Grid)
+	{
+		ClearGhostShape();
+		return;
+	}
+
+	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
+	if (!CullVolume)
+	{
+		// Без активного куба отсекать не от чего - отсекать "снаружи" значит
+		// "снаружи ничего" (отсекать нечего), фича молча ничего не делает,
+		// не подменяет поведение (тот же принцип, что у bEnableRenderCullVolume).
+		ClearGhostShape();
+		return;
+	}
+
+	TArray<FIntVector> OccupiedChunks;
+	Grid->GetOccupiedChunkCoords(OccupiedChunks);
+	const float ChunkWorldSize = Grid->GetChunkWorldSize();
+	if (OccupiedChunks.Num() == 0 || ChunkWorldSize <= 0.0f)
+	{
+		// ChunkWorldSize <= 0 - грид не поддерживает чанкинг (см. doc-comment
+		// FCellGrid::GetChunkWorldSize()) - фича молча ничего не делает.
+		ClearGhostShape();
+		return;
+	}
+
+	// Оставляем только чанки СНАРУЖИ куба - внутри уже рисует обычный
+	// детальный путь (BuildAgeBuckets()). Чанки на границе (частично
+	// внутри/снаружи) сознательно остаются "внутри" (не отбрасываются) -
+	// минимальное дублирование на границе дешевле точной обрезки.
+	const FBox CullBounds = CullVolume->GetWorldBounds();
+	TArray<FIntVector> OutsideChunks;
+	OutsideChunks.Reserve(OccupiedChunks.Num());
+	for (const FIntVector& ChunkCoord : OccupiedChunks)
+	{
+		const FVector ChunkOrigin = FVector(ChunkCoord) * ChunkWorldSize;
+		const FBox ChunkBounds(ChunkOrigin, ChunkOrigin + FVector(ChunkWorldSize));
+		if (!CullBounds.Intersect(ChunkBounds))
+		{
+			OutsideChunks.Add(ChunkCoord);
+		}
+	}
+
+	if (OutsideChunks.Num() == 0)
+	{
+		ClearGhostShape();
+		return;
+	}
+
+	UMaterialInterface* MeshMaterial = GhostShapeMaterial;
+	if (!MeshMaterial && AgeMaterials.Num() > 0)
+	{
+		MeshMaterial = AgeMaterials[0];
+		UE_LOG(LogTemp, Log, TEXT("RefreshGhostShape: GhostShapeMaterial не назначен - использую AgeMaterials[0]"));
+	}
+
+	const double BuildStartSeconds = FPlatformTime::Seconds();
+	FChunkGridView ChunkView(ChunkWorldSize, OutsideChunks);
+	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(ChunkView, OutsideChunks);
+	const double BuildSeconds = FPlatformTime::Seconds() - BuildStartSeconds;
+
+	EnsureGhostMeshComponent();
+	GhostMeshComponent->ClearAllMeshSections();
+	GhostMeshComponent->CreateMeshSection_LinearColor(0, MeshData.Vertices, MeshData.Triangles, MeshData.Normals, MeshData.UVs,
+		TArray<FLinearColor>(), TArray<FProcMeshTangent>(), /*bCreateCollision=*/false);
+	if (MeshMaterial)
+	{
+		GhostMeshComponent->SetMaterial(0, MeshMaterial);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("RefreshGhostShape: %d/%d чанков снаружи куба -> %d вершин / %d треугольников (%.2f мс)"),
+		OutsideChunks.Num(), OccupiedChunks.Num(), MeshData.Vertices.Num(), MeshData.Triangles.Num() / 3, BuildSeconds * 1000.0);
+}
+
 void AAutomataOrchestrator::BakeCellsToMesh()
 {
 	// Мы освобождаем Grid ниже - фоновый шаг (Next()/StepAsync()) в этот
@@ -867,6 +967,7 @@ void AAutomataOrchestrator::StartFromSelection()
 	// Новый прогон убирает запечённый меш-снимок, если он был (см.
 	// BakeCellsToMesh()) - как и в GenerateRandom()/ResetToInitialState().
 	ClearBakedMesh();
+	ClearGhostShape();
 
 	if (GamePC)
 	{
@@ -914,6 +1015,7 @@ void AAutomataOrchestrator::ResetToInitialState()
 	// Новый прогон убирает запечённый меш-снимок, если он был (см.
 	// BakeCellsToMesh()) - как и в GenerateRandom().
 	ClearBakedMesh();
+	ClearGhostShape();
 
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
@@ -1264,6 +1366,7 @@ void AAutomataOrchestrator::LoadStateFromFile()
 	// CellSize/ChunkSize), потом сетка.
 	ApplySaveHeader(Header);
 	ClearBakedMesh();
+	ClearGhostShape();
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
 	SelectedCells.Reset();
@@ -1369,6 +1472,7 @@ void AAutomataOrchestrator::GenerateRandom()
 	// Новый прогон убирает запечённый меш-снимок, если он был (см.
 	// BakeCellsToMesh()) - иначе новые клетки рисовались бы сквозь него.
 	ClearBakedMesh();
+	ClearGhostShape();
 
 	// GenerateRandom() всегда генерирует новое состояние с нуля и подхватывает
 	// актуальный CellSize, если его поменяли в Details panel
@@ -1534,6 +1638,18 @@ void AAutomataOrchestrator::Next()
 				// см. GenerationCount/FHudStats.
 				StrongThis->GenerationCount += NumSteps;
 				StrongThis->LastGpuComputeUploadBytes = ComputeUploadBytes;
+
+				// Ghost Shape пересчитывается по своему отдельному интервалу
+				// поколений - см. ApplyStepResult() и план "Ghost Shape".
+				if (StrongThis->bEnableGhostShape)
+				{
+					StrongThis->GhostShapeGenerationsSinceRefresh += NumSteps;
+					if (StrongThis->GhostShapeGenerationsSinceRefresh >= FMath::Max(1, StrongThis->GhostShapeRefreshInterval))
+					{
+						StrongThis->GhostShapeGenerationsSinceRefresh = 0;
+						StrongThis->RefreshGhostShape();
+					}
+				}
 
 				// Всегда немедленно и целиком, в отличие от ApplyStepResult() -
 				// ручной шаг игнорирует и bEnableChunkedRender, и счётчик
@@ -1811,6 +1927,18 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// поколения (см. GenerationCount/FHudStats).
 	++GenerationCount;
 
+	// Ghost Shape пересчитывается по своему отдельному интервалу поколений,
+	// независимо от StepsPerRender - см. план "Ghost Shape".
+	if (bEnableGhostShape)
+	{
+		++GhostShapeGenerationsSinceRefresh;
+		if (GhostShapeGenerationsSinceRefresh >= FMath::Max(1, GhostShapeRefreshInterval))
+		{
+			GhostShapeGenerationsSinceRefresh = 0;
+			RefreshGhostShape();
+		}
+	}
+
 	++StepsSinceLastRender;
 	if (StepsSinceLastRender < StepsPerRender)
 	{
@@ -1899,6 +2027,20 @@ void AAutomataOrchestrator::RefreshRenderCullVolume()
 	// визуально ничего не меняло бы до следующего шага симуляции - ровно
 	// то же соображение, что и у SetCellCullingEnabled() выше.
 	RenderGridImmediate();
+
+	// Ghost Shape отсекает по тем же границам куба (см. RefreshGhostShape()) -
+	// без этого вызова передвинутый/ресайзнутый куб оставлял бы старый
+	// ghost-силуэт висеть до истечения GhostShapeRefreshInterval поколений
+	// (могло потребовать "прокрутить несколько эпох", прежде чем форма
+	// подстроится). PostEditMove(bFinished=true)/PostEditChangeProperty на
+	// ARenderCullVolume уже сами по себе - естественный дебаунс: событие
+	// приходит один раз по завершении перетаскивания/правки, а не на каждый
+	// промежуточный тик драга.
+	if (bEnableGhostShape)
+	{
+		GhostShapeGenerationsSinceRefresh = 0;
+		RefreshGhostShape();
+	}
 }
 
 void AAutomataOrchestrator::AdvanceChunkedRender()

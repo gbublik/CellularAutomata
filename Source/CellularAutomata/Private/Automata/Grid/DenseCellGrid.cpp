@@ -150,6 +150,15 @@ void FDenseCellGrid::GetAliveCells(TArray<FIntVector>& OutCells) const
 	}
 }
 
+void FDenseCellGrid::GetOccupiedChunkCoords(TArray<FIntVector>& OutChunkCoords) const
+{
+	OutChunkCoords.Reset(Chunks.Num());
+	for (const TPair<FIntVector, FChunk>& ChunkPair : Chunks)
+	{
+		OutChunkCoords.Add(ChunkPair.Key);
+	}
+}
+
 void FDenseCellGrid::GetAliveCellsInBounds(const FBox& WorldBounds, TArray<FIntVector>& OutCells) const
 {
 	OutCells.Reset();

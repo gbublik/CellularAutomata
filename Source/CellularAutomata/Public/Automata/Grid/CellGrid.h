@@ -70,6 +70,26 @@ public:
 		}
 	}
 
+	/** Координаты занятых чанков (не отдельных клеток) - для дешёвой
+	 *  грубой геометрии (см. FChunkGridView/AAutomataOrchestrator::
+	 *  RefreshGhostShape()), где один "кубик" на весь чанк, а не на
+	 *  клетку. Виртуальный с наивным дефолтом (пустой список - "чанкинг
+	 *  не поддерживается этой реализацией грида"), тот же паттерн, что и
+	 *  GetAliveCellsInBounds(); FDenseCellGrid переопределяет дёшево -
+	 *  просто отдаёт ключи уже существующей TMap<FIntVector, FChunk>, без
+	 *  нового сканирования клеток. */
+	virtual void GetOccupiedChunkCoords(TArray<FIntVector>& OutChunkCoords) const
+	{
+		OutChunkCoords.Reset();
+	}
+
+	/** Мировой размер одного чанка (ChunkSize * CellSize у FDenseCellGrid) -
+	 *  0, если чанкинг не поддерживается (см. GetOccupiedChunkCoords()). */
+	virtual float GetChunkWorldSize() const
+	{
+		return 0.0f;
+	}
+
 protected:
 	float CellSize;
 };

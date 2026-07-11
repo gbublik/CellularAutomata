@@ -271,6 +271,35 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Baking")
 	UMaterialInterface* BakedMeshMaterial = nullptr;
 
+	/** Эксперимент (как и Baking выше): грубый "призрачный" силуэт живых
+	 *  клеток ВНЕ ARenderCullVolume, построенный по занятым ЧАНКАМ (не
+	 *  клеткам) - один кубик геометрии на чанк вместо одного на клетку, на
+	 *  порядки дешевле точного BakeCellsToMesh(). В отличие от него -
+	 *  НЕ одноразовый снимок: сосуществует с живой симуляцией, Grid не
+	 *  освобождается, пересчитывается на лету раз в GhostShapeRefreshInterval
+	 *  поколений (см. RefreshGhostShape()). Молча ничего не делает без
+	 *  активного ARenderCullVolume (отсекать не от чего) - выключено по
+	 *  умолчанию. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GhostShape")
+	bool bEnableGhostShape = false;
+
+	/** Раз в сколько реально посчитанных поколений пересчитывать
+	 *  ghost-форму - CellMeshBuilder::BuildFromCells() синхронный и
+	 *  однопоточный (как и в точном bake), пересчёт на КАЖДОЕ поколение
+	 *  при большом числе занятых чанков может быть заметен на game thread,
+	 *  поэтому не каждый раз, как и StepsPerRender для основного рендера,
+	 *  но отдельным счётчиком (см. GhostShapeGenerationsSinceRefresh). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GhostShape",
+			  meta = (ClampMin = "1", EditCondition = "bEnableGhostShape"))
+	int32 GhostShapeRefreshInterval = 10;
+
+	/** Материал ghost-меша (полупрозрачный "призрак" - см. bEnableGhostShape).
+	 *  Не обязателен - если не назначен, берётся AgeMaterials[0] с логом,
+	 *  как и у BakedMeshMaterial. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GhostShape",
+			  meta = (EditCondition = "bEnableGhostShape"))
+	UMaterialInterface* GhostShapeMaterial = nullptr;
+
 	/** "Сохранить" (хоткей Ctrl+S, стандартная комбинация): если в этой
 	 *  сессии уже есть путь от предыдущего SaveStateAs()/LoadStateFromFile()
 	 *  (LastSaveFilePath) - перезаписывает его БЕЗ диалога; иначе не знает,
@@ -818,6 +847,42 @@ private:
 	 *  GenerateRandom()/ResetToInitialState()/StartFromSelection(): новый
 	 *  прогон не должен рисоваться сквозь/поверх старого снимка. */
 	void ClearBakedMesh();
+
+	/** Грубый "призрачный" силуэт вне ARenderCullVolume (см. bEnableGhostShape) -
+	 *  отдельный компонент, НЕ переиспользует BakedMeshComponent: у того
+	 *  принципиально другой, взаимоисключающий жизненный цикл ("заморозить и
+	 *  выгрузить Grid"), а Ghost Shape наоборот сосуществует с живой
+	 *  симуляцией. UPROPERTY - та же причина, что и у остальных Transient-
+	 *  компонентов (переживает реинстансинг Live Coding). */
+	UPROPERTY(Transient)
+	UProceduralMeshComponent* GhostMeshComponent = nullptr;
+
+	/** Создаёт GhostMeshComponent при первом обращении - зеркалит
+	 *  EnsureBakedMeshComponent(). */
+	void EnsureGhostMeshComponent();
+
+	/** Сколько поколений посчитано с последнего RefreshGhostShape() -
+	 *  см. GhostShapeRefreshInterval. Плайн член - пересчитывается заново
+	 *  на каждый прогон, переживать реинстансинг незачем. */
+	int32 GhostShapeGenerationsSinceRefresh = 0;
+
+	/** Пересчитывает ghost-меш: Grid->GetOccupiedChunkCoords() -> фильтр по
+	 *  чанк-AABB против ARenderCullVolume::GetWorldBounds() (оставляем
+	 *  только чанки СНАРУЖИ куба) -> CellMeshBuilder::BuildFromCells() через
+	 *  FChunkGridView -> CreateMeshSection_LinearColor(). No-op (с
+	 *  ClearGhostShape()), если bEnableGhostShape выключен, нет валидного
+	 *  ARenderCullVolume, или снаружи куба нет ни одного занятого чанка -
+	 *  без активного куба отсекать не от чего, фича молча ничего не делает,
+	 *  а не подменяет поведение. Вызывается из ApplyStepResult()/Next() раз
+	 *  в GhostShapeRefreshInterval поколений (не каждое - см. её doc-comment). */
+	void RefreshGhostShape();
+
+	/** Убирает ghost-меш, если он есть - вызывается из тех же четырёх точек,
+	 *  что и ClearBakedMesh() (GenerateRandom()/StartFromSelection()/
+	 *  LoadStateFromFile()/ResetToInitialState()): новый прогон не должен
+	 *  показывать силуэт от прошлого. Тоже сбрасывает
+	 *  GhostShapeGenerationsSinceRefresh. */
+	void ClearGhostShape();
 
 	/** Гарантирует существование Saved/AutomataSaves/ и возвращает её
 	 *  абсолютный путь - стартовая папка диалогов Save/Load. */
