@@ -296,14 +296,23 @@ public:
 	UMaterialInterface* BakedMeshMaterial = nullptr;
 
 	/** Эксперимент (как и Baking выше): грубый "призрачный" силуэт живых
-	 *  клеток ВНЕ ARenderCullVolume, построенный по занятым ЧАНКАМ (не
-	 *  клеткам) - один кубик геометрии на чанк вместо одного на клетку, на
-	 *  порядки дешевле точного BakeCellsToMesh(). В отличие от него -
-	 *  НЕ одноразовый снимок: сосуществует с живой симуляцией, Grid не
-	 *  освобождается, пересчитывается на лету раз в GhostShapeRefreshInterval
-	 *  поколений (см. RefreshGhostShape()). Молча ничего не делает без
-	 *  активного ARenderCullVolume (отсекать не от чего) - выключено по
-	 *  умолчанию. */
+	 *  клеток, построенный по занятым ЧАНКАМ (не клеткам) - один кубик
+	 *  геометрии на чанк вместо одного на клетку, на порядки дешевле
+	 *  точного BakeCellsToMesh(). В отличие от него - НЕ одноразовый снимок:
+	 *  сосуществует с живой симуляцией, Grid не освобождается, пересчитывается
+	 *  на лету раз в GhostShapeRefreshInterval поколений (см. RefreshGhostShape()).
+	 *
+	 *  Два режима, в зависимости от bEnableRenderCullVolume и наличия
+	 *  ARenderCullVolume на уровне: (1) куб активен - силуэт строится ТОЛЬКО
+	 *  по чанкам СНАРУЖИ куба, детальный поклеточный рендер (BuildAgeBuckets())
+	 *  по-прежнему рисует всё, что внутри - силуэт здесь чистое дополнение;
+	 *  (2) куба нет или он выключен - "снаружи" значит "везде": силуэт
+	 *  покрывает всю сетку целиком и в этом случае ПОЛНОСТЬЮ ЗАМЕНЯЕТ
+	 *  детальный рендер (см. ShouldGhostShapeReplaceDetailedRender()) -
+	 *  именно так эта фича экономит время при большом числе живых клеток,
+	 *  когда сам детальный путь (сбор + AddInstances по каждой клетке)
+	 *  становится дорогим, а нужен лишь общий силуэт того, как развивается
+	 *  структура. Выключено по умолчанию. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GhostShape")
 	bool bEnableGhostShape = false;
 
@@ -973,16 +982,30 @@ private:
 	 *  на каждый прогон, переживать реинстансинг незачем. */
 	int32 GhostShapeGenerationsSinceRefresh = 0;
 
-	/** Пересчитывает ghost-меш: Grid->GetOccupiedChunkCoords() -> фильтр по
-	 *  чанк-AABB против ARenderCullVolume::GetWorldBounds() (оставляем
-	 *  только чанки СНАРУЖИ куба) -> CellMeshBuilder::BuildFromCells() через
-	 *  FChunkGridView -> CreateMeshSection_LinearColor(). No-op (с
-	 *  ClearGhostShape()), если bEnableGhostShape выключен, нет валидного
-	 *  ARenderCullVolume, или снаружи куба нет ни одного занятого чанка -
-	 *  без активного куба отсекать не от чего, фича молча ничего не делает,
-	 *  а не подменяет поведение. Вызывается из ApplyStepResult()/Next() раз
-	 *  в GhostShapeRefreshInterval поколений (не каждое - см. её doc-comment). */
+	/** Пересчитывает ghost-меш: Grid->GetOccupiedChunkCoords() -> если есть
+	 *  активный ARenderCullVolume, фильтр по чанк-AABB против
+	 *  GetWorldBounds() (оставляем только чанки СНАРУЖИ куба), иначе -
+	 *  ВСЕ занятые чанки целиком (см. doc-comment bEnableGhostShape, режим
+	 *  "куба нет") -> CellMeshBuilder::BuildFromCells() через FChunkGridView
+	 *  -> CreateMeshSection_LinearColor(). No-op (с ClearGhostShape()), если
+	 *  bEnableGhostShape выключен, нет сетки, или (в режиме "снаружи куба")
+	 *  снаружи не осталось ни одного занятого чанка. Вызывается из
+	 *  ApplyStepResult()/Next() раз в GhostShapeRefreshInterval поколений
+	 *  (не каждое - см. её doc-comment), и немедленно из SetGhostShapeEnabled()/
+	 *  RefreshRenderCullVolume(). */
 	void RefreshGhostShape();
+
+	/** Правда, когда Ghost Shape сейчас покрывает ВСЮ сетку целиком (не
+	 *  только снаружи куба) и поэтому должен ЗАМЕНИТЬ детальный поклеточный
+	 *  рендер, а не дополнять его - см. doc-comment bEnableGhostShape. Это
+	 *  ровно тот случай, когда bEnableGhostShape включён, а активной границы
+	 *  отсечения нет (сам куб выключен через bEnableRenderCullVolume, либо
+	 *  на уровне вообще нет ARenderCullVolume) - иначе (куб активен) силуэт
+	 *  остаётся чистым дополнением снаружи куба, детальный путь работает как
+	 *  обычно. Пересчитывается заново на каждый вызов (та же конвенция, что
+	 *  у CreateComputeStrategy()/BuildAgeBuckets() - никакого кэширования
+	 *  между вызовами), используется из RenderGridImmediate()/RenderCurrentGrid(). */
+	bool ShouldGhostShapeReplaceDetailedRender();
 
 	/** Убирает ghost-меш, если он есть - вызывается из тех же четырёх точек,
 	 *  что и ClearBakedMesh() (GenerateRandom()/StartFromSelection()/

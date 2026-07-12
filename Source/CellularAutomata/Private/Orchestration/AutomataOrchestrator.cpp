@@ -901,28 +901,6 @@ void AAutomataOrchestrator::RefreshGhostShape()
 		return;
 	}
 
-	if (!bEnableRenderCullVolume)
-	{
-		// Выключен сам куб (хоткей C) - детальный путь теперь и так рисует
-		// ВЕСЬ грид целиком (см. RenderGridImmediate()), "снаружи" куба
-		// больше не существует, значит грубому силуэту нечего добавлять -
-		// оставлять его висеть означало бы прозрачный дубль поверх уже
-		// полностью нарисованных клеток. Тот же принцип, что и ниже (нет
-		// самого актора куба), просто другая причина отсутствия границ.
-		ClearGhostShape();
-		return;
-	}
-
-	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
-	if (!CullVolume)
-	{
-		// Без активного куба отсекать не от чего - отсекать "снаружи" значит
-		// "снаружи ничего" (отсекать нечего), фича молча ничего не делает,
-		// не подменяет поведение (тот же принцип, что у bEnableRenderCullVolume).
-		ClearGhostShape();
-		return;
-	}
-
 	TArray<FIntVector> OccupiedChunks;
 	Grid->GetOccupiedChunkCoords(OccupiedChunks);
 	const float ChunkWorldSize = Grid->GetChunkWorldSize();
@@ -934,24 +912,40 @@ void AAutomataOrchestrator::RefreshGhostShape()
 		return;
 	}
 
-	// Оставляем только чанки СНАРУЖИ куба - внутри уже рисует обычный
-	// детальный путь (BuildAgeBuckets()). Чанки на границе (частично
-	// внутри/снаружи) сознательно остаются "внутри" (не отбрасываются) -
-	// минимальное дублирование на границе дешевле точной обрезки.
-	const FBox CullBounds = CullVolume->GetWorldBounds();
-	TArray<FIntVector> OutsideChunks;
-	OutsideChunks.Reserve(OccupiedChunks.Num());
-	for (const FIntVector& ChunkCoord : OccupiedChunks)
+	// Куб отсечения активен (bEnableRenderCullVolume и актёр есть на уровне) -
+	// оставляем только чанки СНАРУЖИ куба, внутри уже рисует обычный
+	// детальный путь (BuildAgeBuckets()), силуэт здесь чистое дополнение.
+	// Иначе (куб выключен хоткеем C, либо его вообще нет на уровне) -
+	// границы отсечения нет, "снаружи" значит "везде": силуэт покрывает всю
+	// сетку целиком и заменяет детальный рендер (см.
+	// ShouldGhostShapeReplaceDetailedRender(), RenderGridImmediate()/
+	// RenderCurrentGrid()) - именно этот режим и даёт выигрыш в скорости
+	// при большом числе клеток без активного куба.
+	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	TArray<FIntVector> ChunksToGhost;
+	if (CullVolume)
 	{
-		const FVector ChunkOrigin = FVector(ChunkCoord) * ChunkWorldSize;
-		const FBox ChunkBounds(ChunkOrigin, ChunkOrigin + FVector(ChunkWorldSize));
-		if (!CullBounds.Intersect(ChunkBounds))
+		// Чанки на границе (частично внутри/снаружи) сознательно остаются
+		// "внутри" (не отбрасываются) - минимальное дублирование на границе
+		// дешевле точной обрезки.
+		const FBox CullBounds = CullVolume->GetWorldBounds();
+		ChunksToGhost.Reserve(OccupiedChunks.Num());
+		for (const FIntVector& ChunkCoord : OccupiedChunks)
 		{
-			OutsideChunks.Add(ChunkCoord);
+			const FVector ChunkOrigin = FVector(ChunkCoord) * ChunkWorldSize;
+			const FBox ChunkBounds(ChunkOrigin, ChunkOrigin + FVector(ChunkWorldSize));
+			if (!CullBounds.Intersect(ChunkBounds))
+			{
+				ChunksToGhost.Add(ChunkCoord);
+			}
 		}
 	}
+	else
+	{
+		ChunksToGhost = OccupiedChunks;
+	}
 
-	if (OutsideChunks.Num() == 0)
+	if (ChunksToGhost.Num() == 0)
 	{
 		ClearGhostShape();
 		return;
@@ -965,8 +959,8 @@ void AAutomataOrchestrator::RefreshGhostShape()
 	}
 
 	const double BuildStartSeconds = FPlatformTime::Seconds();
-	FChunkGridView ChunkView(ChunkWorldSize, OutsideChunks);
-	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(ChunkView, OutsideChunks);
+	FChunkGridView ChunkView(ChunkWorldSize, ChunksToGhost);
+	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(ChunkView, ChunksToGhost);
 	const double BuildSeconds = FPlatformTime::Seconds() - BuildStartSeconds;
 
 	EnsureGhostMeshComponent();
@@ -978,8 +972,29 @@ void AAutomataOrchestrator::RefreshGhostShape()
 		GhostMeshComponent->SetMaterial(0, MeshMaterial);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("RefreshGhostShape: %d/%d чанков снаружи куба -> %d вершин / %d треугольников (%.2f мс)"),
-		OutsideChunks.Num(), OccupiedChunks.Num(), MeshData.Vertices.Num(), MeshData.Triangles.Num() / 3, BuildSeconds * 1000.0);
+	UE_LOG(LogTemp, Log, TEXT("RefreshGhostShape: %d/%d чанков %s -> %d вершин / %d треугольников (%.2f мс)"),
+		ChunksToGhost.Num(), OccupiedChunks.Num(), CullVolume ? TEXT("снаружи куба") : TEXT("(весь грид, куба нет)"),
+		MeshData.Vertices.Num(), MeshData.Triangles.Num() / 3, BuildSeconds * 1000.0);
+}
+
+bool AAutomataOrchestrator::ShouldGhostShapeReplaceDetailedRender()
+{
+	if (!bEnableGhostShape)
+	{
+		return false;
+	}
+
+	// Нет активной границы отсечения (сам куб выключен bEnableRenderCullVolume,
+	// либо на уровне вообще нет ARenderCullVolume) - RefreshGhostShape() в
+	// этом случае строит силуэт по ВСЕМ занятым чанкам (см. её doc-comment),
+	// т.е. он уже покрывает всю сетку целиком, и детальный поклеточный
+	// рендер (BuildAgeBuckets()+AddInstances по каждой живой клетке) здесь
+	// был бы именно той дорогой работой, которую эта фича должна заменять
+	// при большом числе клеток. Пока куб активен, детальный путь и так уже
+	// дешёвый (Grid->GetAliveCellsInBounds() ограничивает его объёмом куба) -
+	// там силуэт остаётся чистым дополнением снаружи, детальный путь не
+	// трогаем.
+	return !bEnableRenderCullVolume || !EnsureRenderCullVolume();
 }
 
 void AAutomataOrchestrator::BakeCellsToMesh()
@@ -2026,6 +2041,28 @@ void AAutomataOrchestrator::RenderGridImmediate()
 	}
 
 	const int32 NumBuckets = AgeMaterials.Num();
+
+	if (ShouldGhostShapeReplaceDetailedRender())
+	{
+		// Ghost Shape уже покрывает всю сетку целиком (см. doc-comment
+		// ShouldGhostShapeReplaceDetailedRender()) - пропускаем именно ту
+		// дорогую работу (BuildAgeBuckets()+AddInstances по каждой живой
+		// клетке), ради которой эта фича существует. Через Render() с
+		// пустым списком клеток на каждый бакет, а не сырой ClearInstances()
+		// на компоненте - так внутренняя бухгалтерия рендерера
+		// (PendingTransforms/PendingCursor) остаётся согласованной с самим
+		// компонентом, вместо того чтобы её обходить.
+		for (int32 MaterialIndex = 0; MaterialIndex < NumBuckets; ++MaterialIndex)
+		{
+			FFilteredCellGridView EmptyView(*Grid, TArray<FIntVector>());
+			AgeRenderers[MaterialIndex]->Render(EmptyView);
+		}
+		RenderSelectionOverlay();
+		UE_LOG(LogTemp, Log, TEXT("RenderGridImmediate: детальный рендер пропущен - Ghost Shape покрывает всю сетку целиком (%d живых клеток)"),
+			Grid->Num());
+		return;
+	}
+
 	TArray<TArray<FIntVector>> Buckets = BuildAgeBuckets();
 
 	for (int32 MaterialIndex = 0; MaterialIndex < NumBuckets; ++MaterialIndex)
@@ -2071,6 +2108,27 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 	}
 
 	const int32 NumBuckets = AgeMaterials.Num();
+
+	if (ShouldGhostShapeReplaceDetailedRender())
+	{
+		// Тот же принцип, что в RenderGridImmediate() - см. её doc-comment
+		// у аналогичной ветки. bEnableChunkedRender здесь тоже не важен:
+		// нет живых инстансов - нечего разливать по кадрам, а если реавил
+		// с прошлого поколения ещё шёл, Render() с пустым списком клеток
+		// (через BeginRender()+полный слив внутри) сам обнуляет
+		// PendingTransforms/PendingCursor каждого рендерера - bChunkedRenderInProgress
+		// сама подхватит это на следующем Tick()/AdvanceChunkedRender().
+		for (int32 MaterialIndex = 0; MaterialIndex < NumBuckets; ++MaterialIndex)
+		{
+			FFilteredCellGridView EmptyView(*Grid, TArray<FIntVector>());
+			AgeRenderers[MaterialIndex]->Render(EmptyView);
+		}
+		RenderSelectionOverlay();
+		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: детальный рендер пропущен - Ghost Shape покрывает всю сетку целиком (%d живых клеток)"),
+			Grid->Num());
+		return;
+	}
+
 	TArray<TArray<FIntVector>> Buckets = BuildAgeBuckets();
 
 	const FVector CameraLocation = (GamePC && GamePC->PlayerCameraManager)
@@ -2225,6 +2283,23 @@ void AAutomataOrchestrator::SetGhostShapeEnabled(bool bEnabled)
 	// ручное включение сразу пересчитало силуэт, а не ждало остаток
 	// GhostShapeRefreshInterval с прошлого раза.
 	GhostShapeGenerationsSinceRefresh = 0;
+
+	if (!Grid)
+	{
+		// Ещё нет сетки (до первого GenerateRandom()) - перерисовывать
+		// нечего, следующий GenerateRandom()/Next() сам учтёт актуальное
+		// состояние переключателя (тот же ранний выход, что у
+		// RefreshRenderCullVolume() ниже).
+		return;
+	}
+
+	// Сначала детальный путь - в режиме "куба нет" (см. doc-comment
+	// ShouldGhostShapeReplaceDetailedRender()) он теперь сам решит, рисовать
+	// всё как обычно, или очиститься и уступить место силуэту целиком; затем
+	// сам силуэт. Без этого включение/выключение Ghost Shape хоткеем H
+	// визуально ничего не меняло бы до следующего реально посчитанного
+	// поколения - тот же принцип, что и у RefreshRenderCullVolume() ниже.
+	RenderGridImmediate();
 	RefreshGhostShape();
 }
 
