@@ -739,6 +739,18 @@ void AAutomataOrchestrator::RefreshGhostShape()
 		return;
 	}
 
+	if (!bEnableRenderCullVolume)
+	{
+		// Выключен сам куб (хоткей C) - детальный путь теперь и так рисует
+		// ВЕСЬ грид целиком (см. RenderGridImmediate()), "снаружи" куба
+		// больше не существует, значит грубому силуэту нечего добавлять -
+		// оставлять его висеть означало бы прозрачный дубль поверх уже
+		// полностью нарисованных клеток. Тот же принцип, что и ниже (нет
+		// самого актора куба), просто другая причина отсутствия границ.
+		ClearGhostShape();
+		return;
+	}
+
 	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
 	if (!CullVolume)
 	{
@@ -2004,6 +2016,20 @@ void AAutomataOrchestrator::SetRenderCullVolumeEnabled(bool bEnabled)
 	bEnableRenderCullVolume = bEnabled;
 	UE_LOG(LogTemp, Log, TEXT("SetRenderCullVolumeEnabled: отсечение по ARenderCullVolume %s"), bEnabled ? TEXT("включено") : TEXT("выключено"));
 	RefreshRenderCullVolume();
+}
+
+void AAutomataOrchestrator::SetGhostShapeEnabled(bool bEnabled)
+{
+	bEnableGhostShape = bEnabled;
+	UE_LOG(LogTemp, Log, TEXT("SetGhostShapeEnabled: Ghost Shape %s"), bEnabled ? TEXT("включён") : TEXT("выключен"));
+
+	// RefreshGhostShape() сам разберётся, что делать: bEnableGhostShape ==
+	// false в его собственном guard'е сведётся к ClearGhostShape() - не
+	// нужно дублировать эту ветку здесь. Счётчик сбрасываем всегда, чтобы
+	// ручное включение сразу пересчитало силуэт, а не ждало остаток
+	// GhostShapeRefreshInterval с прошлого раза.
+	GhostShapeGenerationsSinceRefresh = 0;
+	RefreshGhostShape();
 }
 
 void AAutomataOrchestrator::RefreshRenderCullVolume()

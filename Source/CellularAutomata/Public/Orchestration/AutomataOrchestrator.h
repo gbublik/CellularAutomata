@@ -569,6 +569,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void RefreshRenderCullVolume();
 
+	/** Включён ли сейчас Ghost Shape (см. bEnableGhostShape) - нужно внешнему
+	 *  коду (хоткею), чтобы решить, на что переключать, не трогая
+	 *  bEnableGhostShape напрямую. */
+	UFUNCTION(BlueprintPure, Category = "Automata|GhostShape")
+	bool IsGhostShapeEnabled() const { return bEnableGhostShape; }
+
+	/** Включает/выключает Ghost Shape вручную (см. bEnableGhostShape). Без
+	 *  CallInEditor - параметр уже редактируется напрямую как чекбокс. Не
+	 *  inline (в отличие от IsGhostShapeEnabled() выше) - сразу зовёт
+	 *  RefreshGhostShape() (пересчитает, если включили) или ClearGhostShape()
+	 *  (снимет силуэт, если выключили), не дожидаясь следующего планового
+	 *  GhostShapeRefreshInterval - тем же способом, что SetRenderCullVolumeEnabled()
+	 *  применяет RefreshRenderCullVolume() немедленно. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|GhostShape")
+	void SetGhostShapeEnabled(bool bEnabled);
+
 	/** Метрики последнего BuildAgeBuckets() (клетки/МБ, "отрисовано/всего") -
 	 *  см. doc-comment FCellRenderStats. Читает уже посчитанное, ничего не
 	 *  пересчитывает - используется и UE_LOG внутри BuildAgeBuckets(), и

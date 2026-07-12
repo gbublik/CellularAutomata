@@ -48,6 +48,9 @@ void AGamePlayerController::SetupInputComponent()
 	ToggleRenderCullVolumeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleRenderCullVolume"));
 	ToggleRenderCullVolumeAction->ValueType = EInputActionValueType::Boolean;
 
+	ToggleGhostShapeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleGhostShape"));
+	ToggleGhostShapeAction->ValueType = EInputActionValueType::Boolean;
+
 	IncreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseSpeed"));
 	IncreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
 
@@ -100,6 +103,7 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(ToggleWaitForChunkedRenderToFinishAction, EKeys::V);
 	SimulationMappingContext->MapKey(ToggleCellCullingAction, EKeys::B);
 	SimulationMappingContext->MapKey(ToggleRenderCullVolumeAction, EKeys::C);
+	SimulationMappingContext->MapKey(ToggleGhostShapeAction, EKeys::H);
 	// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от того,
 	// есть ли у клавиатуры цифровой блок.
 	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Equals);
@@ -146,6 +150,7 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(ToggleWaitForChunkedRenderToFinishAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish);
 		EnhancedInputComp->BindAction(ToggleCellCullingAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleCellCulling);
 		EnhancedInputComp->BindAction(ToggleRenderCullVolumeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleRenderCullVolume);
+		EnhancedInputComp->BindAction(ToggleGhostShapeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleGhostShape);
 		// Triggered - держа +/-, Speed продолжает меняться каждый кадр, а не
 		// только на однократное нажатие (аналогично F/OnStepOnce()).
 		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
@@ -371,6 +376,18 @@ void AGamePlayerController::OnToggleRenderCullVolume()
 	}
 
 	Orchestrator->SetRenderCullVolumeEnabled(!Orchestrator->IsRenderCullVolumeEnabled());
+}
+
+void AGamePlayerController::OnToggleGhostShape()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleGhostShape: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->SetGhostShapeEnabled(!Orchestrator->IsGhostShapeEnabled());
 }
 
 void AGamePlayerController::OnIncreaseSpeed()

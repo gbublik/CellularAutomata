@@ -168,6 +168,12 @@ protected:
 	 *  построенных инстансах). */
 	void OnToggleRenderCullVolume();
 
+	/** Хоткей (H, освободилась после слияния HUD-режима в Tab) - переключает
+	 *  AAutomataOrchestrator::bEnableGhostShape через SetGhostShapeEnabled()/
+	 *  IsGhostShapeEnabled() - показать/спрятать грубый chunk-силуэт вручную,
+	 *  не трогая Details panel. */
+	void OnToggleGhostShape();
+
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
 	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
 	void OnIncreaseSpeed();
@@ -275,6 +281,9 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleRenderCullVolumeAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleGhostShapeAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> IncreaseSpeedAction;
