@@ -236,6 +236,21 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 	{
 		RebuildAgeMeshComponents();
 	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellCullStartDistance)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellCullEndDistance))
+	{
+		// Без этого правка чисел в Details panel (в т.ч. во время PIE) не
+		// применялась вплоть до следующего фактического рендера (шага
+		// симуляции) или переключения хоткеем B (SetCellCullingEnabled()
+		// зовёт ApplyCellCullDistances() сама, немедленно) - на паузе или
+		// между шагами значение выглядело "зафиксированным" и не
+		// реагирующим на CellCullEndDistance, хотя число менялось честно.
+		// ApplyCellCullDistances() безопасно звать когда угодно - трогает
+		// только CellsMeshHierarchical/CellsMeshFlat/AgeMeshComponents/
+		// SelectionMeshComponent (все существуют с конструктора) и
+		// GamePC/Grid только под null-проверками для диагностического лога.
+		ApplyCellCullDistances();
+	}
 }
 #endif
 
