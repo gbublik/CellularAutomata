@@ -113,7 +113,14 @@ protected:
 	 *  как раньше, вызывая GenerateRandom() под капотом. В отличие от F,
 	 *  доступен и во время непрерывной симуляции - оба пути сами разберутся
 	 *  с гонкой на Grid через bStepInProgress, отдельная проверка здесь не
-	 *  нужна. */
+	 *  нужна. Как и P (см. InputKey()), R НЕ маппится через Enhanced Input -
+	 *  перехватывается напрямую в InputKey() по той же причине (см. её
+	 *  doc-comment): под тяжёлым лагом игрового потока (тот же самый
+	 *  AddInstances/перестройка HISM-дерева на больших сетках, из-за
+	 *  которого P понадобилось выносить из Enhanced Input) короткое
+	 *  нажатие+отпускание R могло целиком уместиться в один длинный кадр и
+	 *  не сработать - именно это пользователь наблюдал ("не всегда
+	 *  срабатывает"), тот же класс бага, что был у паузы до фикса. */
 	void OnResetSimulation();
 
 	/** Хоткей (1) - включить освещённый режим (VIEWMODE LIT). Игра теперь
@@ -265,12 +272,9 @@ protected:
 
 	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
 	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
-	 *  отдельные .uasset. Пауза (P) больше не среди них - см. InputKey(). */
+	 *  отдельные .uasset. Пауза (P) и сброс (R) не среди них - см. InputKey(). */
 	UPROPERTY()
 	TObjectPtr<class UInputAction> FastStepAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ResetSimulationAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> SetLitModeAction;

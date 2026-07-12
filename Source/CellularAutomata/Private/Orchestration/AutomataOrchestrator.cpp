@@ -1249,7 +1249,15 @@ void AAutomataOrchestrator::ResetToInitialState()
 
 	if (bStepInProgress)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: фоновый шаг StepAsync() ещё считается - подождите его завершения"));
+		// Не просто отказываем - откладываем до момента, когда фоновый шаг
+		// сам применит свой результат (ApplyStepResult()/завершение Next()),
+		// оба проверяют этот флаг сразу после сброса bStepInProgress и сами
+		// вызовут ResetToInitialState() ещё раз. Раньше здесь был только
+		// warning-лог и return без взведения флага - нажатие R, совпавшее с
+		// фоновым шагом, терялось молча, симуляция просто продолжала идти
+		// дальше без сброса (см. doc-comment bResetToInitialStatePending).
+		bResetToInitialStatePending = true;
+		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: фоновый шаг StepAsync() ещё считается - сброс отложен до его завершения"));
 		return;
 	}
 
@@ -1890,6 +1898,15 @@ void AAutomataOrchestrator::Next()
 				StrongThis->SelectedCells.Reset();
 				StrongThis->bStepInProgress = false;
 
+				// Тот же отложенный сброс, что и в ApplyStepResult() - см.
+				// doc-comment bResetToInitialStatePending.
+				if (StrongThis->bResetToInitialStatePending)
+				{
+					StrongThis->bResetToInitialStatePending = false;
+					StrongThis->ResetToInitialState();
+					return;
+				}
+
 				// NumSteps реально посчитанных поколений за одно нажатие F -
 				// см. GenerationCount/FHudStats.
 				StrongThis->GenerationCount += NumSteps;
@@ -2251,6 +2268,17 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// StepAsync() может стартовать независимо от того, что происходит с
 	// рендером ниже.
 	bStepInProgress = false;
+
+	// R, нажатый пока этот шаг ещё считался, был отложен (см. doc-comment
+	// bResetToInitialStatePending) - гонка на Grid позади, выполняем его
+	// сейчас вместо обычного применения только что посчитанного поколения
+	// (которое всё равно тут же было бы перезаписано сбросом).
+	if (bResetToInitialStatePending)
+	{
+		bResetToInitialStatePending = false;
+		ResetToInitialState();
+		return;
+	}
 
 	// Одно реально посчитанное поколение - считаем для HUD независимо от
 	// того, пропустит ли StepsSinceLastRender ниже фактический рендер этого

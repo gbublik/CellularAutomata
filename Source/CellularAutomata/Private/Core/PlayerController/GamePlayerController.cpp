@@ -21,9 +21,6 @@ void AGamePlayerController::SetupInputComponent()
 	FastStepAction = NewObject<UInputAction>(this, TEXT("IA_FastStep"));
 	FastStepAction->ValueType = EInputActionValueType::Boolean;
 
-	ResetSimulationAction = NewObject<UInputAction>(this, TEXT("IA_ResetSimulation"));
-	ResetSimulationAction->ValueType = EInputActionValueType::Boolean;
-
 	SetLitModeAction = NewObject<UInputAction>(this, TEXT("IA_SetLitMode"));
 	SetLitModeAction->ValueType = EInputActionValueType::Boolean;
 
@@ -96,11 +93,12 @@ void AGamePlayerController::SetupInputComponent()
 	LoadStateAction = NewObject<UInputAction>(this, TEXT("IA_LoadState"));
 	LoadStateAction->ValueType = EInputActionValueType::Boolean;
 
-	// P (пауза) намеренно не маппится сюда - см. InputKey() ниже, она
-	// перехватывается на уровне сырых оконных событий в обход Enhanced Input.
+	// P (пауза) и R (сброс) намеренно не маппятся сюда - см. InputKey() ниже,
+	// оба перехватываются на уровне сырых оконных событий в обход Enhanced
+	// Input (у R тот же лаговый баг пропущенного нажатия, что был у P -
+	// см. doc-comment InputKey()).
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
-	SimulationMappingContext->MapKey(ResetSimulationAction, EKeys::R);
 	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
 	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::Two);
 	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
@@ -148,7 +146,6 @@ void AGamePlayerController::SetupInputComponent()
 		// пока зажата", как раньше.
 		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFastStepPressed);
 		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnFastStepReleased);
-		EnhancedInputComp->BindAction(ResetSimulationAction, ETriggerEvent::Started, this, &AGamePlayerController::OnResetSimulation);
 		EnhancedInputComp->BindAction(SetLitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetLitMode);
 		EnhancedInputComp->BindAction(SetUnlitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetUnlitMode);
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSpeedBoostStarted);
@@ -198,6 +195,15 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	if (Params.Key == EKeys::P && Params.Event == IE_Pressed)
 	{
 		OnToggleSimulation();
+	}
+
+	// R (сброс, OnResetSimulation()) - тот же самый баг и то же решение, что
+	// у P выше: раньше был замаплен через Enhanced Input и мог пропускать
+	// короткие нажатия под тяжёлым лагом (пользователь сообщил "не всегда
+	// срабатывает" - именно этот симптом). Перенесён сюда, в обход маппинга.
+	if (Params.Key == EKeys::R && Params.Event == IE_Pressed)
+	{
+		OnResetSimulation();
 	}
 
 	return Super::InputKey(Params);
