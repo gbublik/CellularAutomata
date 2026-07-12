@@ -22,14 +22,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Input")
 	void SetCameraControlEnabled(bool bEnable);
 
-	/** Кадрирует камеру на все живые клетки Orchestrator - общий код хоткея
-	 *  Home (OnFrameAllCells()) и авто-кадрирования после
-	 *  AAutomataOrchestrator::ResetToInitialState() (хоткей R - в конце
-	 *  сброса камера сама встаёт на результат, как по Home). НЕ вызывается
-	 *  из сохранения (SaveState()/SaveStateAs()) - Save больше не трогает
-	 *  Grid/камеру вовсе, миниатюра снимает ровно тот вид, что уже был на
-	 *  экране (см. AAutomataOrchestrator::WriteStateToFile()). Подъезжает
-	 *  камерой вдоль текущего направления взгляда (не меняя ракурс, только
+	/** Кадрирует камеру на все живые клетки Orchestrator - код хоткея Home
+	 *  (OnFrameAllCells()). НЕ вызывается автоматически из
+	 *  AAutomataOrchestrator::ResetToInitialState() (хоткей R) - раньше R
+	 *  сам кадрировал камеру по завершении сброса, но это было навязчиво
+	 *  (сброс - частое, повторяющееся действие в процессе поиска интересных
+	 *  паттернов, а не разовое событие вроде первого запуска), пользователь
+	 *  явно попросил убрать; кадрирование теперь только по Home, отдельным
+	 *  нажатием. Тоже НЕ вызывается из сохранения (SaveState()/SaveStateAs()) -
+	 *  Save больше не трогает Grid/камеру вовсе, миниатюра снимает ровно тот
+	 *  вид, что уже был на экране (см. AAutomataOrchestrator::WriteStateToFile()).
+	 *  Подъезжает камерой вдоль текущего направления взгляда (не меняя ракурс, только
 	 *  расстояние) так, чтобы вся сетка Orchestrator поместилась в кадр -
 	 *  см. AAutomataOrchestrator::ComputeAliveCellsBounds()/FramingPadding.
 	 *  false, если Orchestrator пуст, сетка пуста, или пешка/камера ещё не
