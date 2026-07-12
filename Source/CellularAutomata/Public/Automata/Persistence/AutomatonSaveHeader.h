@@ -39,6 +39,17 @@ struct FAutomatonSaveHeader
 	UPROPERTY()
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
 
+	/** Общее число состояний клетки (см. AAutomataOrchestrator::States) -
+	 *  2 (дефолт) значит классический бинарный автомат. Аддитивное поле -
+	 *  версия контейнера/формата не бампается (см. doc-comment класса):
+	 *  файл версии до появления States просто восстановится с дефолтом 2.
+	 *  Промежуточное decay-состояние клетки НЕ сохраняется - как и Age
+	 *  сегодня, загруженный/извлечённый паттерн всегда стартует свежим
+	 *  (state 1, полностью живая), см. AutomatonStateSerializer - раздел
+	 *  InitialCells хранит только координаты, без возраста/состояния. */
+	UPROPERTY()
+	int32 States = 2;
+
 	// --- Геометрия сетки ---
 
 	UPROPERTY()

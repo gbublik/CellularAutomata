@@ -144,7 +144,16 @@ void FCpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 	TArray<bool> bNextAlive;
 	bNextAlive.SetNumUninitialized(Candidates.Num());
 
-	ParallelFor(Candidates.Num(), [&Candidates, &CurrentGrid, &NeighborOffsets, &Rule, &bNextAlive](int32 Index)
+	// При States == 2 (подавляющее большинство правил) bDecayActive false, и
+	// IsDecaying() ниже НИ РАЗУ не вызывается (короткое замыкание &&) -
+	// единственная лишняя работа на кандидата это один захваченный локальный
+	// bool. При States > 2 угасающая (не живая, но birth-immune) клетка не
+	// должна родиться заново, даже если у неё "случайно" оказалось нужное
+	// число живых соседей - см. doc-comment FCellGrid::IsDecaying() и
+	// CellDecay::AdvanceDecayStates() за тем, что делает клетку угасающей.
+	const bool bDecayActive = Rule.HasDecayStates();
+
+	ParallelFor(Candidates.Num(), [&Candidates, &CurrentGrid, &NeighborOffsets, &Rule, &bNextAlive, bDecayActive](int32 Index)
 	{
 		const FIntVector& Candidate = Candidates[Index];
 		int32 AliveNeighborCount = 0;
@@ -158,7 +167,8 @@ void FCpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 		const bool bCurrentlyAlive = CurrentGrid.IsAlive(Candidate);
 		bNextAlive[Index] = bCurrentlyAlive
 			? Rule.GetSurvivalCounts().Contains(AliveNeighborCount)
-			: Rule.GetBirthCounts().Contains(AliveNeighborCount);
+			: ((bDecayActive && CurrentGrid.IsDecaying(Candidate)) ? false
+				: Rule.GetBirthCounts().Contains(AliveNeighborCount));
 	});
 	const double ParallelForSeconds = FPlatformTime::Seconds() - ParallelForStart;
 

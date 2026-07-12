@@ -12,8 +12,14 @@ uint NeighborOffsetCount;
 int4 NeighborOffsets[26];
 uint BirthMask;
 uint SurvivalMask;
+// bDecayActive==0 - Generations выключен (States==2, подавляющее большинство
+// правил) - IsDecayingAt() ниже никогда не вызывается, InputDecayBits в этом
+// случае привязан C++-стороной на тот же буфер, что InputBits (см.
+// FGpuComputeStrategy::Step()) - безопасно, шейдер его не разыменовывает.
+uint bDecayActive;
 
 StructuredBuffer<uint> InputBits;
+StructuredBuffer<uint> InputDecayBits;
 RWStructuredBuffer<uint> OutputBits;
 
 uint CellIndex(int3 Coord)
@@ -29,6 +35,19 @@ bool IsAliveAt(int3 Coord)
 	}
 	uint Index = CellIndex(Coord);
 	return (InputBits[Index >> 5] >> (Index & 31u)) & 1u;
+}
+
+// Зеркалит IsAliveAt(), но читает InputDecayBits - "клетка сейчас угасает"
+// (см. FCellGrid::IsDecaying()). Клетка за пределами буфера не угасает
+// (false), тем же соображением, что и IsAliveAt().
+bool IsDecayingAt(int3 Coord)
+{
+	if (any(Coord < 0) || any(Coord >= int3(VolumeDim)))
+	{
+		return false;
+	}
+	uint Index = CellIndex(Coord);
+	return (InputDecayBits[Index >> 5] >> (Index & 31u)) & 1u;
 }
 
 [numthreads(4, 4, 4)]
@@ -50,8 +69,12 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	bool bAlive = IsAliveAt(Coord);
+	// Угасающая (birth-immune) клетка не может родиться заново, даже если у
+	// неё оказалось подходящее число живых соседей - зеркалит
+	// FCpuComputeStrategy::Step()'s bDecayActive-ветку.
+	bool bDecaying = (bDecayActive != 0) && IsDecayingAt(Coord);
 	bool bNextAlive = bAlive ? ((SurvivalMask >> AliveNeighbors) & 1u) != 0
-	                         : ((BirthMask >> AliveNeighbors) & 1u) != 0;
+	                 : (bDecaying ? false : ((BirthMask >> AliveNeighbors) & 1u) != 0);
 
 	if (bNextAlive)
 	{

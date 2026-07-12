@@ -216,6 +216,30 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void NewSeed();
 
+	/** Отладочная проверка корректности правила - сажает три классических
+	 *  плоских 2D-паттерна (блок-неподвижку, мигалку-осциллятор, планер) в
+	 *  одном Z-слое, на достаточном расстоянии друг от друга, чтобы не
+	 *  взаимодействовали (радиус влияния Moore - 1 клетка, между паттернами
+	 *  оставлено по 6+ клеток пустоты). Смысл теста: пока соседние Z-слои
+	 *  пусты, подсчёт соседей по Moore-26 в 3D математически совпадает с
+	 *  обычным 2D Moore-8 (эти 18 "лишних" соседей выше/ниже всегда дают 0),
+	 *  так что при BirthCounts={3}/SurvivalCounts={2,3}/Neighborhood=Moore
+	 *  (классическое правило Конвея) все три паттерна обязаны вести себя
+	 *  ТОЧНО как в оригинальной 2D игре "Жизнь": блок не меняется вообще,
+	 *  мигалка каждый шаг переключается между горизонтальной и вертикальной
+	 *  тройкой, планер идентичной формой сдвигается по диагонали на (1,1)
+	 *  каждые 4 поколения. Расхождение с любым из трёх - прямой сигнал бага
+	 *  в подсчёте соседей/применении правила, а не просто "чужое 3D-правило
+	 *  не совпало" (см. обсуждение проверки корректности автомата). Сама
+	 *  функция НЕ трогает BirthCounts/SurvivalCounts/Neighborhood - их нужно
+	 *  выставить в Details panel перед запуском (та же логика, что и у
+	 *  остальных методов - Details panel остаётся единственным источником
+	 *  правды для правила). Как и GenerateRandom(), пересоздаёт Grid с нуля,
+	 *  сбрасывает выделение/счётчик поколений/запечённые меши и записывает
+	 *  паттерн в InitialStateCells, так что R воспроизводит его заново. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Debug")
+	void SpawnRuleVerificationPattern();
+
 	/** Выбирает живые клетки, чья экранная проекция попадает в прямоугольник
 	 *  [RectMin, RectMax] (без ограничения по глубине - см. CellSelection::
 	 *  SelectCellsInScreenRect()), комбинирует результат с текущим SelectedCells
@@ -740,6 +764,49 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
 
+	/** Общее число состояний клетки - 2 (дефолт) значит классический
+	 *  бинарный автомат (жива/мертва), поведение не отличается от того, что
+	 *  было до появления этого свойства. States > 2 включает режим
+	 *  "Generations": клетка, переставшая выживать, не умирает сразу, а
+	 *  угасает через промежуточные состояния 2, 3, ..., (States-1) - всё
+	 *  это время её нельзя ни оживить (birth-immune), ни убить, она просто
+	 *  на фиксированной скорости идёт к состоянию 0 (окончательно мертва).
+	 *  Только состояние 1 (полностью живая) считается "живым соседом" для
+	 *  подсчёта по правилу. См. RuleStringParser.h для точной семантики
+	 *  (то же, что у сайта williamyang98/3D-Cellular-Automata и семейства
+	 *  Golly "Generations"). ClampMax=255 не декоративен - угасающее
+	 *  состояние хранится как uint8 (см. FDenseCellGrid). Само по себе это
+	 *  свойство ничего не делает без остальной части реализации Generations -
+	 *  см. FCellularAutomatonRule::GetStates()/HasDecayStates(). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules",
+			  meta = (ClampMin = "2", ClampMax = "255", UIMin = "2", UIMax = "64"))
+	int32 States = 2;
+
+	/** Строковая нотация правила в формате "Survival/Birth/States/
+	 *  Neighborhood" (например "0-6/1,3/2/VN" - см. RuleStringParser.h для
+	 *  полного описания синтаксиса) - удобный способ ввести чужое правило
+	 *  одной строкой вместо ручной правки массивов BirthCounts/
+	 *  SurvivalCounts по элементу. Само по себе ничего не меняет - нужно
+	 *  нажать ApplyRuleString() (или CallInEditor-кнопку), которая парсит
+	 *  строку и перезаписывает BirthCounts/SurvivalCounts/States/
+	 *  Neighborhood ниже. После применения RuleString не остаётся
+	 *  синхронизированным источником истины - это одноразовый ввод, а не
+	 *  сериализуемая форма правила (тот же дух, что Seed не хранит саму
+	 *  сгенерированную сетку). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
+	FString RuleString;
+
+	/** Разбирает RuleString (см. её doc-comment) и, при успехе, перезаписывает
+	 *  BirthCounts/SurvivalCounts/States/Neighborhood выше - присваивает по
+	 *  имени поля, не позиционно (порядок полей в строке - Survival, затем
+	 *  Birth - не совпадает с порядком объявления BirthCounts/SurvivalCounts
+	 *  здесь, слепое присваивание по позиции тихо перепутало бы их). При
+	 *  ошибке разбора ничего не меняет и пишет warning с описанием проблемы -
+	 *  тот же принцип "никогда не делать тихо ничего/наполовину", что у
+	 *  проверок AgeMaterials/CellMesh в GenerateRandom(). */
+	UFUNCTION(CallInEditor, Category = "Automata|Rules")
+	void ApplyRuleString();
+
 	/** Каким методом считается шаг симуляции - CPU (bucket-partitioned
 	 *  параллельный алгоритм) или GPU (RDG compute shader, см.
 	 *  FGpuComputeStrategy). Пересобирается заново на каждый Next()/
@@ -858,6 +925,30 @@ private:
 	/** Создаёт BakedMeshComponent при первом обращении - зеркалит
 	 *  EnsureSelectionMeshComponent(). */
 	void EnsureBakedMeshComponent();
+
+	/** Безусловно обходит ВСЕ реально прикреплённые к актору
+	 *  UInstancedStaticMeshComponent (через GetComponents<>(), а не только
+	 *  те, что перечислены в AgeMeshComponents/CellsMeshFlat/
+	 *  CellsMeshHierarchical/SelectionMeshComponent) - вызывается один раз в
+	 *  самом начале BeginPlay(), до RebuildAgeMeshComponents()/
+	 *  GenerateRandom(). Компоненты из легитимного набора (объединение
+	 *  перечисленных выше) получают ClearInstances(); всё остальное
+	 *  уничтожается через DestroyComponent().
+	 *
+	 *  Зачем полный обход, а не просто ClearInstances() по легитимному
+	 *  набору: PIE дублирует актор из редакторского мира вместе с текущим
+	 *  СОСТОЯНИЕМ его компонентов - если пользователь успел нажать
+	 *  GenerateRandom()/Next() прямо в редакторе перед запуском игры,
+	 *  дублируются не только легитимные компоненты с их инстансами, но
+	 *  иногда и осиротевшие (не отслеженные ни одним из массивов выше -
+	 *  например, оставшиеся после более раннего сбоя реинстансинга Live
+	 *  Coding). Такие сироты ClearInstances() по легитимному набору не
+	 *  затрагивает - они остаются прикреплены и видимы, накладываясь на
+	 *  честно посчитанную симуляцию (мерцание/двоение, которое статичный
+	 *  скриншот не всегда ловит). Обнаруженный на практике случай:
+	 *  AgeMaterials.Num()==3, но на PIE-акторе висело 8
+	 *  InstancedStaticMeshComponent - 5 лишних. */
+	void ClearAllCellInstances();
 
 	/** Убирает запечённый меш-снимок, если он есть - вызывается в начале
 	 *  GenerateRandom()/ResetToInitialState()/StartFromSelection(): новый

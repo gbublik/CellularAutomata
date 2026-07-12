@@ -17,7 +17,12 @@ class CELLULARAUTOMATA_API FDenseCellGrid : public FCellGrid
 public:
 	static constexpr int32 DefaultChunkSize = 16;
 
-	explicit FDenseCellGrid(float InCellSize, int32 InChunkSize = DefaultChunkSize);
+	/** bInEnableDecayStates=false (дефолт) - классический бинарный автомат,
+	 *  DecayStates ни у одного чанка не аллоцируется (см. FChunk ниже) -
+	 *  ровно сегодняшнее поведение, ноль лишней памяти. true - включает
+	 *  канал угасания (см. AAutomataOrchestrator::States > 2), вызывается
+	 *  из CreateGrid() как States > 2. */
+	explicit FDenseCellGrid(float InCellSize, int32 InChunkSize = DefaultChunkSize, bool bInEnableDecayStates = false);
 	virtual ~FDenseCellGrid() override = default;
 
 	virtual bool IsAlive(const FIntVector& Cell) const override;
@@ -27,6 +32,15 @@ public:
 	virtual void GetAliveCells(TArray<FIntVector>& OutCells) const override;
 	virtual uint8 GetAge(const FIntVector& Cell) const override;
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) override;
+
+	/** Первой строкой проверяет bDecayStatesEnabled - при States==2 (канал
+	 *  выключен) это единственная работа, ни один TMap::Find() не
+	 *  выполняется (см. doc-comment FCellGrid::IsDecaying()). */
+	virtual bool IsDecaying(const FIntVector& Cell) const override;
+	virtual void SetDecayState(const FIntVector& Cell, uint8 NewState) override;
+	virtual uint8 GetDecayState(const FIntVector& Cell) const override;
+	virtual void GetDecayingCells(TArray<FIntVector>& OutCells, TArray<uint8>& OutStates) const override;
+	virtual void GetDecayingCellsInBounds(const FBox& WorldBounds, TArray<FIntVector>& OutCells, TArray<uint8>& OutStates) const override;
 
 	/** Чанк-осведомлённый override - отбраковывает целиком чанки, не
 	 *  пересекающие WorldBounds (ни один бит не читается), и разбирает
@@ -48,18 +62,37 @@ private:
 	 *  Bits), нулевой по умолчанию - зануляется как при ленивом создании
 	 *  чанка, так и (полностью, вместе со всем чанком) при опустошении,
 	 *  так что заново родившаяся в этом месте клетка всегда стартует с
-	 *  возраста 0, не помня историю чанка до его удаления. */
+	 *  возраста 0, не помня историю чанка до его удаления.
+	 *
+	 *  DecayStates - третий параллельный канал (угасающее "Generations"-
+	 *  состояние, см. FCellGrid::IsDecaying()) - РЕАЛЬНО аллоцируется
+	 *  (SetNumZeroed) только когда bInEnableDecayStates true; при false
+	 *  остаётся дефолтно-пустым TArray без выделения кучи - при States==2
+	 *  (подавляющее большинство сценариев) это буквально нулевая
+	 *  дополнительная память на чанк, только сам факт существования поля
+	 *  (несколько байт заголовка TArray, тот же порядок величины, что уже
+	 *  есть у Bits/Ages). DecayingCount - тот же смысл, что AliveCount, но
+	 *  для угасающих (не живых, но ещё не полностью мёртвых) клеток -
+	 *  используется отсечением опустевших чанков (см. SetAlive(false)/
+	 *  SetDecayState() в .cpp): чанк с одними угасающими клетками не
+	 *  должен удаляться, даже если AliveCount уже 0. */
 	struct FChunk
 	{
-		explicit FChunk(int32 InCellsPerChunk)
+		FChunk(int32 InCellsPerChunk, bool bInEnableDecayStates)
 		{
 			Bits.Init(false, InCellsPerChunk);
 			Ages.SetNumZeroed(InCellsPerChunk);
+			if (bInEnableDecayStates)
+			{
+				DecayStates.SetNumZeroed(InCellsPerChunk);
+			}
 		}
 
 		TBitArray<> Bits;
 		TArray<uint8> Ages;
+		TArray<uint8> DecayStates;
 		int32 AliveCount = 0;
+		int32 DecayingCount = 0;
 	};
 
 	FIntVector CellToChunkCoord(const FIntVector& Cell) const;
@@ -67,6 +100,7 @@ private:
 
 	int32 ChunkSize;
 	int32 CellsPerChunk; // ChunkSize^3, кэшировано
+	bool bDecayStatesEnabled;
 	TMap<FIntVector, FChunk> Chunks;
 	int32 AliveCellCount = 0;
 };

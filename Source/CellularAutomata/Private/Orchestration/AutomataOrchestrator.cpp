@@ -13,6 +13,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Automata/Simulation/CellAging.h"
+#include "Automata/Simulation/CellDecay.h"
+#include "Automata/Simulation/RuleStringParser.h"
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Automata/Selection/CellSelection.h"
@@ -66,6 +68,17 @@ AAutomataOrchestrator::AAutomataOrchestrator()
 void AAutomataOrchestrator::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// PIE дублирует актор из редакторского мира вместе с текущим СОСТОЯНИЕМ
+	// компонентов - если пользователь нажал GenerateRandom()/Next() прямо в
+	// редакторе перед запуском игры, реальные инстансы на компонентах
+	// дублируются в PIE-копию. Штатный путь (RenderGridImmediate()) чистит
+	// не всё (см. doc-comment ClearAllCellInstances()) - чистим здесь явно
+	// и безусловно, до того как что-либо ещё успеет вызвать рендер.
+	ClearAllCellInstances();
+	ClearBakedMesh();
+	ClearGhostShape();
+
 	InitializePlayerController();
 	RebuildAgeMeshComponents();
 	EnsureSelectionMeshComponent();
@@ -230,6 +243,96 @@ void AAutomataOrchestrator::NewSeed()
 {
 	Seed = FMath::Rand();
 	GenerateRandom();
+}
+
+void AAutomataOrchestrator::ApplyRuleString()
+{
+	RuleStringParser::FParsedRule Parsed;
+	FString Error;
+	if (!RuleStringParser::ParseRuleString(RuleString, Parsed, Error))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyRuleString: не удалось разобрать '%s' - %s"), *RuleString, *Error);
+		return;
+	}
+
+	// Присваиваем по имени поля, не позиционно - порядок полей в строке
+	// (Survival, затем Birth) не совпадает с порядком объявления
+	// BirthCounts/SurvivalCounts здесь.
+	SurvivalCounts = Parsed.SurvivalCounts;
+	BirthCounts = Parsed.BirthCounts;
+	States = Parsed.States;
+	Neighborhood = Parsed.Neighborhood;
+
+	UE_LOG(LogTemp, Log, TEXT("ApplyRuleString: '%s' -> BirthCounts=%d знач., SurvivalCounts=%d знач., States=%d, Neighborhood=%s"),
+		*RuleString, BirthCounts.Num(), SurvivalCounts.Num(), States,
+		Neighborhood == ENeighborhood::Moore ? TEXT("Moore") : TEXT("VonNeumann"));
+}
+
+void AAutomataOrchestrator::SpawnRuleVerificationPattern()
+{
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpawnRuleVerificationPattern: фоновый шаг StepAsync() ещё считается - подождите его завершения"));
+		return;
+	}
+
+	if (!CellMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpawnRuleVerificationPattern: CellMesh не задан - назначьте StaticMesh в Details panel"));
+		return;
+	}
+
+	if (!GetActiveCellsMeshComponent())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpawnRuleVerificationPattern: активный CellsMesh-компонент отсутствует"));
+		return;
+	}
+
+	if (AgeMaterials.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpawnRuleVerificationPattern: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		return;
+	}
+
+	ClearBakedMesh();
+	ClearGhostShape();
+
+	Grid = CreateGrid();
+	StepsSinceLastRender = 0;
+	ResetGenerationCounter();
+	SelectedCells.Reset();
+
+	// Все три паттерна - классические 2D-фигуры (см. doc-comment в заголовке),
+	// целиком в плоскости Z=0, разнесены минимум на 6 пустых клеток друг от
+	// друга (радиус влияния Moore - 1 клетка, этого с большим запасом
+	// достаточно, чтобы они не мешали друг другу).
+	TArray<FIntVector> Cells = {
+		// Блок (неподвижка) - 2x2, должен остаться абсолютно неизменным на
+		// любом числе шагов.
+		{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
+
+		// Мигалка (осциллятор периода 2) - горизонтальная тройка, каждый шаг
+		// переключается в вертикальную и обратно.
+		{10, 0, 0}, {11, 0, 0}, {12, 0, 0},
+
+		// Планер - классическая ориентация, за 4 поколения сдвигается на
+		// (+1, +1), сохраняя форму.
+		{21, 0, 0}, {22, 1, 0}, {20, 2, 0}, {21, 2, 0}, {22, 2, 0},
+	};
+
+	for (const FIntVector& Cell : Cells)
+	{
+		Grid->SetAlive(Cell, true);
+	}
+
+	// Та же "точка возврата", что и у GenerateRandom()/StartFromSelection() -
+	// R воспроизводит ровно этот паттерн заново, не случайную генерацию.
+	InitialStateCells = Cells;
+
+	RenderGridImmediate();
+
+	UE_LOG(LogTemp, Log, TEXT("SpawnRuleVerificationPattern: посажены блок/мигалка/планер (%d клеток) - выставьте BirthCounts=[3], SurvivalCounts=[2,3], Neighborhood=Moore и шагайте F, сверяя с классическим поведением 2D Game of Life"),
+		Grid->Num());
 }
 
 void AAutomataOrchestrator::AdjustSpeed(float Delta)
@@ -701,6 +804,65 @@ void AAutomataOrchestrator::EnsureBakedMeshComponent()
 	BakedMeshComponent->RegisterComponent();
 }
 
+void AAutomataOrchestrator::ClearAllCellInstances()
+{
+	// Полный обход ВСЕХ реально прикреплённых к актору
+	// UInstancedStaticMeshComponent, а не только тех, что перечислены в
+	// AgeMeshComponents/CellsMeshFlat/CellsMeshHierarchical/
+	// SelectionMeshComponent - защита от осиротевших компонентов: если
+	// массив AgeMeshComponents в какой-то момент разошёлся с реальным
+	// набором прикреплённых компонентов (например, из-за более раннего
+	// сбоя при реинстансинге Live Coding), лишние компоненты остаются
+	// physически прикреплены и видимы, продолжая рисовать свои старые
+	// инстансы поверх честно посчитанных - visуально выглядит как
+	// наложение/мерцание двух состояний, хотя логическое состояние
+	// симуляции (Grid) при этом только одно. Обнаруженный на практике
+	// случай: AgeMaterials.Num()==3, но на акторе висело 8
+	// InstancedStaticMeshComponent - 5 лишних, ClearInstances() по одному
+	// только легитимному набору их не касался.
+	TArray<UInstancedStaticMeshComponent*> AllInstancedComponents;
+	GetComponents<UInstancedStaticMeshComponent>(AllInstancedComponents);
+
+	TSet<UInstancedStaticMeshComponent*> KeepSet;
+	for (UInstancedStaticMeshComponent* Comp : AgeMeshComponents)
+	{
+		if (Comp)
+		{
+			KeepSet.Add(Comp);
+		}
+	}
+	if (CellsMeshFlat)
+	{
+		KeepSet.Add(CellsMeshFlat);
+	}
+	if (CellsMeshHierarchical)
+	{
+		KeepSet.Add(CellsMeshHierarchical);
+	}
+	if (SelectionMeshComponent)
+	{
+		KeepSet.Add(SelectionMeshComponent);
+	}
+
+	for (UInstancedStaticMeshComponent* Comp : AllInstancedComponents)
+	{
+		if (!Comp)
+		{
+			continue;
+		}
+
+		if (KeepSet.Contains(Comp))
+		{
+			Comp->ClearInstances();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ClearAllCellInstances: обнаружен и уничтожен осиротевший компонент %s (не входит в текущий легитимный набор)"), *Comp->GetName());
+			Comp->DestroyComponent();
+		}
+	}
+}
+
 void AAutomataOrchestrator::ClearBakedMesh()
 {
 	if (BakedMeshComponent)
@@ -1064,6 +1226,7 @@ FAutomatonSaveHeader AAutomataOrchestrator::BuildSaveHeader() const
 	Header.BirthCounts = BirthCounts;
 	Header.SurvivalCounts = SurvivalCounts;
 	Header.Neighborhood = Neighborhood;
+	Header.States = States;
 	// CellSize - из сетки, не из UPROPERTY: сетка могла быть создана со
 	// старым значением, а файл фиксирует её фактическую геометрию.
 	Header.CellSize = Grid ? Grid->GetCellSize() : CellSize;
@@ -1084,6 +1247,7 @@ void AAutomataOrchestrator::ApplySaveHeader(const FAutomatonSaveHeader& Header)
 	BirthCounts = Header.BirthCounts;
 	SurvivalCounts = Header.SurvivalCounts;
 	Neighborhood = Header.Neighborhood;
+	States = FMath::Max(2, Header.States);
 	CellSize = FMath::Max(1.0f, Header.CellSize);
 	ChunkSize = FMath::Max(1, Header.ChunkSize);
 	GridSize.X = FMath::Max(1, Header.GridSize.X);
@@ -1440,7 +1604,7 @@ bool AAutomataOrchestrator::ComputeAliveCellsBounds(FVector& OutCenter, float& O
 
 TUniquePtr<FCellGrid> AAutomataOrchestrator::CreateGrid() const
 {
-	return MakeUnique<FDenseCellGrid>(CellSize, ChunkSize);
+	return MakeUnique<FDenseCellGrid>(CellSize, ChunkSize, States > 2);
 }
 
 TUniquePtr<FCellularAutomatonComputeStrategy> AAutomataOrchestrator::CreateComputeStrategy() const
@@ -1581,7 +1745,7 @@ void AAutomataOrchestrator::Next()
 	// SurvivalCounts/Neighborhood в Details panel подхватывались немедленно
 	// (аналогично тому, как GenerateRandom() каждый раз пересоздаёт Grid,
 	// а не кэширует его)
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
+	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 
 	// Ручной шаг считает StepsPerRender поколений за одно нажатие (то же
@@ -1618,9 +1782,10 @@ void AAutomataOrchestrator::Next()
 			const FCellGrid* SourceGrid = CurrentGridPtr;
 			for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 			{
-				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot);
+				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
 				ComputeStrategy->Step(*SourceGrid, *NextGrid, AutomatonRule);
 				CellAging::ComputeAges(SourceGrid, *NextGrid);
+				CellDecay::AdvanceDecayStates(SourceGrid, *NextGrid, AutomatonRule.GetStates());
 				ResultGrid = MoveTemp(NextGrid);
 				SourceGrid = ResultGrid.Get();
 			}
@@ -1707,7 +1872,7 @@ void AAutomataOrchestrator::StepAsync()
 	// которые могут одновременно редактироваться в Details panel. После этой
 	// точки фоновый поток их больше не касается - только *Grid (на чтение) и
 	// NextGridBuffer (на запись, свежесозданный, ни с кем не общий).
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood);
+	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 	TUniquePtr<FCellGrid> NextGridBuffer = CreateGrid();
 
@@ -1726,6 +1891,7 @@ void AAutomataOrchestrator::StepAsync()
 			const double StepStartSeconds = FPlatformTime::Seconds();
 			ComputeStrategy->Step(*CurrentGridPtr, *NextGridBuffer, AutomatonRule);
 			CellAging::ComputeAges(CurrentGridPtr, *NextGridBuffer);
+			CellDecay::AdvanceDecayStates(CurrentGridPtr, *NextGridBuffer, AutomatonRule.GetStates());
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
 			// Снимаем ещё здесь, пока ComputeStrategy жива (уничтожится вместе
@@ -1776,6 +1942,36 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
 		const uint8 Age = Grid->GetAge(Cell);
 		const int32 MaterialIndex = NumBuckets - 1 - FMath::Min(static_cast<int32>(Age), NumBuckets - 1);
 		Buckets[MaterialIndex].Add(Cell);
+	}
+
+	// Generations (States > 2) - угасающие клетки (не живые, но ещё не
+	// полностью мёртвые, см. FCellGrid::IsDecaying()) тоже нужно рисовать
+	// (иначе они просто невидимы, хотя реально "занимают" клетку и угасают
+	// на глазах у CellDecay::AdvanceDecayStates()). Ключ бакета -
+	// DecayState-1 (состояние 2 -> 1, состояние 3 -> 2, ...), в ту же
+	// формулу MaterialIndex, что и у живых клеток (BucketKey=0 у живых
+	// эквивалентно Age==0 - "самые свежие"). При States == 2 этот блок
+	// вообще не выполняется - ни GetDecayingCells()/GetDecayingCellsInBounds(),
+	// ни лишний проход.
+	if (States > 2)
+	{
+		TArray<FIntVector> DecayingCells;
+		TArray<uint8> DecayingStates;
+		if (CullVolume)
+		{
+			Grid->GetDecayingCellsInBounds(CullVolume->GetWorldBounds(), DecayingCells, DecayingStates);
+		}
+		else
+		{
+			Grid->GetDecayingCells(DecayingCells, DecayingStates);
+		}
+
+		for (int32 Index = 0; Index < DecayingCells.Num(); ++Index)
+		{
+			const int32 BucketKey = static_cast<int32>(DecayingStates[Index]) - 1;
+			const int32 MaterialIndex = NumBuckets - 1 - FMath::Min(BucketKey, NumBuckets - 1);
+			Buckets[MaterialIndex].Add(DecayingCells[Index]);
+		}
 	}
 
 	// Два разных вида числа тут (см. doc-comment FCellRenderStats):

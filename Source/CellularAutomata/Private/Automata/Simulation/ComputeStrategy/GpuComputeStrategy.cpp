@@ -30,7 +30,13 @@ public:
 		SHADER_PARAMETER_ARRAY(FIntVector4, NeighborOffsets, [MaxShaderNeighborOffsets])
 		SHADER_PARAMETER(uint32, BirthMask)
 		SHADER_PARAMETER(uint32, SurvivalMask)
+		// bDecayActive==0 (States==2, подавляющее большинство правил) -
+		// InputDecayBits привязывается на тот же RDG-буфер, что InputBits
+		// (см. Step() ниже) - шейдер его не разыменовывает под этой веткой,
+		// так что лишнего аллоцирования не происходит.
+		SHADER_PARAMETER(uint32, bDecayActive)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputBits)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecayBits)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputBits)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -96,9 +102,6 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 
 	const int32 VolumeCellsI32 = (int32)VolumeCells;
 	const int32 WordCount = FMath::DivideAndRoundUp(VolumeCellsI32, 32);
-	// См. GetLastComputeUploadBytes() - размер входного битового буфера,
-	// который ниже реально уходит в CreateStructuredBuffer().
-	LastInputBufferBytes = int64(WordCount) * sizeof(uint32);
 
 	TArray<uint32> InputWords;
 	InputWords.SetNumZeroed(WordCount);
@@ -108,6 +111,43 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 		const int32 Index = (Local.Z * VolumeDim.Y + Local.Y) * VolumeDim.X + Local.X;
 		InputWords[Index >> 5] |= (1u << (Index & 31));
 	}
+
+	// При Rule.HasDecayStates() (States > 2) собираем второй битовый план -
+	// "угасает" (см. FCellGrid::IsDecaying()) - той же AABB/индексацией, что
+	// InputWords, БЕЗ расширения границ под угасающие клетки: угасающая
+	// клетка вдали от всего живого всё равно не может родиться (birth
+	// возможен только рядом с чем-то живым), а её собственное угасание
+	// считает CellDecay::AdvanceDecayStates() независимо от этого AABB.
+	// При States == 2 этот блок вообще не выполняется - ни GetDecayingCells(),
+	// ни лишняя аллокация.
+	const bool bDecayActive = Rule.HasDecayStates();
+	TArray<uint32> InputDecayWords;
+	if (bDecayActive)
+	{
+		InputDecayWords.SetNumZeroed(WordCount);
+
+		TArray<FIntVector> DecayingCells;
+		TArray<uint8> DecayingStates;
+		CurrentGrid.GetDecayingCells(DecayingCells, DecayingStates);
+		for (const FIntVector& Cell : DecayingCells)
+		{
+			if (Cell.X < MinCell.X || Cell.X > MaxCell.X ||
+				Cell.Y < MinCell.Y || Cell.Y > MaxCell.Y ||
+				Cell.Z < MinCell.Z || Cell.Z > MaxCell.Z)
+			{
+				continue;
+			}
+
+			const FIntVector Local = Cell - MinCell;
+			const int32 Index = (Local.Z * VolumeDim.Y + Local.Y) * VolumeDim.X + Local.X;
+			InputDecayWords[Index >> 5] |= (1u << (Index & 31));
+		}
+	}
+
+	// См. GetLastComputeUploadBytes() - размер входных битовых буферов,
+	// которые ниже реально уходят в CreateStructuredBuffer(); учитывает
+	// второй буфер, только если он реально был загружен.
+	LastInputBufferBytes = int64(WordCount) * sizeof(uint32) * (bDecayActive ? 2 : 1);
 
 	TArray<FIntVector4> ShaderOffsets;
 	ShaderOffsets.SetNumZeroed(MaxShaderNeighborOffsets);
@@ -153,13 +193,23 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 
 	FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	ENQUEUE_RENDER_COMMAND(CellularAutomatonStepCommand)(
-		[InputWords = MoveTemp(InputWords), ShaderOffsets = MoveTemp(ShaderOffsets), WordCount, VolumeDim,
-		 NeighborOffsetCount, BirthMask, SurvivalMask, OutputWords, CompletionEvent](FRHICommandListImmediate& RHICmdList) mutable
+		[InputWords = MoveTemp(InputWords), InputDecayWords = MoveTemp(InputDecayWords), ShaderOffsets = MoveTemp(ShaderOffsets),
+		 WordCount, VolumeDim, NeighborOffsetCount, BirthMask, SurvivalMask, bDecayActive, OutputWords, CompletionEvent](FRHICommandListImmediate& RHICmdList) mutable
 		{
 			FRDGBuilder GraphBuilder(RHICmdList);
 
 			FRDGBufferRef InputBuffer = CreateStructuredBuffer(GraphBuilder, TEXT("CAInputBits"),
 				sizeof(uint32), WordCount, InputWords.GetData(), WordCount * sizeof(uint32));
+
+			// bDecayActive==false - переиспользуем уже созданный InputBuffer
+			// как привязку для InputDecayBits вместо аллокации второго
+			// буфера: под этой веткой шейдер его всё равно не разыменовывает
+			// (см. bDecayActive-гейт в .usf), так что связывать что-то живое
+			// и правильного размера безопасно и не стоит лишней памяти.
+			FRDGBufferRef InputDecayBuffer = bDecayActive
+				? CreateStructuredBuffer(GraphBuilder, TEXT("CAInputDecayBits"),
+					sizeof(uint32), WordCount, InputDecayWords.GetData(), WordCount * sizeof(uint32))
+				: InputBuffer;
 
 			FRDGBufferRef OutputBuffer = GraphBuilder.CreateBuffer(
 				FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), WordCount), TEXT("CAOutputBits"));
@@ -174,7 +224,9 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 			}
 			Params->BirthMask = BirthMask;
 			Params->SurvivalMask = SurvivalMask;
+			Params->bDecayActive = bDecayActive ? 1u : 0u;
 			Params->InputBits = GraphBuilder.CreateSRV(InputBuffer);
+			Params->InputDecayBits = GraphBuilder.CreateSRV(InputDecayBuffer);
 			Params->OutputBits = GraphBuilder.CreateUAV(OutputBuffer, PF_R32_UINT);
 
 			TShaderMapRef<FCellularAutomatonStepCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));

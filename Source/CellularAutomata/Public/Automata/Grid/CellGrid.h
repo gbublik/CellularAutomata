@@ -31,6 +31,59 @@ public:
 	virtual uint8 GetAge(const FIntVector& Cell) const = 0;
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) = 0;
 
+	/** Угасающее ("Generations") состояние клетки - НЕ то же самое, что
+	 *  Age выше: Age монотонно растёт, косметичен и осмыслен только для
+	 *  живых клеток; угасание влияет на само правило (клетка в угасании
+	 *  birth-immune, см. AAutomataOrchestrator::States) и осмыслено только
+	 *  для НЕ живых клеток - отдельный канал хранения, не переиспользует
+	 *  Age. Значения: 0 - не угасает (либо мертва совсем, либо жива - живая
+	 *  клетка никогда не "угасает" одновременно), 2..(States-1) - стадия
+	 *  угасания (см. CellDecay::AdvanceDecayStates() за точной схемой
+	 *  переходов). Виртуальные с безопасным дефолтом ("угасание не
+	 *  поддерживается этой реализацией грида") - тот же паттерн, что и у
+	 *  GetOccupiedChunkCoords()/GetChunkWorldSize() ниже; при States == 2
+	 *  (дефолт, классический бинарный автомат) эти методы не должны даже
+	 *  вызываться на горячем пути (см. FCpuComputeStrategy::Step()'s
+	 *  bDecayActive-гейт) - дефолт здесь чисто defensive. */
+	virtual bool IsDecaying(const FIntVector& Cell) const { return false; }
+	virtual void SetDecayState(const FIntVector& Cell, uint8 NewState) {}
+	virtual uint8 GetDecayState(const FIntVector& Cell) const { return 0; }
+
+	/** Как GetAliveCells(), но угасающие клетки (см. IsDecaying() выше) -
+	 *  OutStates[i] - угасающее состояние (2..States-1) для OutCells[i],
+	 *  тот же индекс. Нужен рендеру (AAutomataOrchestrator::BuildAgeBuckets())
+	 *  для покраски угасающих клеток по стадии - GetAliveCells() их
+	 *  сознательно не включает (означает строго "живая", см. её doc-comment
+	 *  и IsAlive()), чтобы не задеть существующие потребители (выделение,
+	 *  запекание, compute-кандидаты). Безопасный дефолт - пустой список. */
+	virtual void GetDecayingCells(TArray<FIntVector>& OutCells, TArray<uint8>& OutStates) const
+	{
+		OutCells.Reset();
+		OutStates.Reset();
+	}
+
+	/** Как GetDecayingCells(), но только внутри WorldBounds - тот же смысл,
+	 *  что и GetAliveCellsInBounds() относительно GetAliveCells(). Наивный
+	 *  дефолт (полный GetDecayingCells() + фильтр по клетке); FDenseCellGrid
+	 *  переопределяет чанк-осведомлённым путём. */
+	virtual void GetDecayingCellsInBounds(const FBox& WorldBounds, TArray<FIntVector>& OutCells, TArray<uint8>& OutStates) const
+	{
+		TArray<FIntVector> AllCells;
+		TArray<uint8> AllStates;
+		GetDecayingCells(AllCells, AllStates);
+
+		OutCells.Reset();
+		OutStates.Reset();
+		for (int32 Index = 0; Index < AllCells.Num(); ++Index)
+		{
+			if (WorldBounds.IsInside(GridToWorld(AllCells[Index])))
+			{
+				OutCells.Add(AllCells[Index]);
+				OutStates.Add(AllStates[Index]);
+			}
+		}
+	}
+
 	/** Заполняет OutCells координатами всех живых клеток (out-параметр,
 	 *  чтобы не копировать внутреннее хранилище на каждый вызов). */
 	virtual void GetAliveCells(TArray<FIntVector>& OutCells) const = 0;

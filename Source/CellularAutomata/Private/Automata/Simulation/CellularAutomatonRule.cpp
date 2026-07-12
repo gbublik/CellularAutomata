@@ -35,9 +35,10 @@ TArray<FIntVector> FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood In
 	return Offsets;
 }
 
-FCellularAutomatonRule::FCellularAutomatonRule(const TArray<int32>& InBirthCounts, const TArray<int32>& InSurvivalCounts, ENeighborhood InNeighborhood)
+FCellularAutomatonRule::FCellularAutomatonRule(const TArray<int32>& InBirthCounts, const TArray<int32>& InSurvivalCounts, ENeighborhood InNeighborhood, int32 InStates)
 	: NeighborOffsets(BuildNeighborOffsets(InNeighborhood))
 	, BirthCounts(InBirthCounts)
 	, SurvivalCounts(InSurvivalCounts)
+	, States(InStates)
 {
 }
