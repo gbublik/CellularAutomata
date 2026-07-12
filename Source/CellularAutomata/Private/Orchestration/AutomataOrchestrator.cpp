@@ -635,7 +635,23 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 		return;
 	}
 
-	TArray<FIntVector> RectCells = CellSelection::SelectCellsInScreenRect(*Grid, ViewProjectionMatrix, ViewportSize, RectMin, RectMax);
+	// Куб отсечения (см. bEnableRenderCullVolume) прячет клетки снаружи себя
+	// от рендера (BuildAgeBuckets() ограничивает по тем же границам) -
+	// выделение обязано ловить ровно то же подмножество, иначе марки видят
+	// клетки, которых физически нет на экране.
+	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	TArray<FIntVector> RectCells;
+	if (CullVolume)
+	{
+		TArray<FIntVector> VisibleCells;
+		Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), VisibleCells);
+		FFilteredCellGridView VisibleView(*Grid, MoveTemp(VisibleCells));
+		RectCells = CellSelection::SelectCellsInScreenRect(VisibleView, ViewProjectionMatrix, ViewportSize, RectMin, RectMax);
+	}
+	else
+	{
+		RectCells = CellSelection::SelectCellsInScreenRect(*Grid, ViewProjectionMatrix, ViewportSize, RectMin, RectMax);
+	}
 	CombineWithSelection(MoveTemp(RectCells), CombineMode);
 
 	RenderSelectionOverlay();
@@ -653,7 +669,10 @@ void AAutomataOrchestrator::SelectCellUnderCursor(const FVector& RayOrigin, cons
 	}
 
 	// Лимит обхода DDA: до дальнего края описанной сферы живых клеток -
-	// дальше живых клеток гарантированно нет, шагать бессмысленно.
+	// дальше живых клеток гарантированно нет, шагать бессмысленно. Считаем
+	// от ПОЛНОГО набора живых клеток (не от отфильтрованного по кубу ниже) -
+	// это только верхняя граница длины луча, а не источник кандидатов, так
+	// что запас безопасен и в режиме с активным кубом.
 	FVector BoundsCenter = FVector::ZeroVector;
 	float BoundsRadius = 0.0f;
 	if (!ComputeAliveCellsBounds(BoundsCenter, BoundsRadius))
@@ -663,9 +682,25 @@ void AAutomataOrchestrator::SelectCellUnderCursor(const FVector& RayOrigin, cons
 	}
 	const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + Grid->GetCellSize();
 
+	// Тот же принцип, что у SelectCellsInScreenRect() выше - если куб
+	// активен, клик должен "видеть" ровно то подмножество клеток, которое
+	// реально нарисовано, а не всю сетку насквозь. FFilteredCellGridView::
+	// IsAlive() (единственное, что использует DDA-обход PickCellAlongRay())
+	// согласован с отфильтрованным набором - см. её doc-comment.
+	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	TUniquePtr<FFilteredCellGridView> VisibleView;
+	const FCellGrid* PickGrid = Grid.Get();
+	if (CullVolume)
+	{
+		TArray<FIntVector> VisibleCells;
+		Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), VisibleCells);
+		VisibleView = MakeUnique<FFilteredCellGridView>(*Grid, MoveTemp(VisibleCells));
+		PickGrid = VisibleView.Get();
+	}
+
 	TArray<FIntVector> PickedCells;
 	FIntVector PickedCell;
-	if (CellSelection::PickCellAlongRay(*Grid, RayOrigin, RayDirection, MaxDistance, PickedCell))
+	if (CellSelection::PickCellAlongRay(*PickGrid, RayOrigin, RayDirection, MaxDistance, PickedCell))
 	{
 		PickedCells.Add(PickedCell);
 	}
@@ -678,6 +713,35 @@ void AAutomataOrchestrator::SelectCellUnderCursor(const FVector& RayOrigin, cons
 	RenderSelectionOverlay();
 
 	UE_LOG(LogTemp, Log, TEXT("SelectCellUnderCursor: выделено %d клеток (режим: %s)"),
+		SelectedCells.Num(), *UEnum::GetValueAsString(CombineMode));
+}
+
+void AAutomataOrchestrator::SelectCellsInCullVolume(ESelectionCombineMode CombineMode)
+{
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SelectCellsInCullVolume: сетка не инициализирована"));
+		return;
+	}
+
+	// EnsureRenderCullVolume() напрямую, не через bEnableRenderCullVolume -
+	// куб как пространственная область существует независимо от того,
+	// используется ли он сейчас для отсечения рендера (см. doc-comment в
+	// заголовке).
+	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
+	if (!CullVolume)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SelectCellsInCullVolume: на уровне нет ARenderCullVolume - разместите его сначала"));
+		return;
+	}
+
+	TArray<FIntVector> CellsInVolume;
+	Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), CellsInVolume);
+	CombineWithSelection(MoveTemp(CellsInVolume), CombineMode);
+
+	RenderSelectionOverlay();
+
+	UE_LOG(LogTemp, Log, TEXT("SelectCellsInCullVolume: выделено %d клеток (режим: %s)"),
 		SelectedCells.Num(), *UEnum::GetValueAsString(CombineMode));
 }
 
@@ -2338,6 +2402,44 @@ void AAutomataOrchestrator::RefreshRenderCullVolume()
 		GhostShapeGenerationsSinceRefresh = 0;
 		RefreshGhostShape();
 	}
+}
+
+void AAutomataOrchestrator::MoveCullVolumeToSelection()
+{
+	if (SelectedCells.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeToSelection: выделение пусто - сначала выделите клетку (Tab, затем ЛКМ)"));
+		return;
+	}
+
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeToSelection: сетка не инициализирована"));
+		return;
+	}
+
+	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
+	if (!CullVolume)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeToSelection: на уровне нет ARenderCullVolume - разместите его сначала"));
+		return;
+	}
+
+	// Только первая выделенная клетка - куб один, центрировать его
+	// одновременно на нескольких точках невозможно, а первая обычно и есть
+	// та, с которой начали выделение/клик.
+	const FIntVector& TargetCell = SelectedCells[0];
+	const FVector TargetLocation = Grid->GridToWorld(TargetCell);
+	CullVolume->SetActorLocation(TargetLocation);
+
+	UE_LOG(LogTemp, Log, TEXT("MoveCullVolumeToSelection: куб отсечения перемещён к клетке %s (мир: %s)"),
+		*TargetCell.ToString(), *TargetLocation.ToString());
+
+	// SetActorLocation() программно не триггерит ARenderCullVolume::
+	// PostEditMove() (WITH_EDITOR-only, реагирует только на ручное
+	// перетаскивание/правку в Details panel) - перерисовываем сами, тем же
+	// путём, что и хоткей C/сам PostEditMove().
+	RefreshRenderCullVolume();
 }
 
 void AAutomataOrchestrator::AdvanceChunkedRender()

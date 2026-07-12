@@ -248,7 +248,13 @@ public:
 	 *  (RenderSelectionOverlay()), не дожидаясь следующего шага симуляции.
 	 *  Матрицу вида-проекции строит вызывающий код
 	 *  (AGamePlayerController::OnSelectDragFinished()) один раз на всю
-	 *  операцию, не на клетку. */
+	 *  операцию, не на клетку. Если активен куб отсечения (bEnableRenderCullVolume
+	 *  и есть ARenderCullVolume на уровне) - кандидатов на выделение сначала
+	 *  сужаем до клеток ВНУТРИ его границ (Grid->GetAliveCellsInBounds() +
+	 *  FFilteredCellGridView, тот же приём, что BuildAgeBuckets() использует
+	 *  для рендера), иначе марки могли выделить клетки, которые физически не
+	 *  видны на экране (спрятаны кубом) - выделение обязано ловить ровно то
+	 *  подмножество, которое реально нарисовано, не всю сетку целиком. */
 	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
 	void SelectCellsInScreenRect(const FMatrix& ViewProjectionMatrix, const FVector2D& ViewportSize, const FVector2D& RectMin, const FVector2D& RectMax, ESelectionCombineMode CombineMode = ESelectionCombineMode::Replace);
 
@@ -260,9 +266,29 @@ public:
 	 *  или ни одной, если кликнули в пустоту) комбинируется с текущим
 	 *  SelectedCells по тому же CombineMode, что и прямоугольник: клик -
 	 *  заменить (пустой клик очищает выделение), Shift+клик - добавить,
-	 *  Ctrl+клик - убрать. */
+	 *  Ctrl+клик - убрать. Тот же принцип ограничения кубом отсечения, что и
+	 *  у SelectCellsInScreenRect() (см. её doc-comment) - если куб активен,
+	 *  DDA-обход луча идёт по FFilteredCellGridView, ограниченному границами
+	 *  куба (её переопределённый IsAlive() - см. doc-comment
+	 *  FFilteredCellGridView), так что клик "видит" ровно то, что реально
+	 *  нарисовано, а не всю сетку насквозь. */
 	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
 	void SelectCellUnderCursor(const FVector& RayOrigin, const FVector& RayDirection, ESelectionCombineMode CombineMode = ESelectionCombineMode::Replace);
+
+	/** Выделяет все живые клетки внутри текущих границ ARenderCullVolume
+	 *  целиком (Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds())),
+	 *  независимо от экранной проекции - в отличие от SelectCellsInScreenRect(),
+	 *  это не марки по экрану, а прямой запрос "всё, что попадает в объём".
+	 *  Работает по фактическим границам куба, даже если сам
+	 *  bEnableRenderCullVolume сейчас выключен (куб - это в первую очередь
+	 *  пространственная область на уровне, отсечение рендера - лишь одно из
+	 *  её применений). Комбинируется с текущим SelectedCells по тому же
+	 *  CombineMode, что и остальные методы выделения (хоткей K соседствует с
+	 *  MoveCullVolumeToSelection() - тот же дух "куб <-> выделение" в обе
+	 *  стороны). Отказывает (с warning в лог), если нет сетки или на уровне
+	 *  нет ARenderCullVolume. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
+	void SelectCellsInCullVolume(ESelectionCombineMode CombineMode = ESelectionCombineMode::Replace);
 
 	/** Делает клетки из SelectedCells единственным содержимым новой сетки
 	 *  (возраст сброшен - как только что родившиеся) и выходит из режима
@@ -601,6 +627,23 @@ public:
 	 *  сетка ещё не создана (до первого GenerateRandom()). */
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void RefreshRenderCullVolume();
+
+	/** Двигает ARenderCullVolume так, чтобы он оказался отцентрован на
+	 *  ПЕРВОЙ выделенной клетке (SelectedCells[0]) - хоткей K. Куб довольно
+	 *  неудобно таскать гизмо через весь уровень вручную, особенно на
+	 *  большой сетке - выделил интересующую клетку (Tab + ЛКМ/клик), нажал
+	 *  K, куб телепортировался прямо туда. Меняет только location актёра,
+	 *  размер (BoxExtent) не трогает. No-op с warning-логом, если
+	 *  SelectedCells пуст или на уровне нет ARenderCullVolume - тот же
+	 *  принцип "никогда не делать тихо ничего/наполовину", что у остальных
+	 *  guard'ов. В конце сама зовёт RefreshRenderCullVolume() - программный
+	 *  SetActorLocation() не триггерит ARenderCullVolume::PostEditMove()
+	 *  (тот колбэк WITH_EDITOR-only и реагирует только на ручное
+	 *  перетаскивание/правку в Details panel, а не на код, к тому же в PIE
+	 *  его вообще нет), так что без явного вызова куб визуально не подхватил
+	 *  бы новые границы до следующего шага симуляции. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void MoveCullVolumeToSelection();
 
 	/** Включён ли сейчас Ghost Shape (см. bEnableGhostShape) - нужно внешнему
 	 *  коду (хоткею), чтобы решить, на что переключать, не трогая

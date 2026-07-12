@@ -232,6 +232,20 @@ protected:
 	 *  состояния, симуляция не сбрасывается). */
 	void OnDeleteSelectedCells();
 
+	/** Хоткей (K) - AAutomataOrchestrator::MoveCullVolumeToSelection(),
+	 *  телепортирует ARenderCullVolume к первой выделенной клетке - удобнее,
+	 *  чем таскать гизмо куба вручную через весь уровень. */
+	void OnMoveCullVolumeToSelection();
+
+	/** Хоткей (L, соседствует с K по духу "куб <-> выделение") -
+	 *  AAutomataOrchestrator::SelectCellsInCullVolume(), выделяет все живые
+	 *  клетки внутри текущих границ ARenderCullVolume целиком. Модификатор
+	 *  снимается в момент нажатия - той же идиомой, что и у
+	 *  OnSelectDragStarted() (Ctrl приоритетнее Shift, если зажаты оба):
+	 *  без модификатора - заменить выделение, Shift - добавить, Ctrl -
+	 *  убрать. */
+	void OnSelectCellsInCullVolume();
+
 	/** Хоткей S (Ctrl+S / Ctrl+Shift+S, стандартная комбинация) -
 	 *  AAutomataOrchestrator::SaveState()/SaveStateAs(). Действие на клавише
 	 *  S привязано БЕЗ модификатора (Enhanced Input не умеет требовать Ctrl
@@ -317,6 +331,12 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> DeleteSelectedCellsAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> MoveCullVolumeToSelectionAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> SelectCellsInCullVolumeAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> SaveStateAction;

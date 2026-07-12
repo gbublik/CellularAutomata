@@ -84,6 +84,12 @@ void AGamePlayerController::SetupInputComponent()
 	DeleteSelectedCellsAction = NewObject<UInputAction>(this, TEXT("IA_DeleteSelectedCells"));
 	DeleteSelectedCellsAction->ValueType = EInputActionValueType::Boolean;
 
+	MoveCullVolumeToSelectionAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeToSelection"));
+	MoveCullVolumeToSelectionAction->ValueType = EInputActionValueType::Boolean;
+
+	SelectCellsInCullVolumeAction = NewObject<UInputAction>(this, TEXT("IA_SelectCellsInCullVolume"));
+	SelectCellsInCullVolumeAction->ValueType = EInputActionValueType::Boolean;
+
 	SaveStateAction = NewObject<UInputAction>(this, TEXT("IA_SaveState"));
 	SaveStateAction->ValueType = EInputActionValueType::Boolean;
 
@@ -119,6 +125,8 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(InvertSelectionAction, EKeys::I);
 	SimulationMappingContext->MapKey(BakeCellsToMeshAction, EKeys::M);
 	SimulationMappingContext->MapKey(DeleteSelectedCellsAction, EKeys::Delete);
+	SimulationMappingContext->MapKey(MoveCullVolumeToSelectionAction, EKeys::K);
+	SimulationMappingContext->MapKey(SelectCellsInCullVolumeAction, EKeys::L);
 	// S/O замапплены БЕЗ модификатора - Enhanced Input не даёт потребовать
 	// Ctrl прямо в маппинге ключа (в отличие от старых FInputChord).
 	// Ctrl(+Shift) проверяется внутри OnSaveOrSaveAs()/OnLoadState() - та же
@@ -167,6 +175,8 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(InvertSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnInvertSelection);
 		EnhancedInputComp->BindAction(BakeCellsToMeshAction, ETriggerEvent::Started, this, &AGamePlayerController::OnBakeCellsToMesh);
 		EnhancedInputComp->BindAction(DeleteSelectedCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDeleteSelectedCells);
+		EnhancedInputComp->BindAction(MoveCullVolumeToSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnMoveCullVolumeToSelection);
+		EnhancedInputComp->BindAction(SelectCellsInCullVolumeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSelectCellsInCullVolume);
 		EnhancedInputComp->BindAction(SaveStateAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSaveOrSaveAs);
 		EnhancedInputComp->BindAction(LoadStateAction, ETriggerEvent::Started, this, &AGamePlayerController::OnLoadState);
 	}
@@ -657,6 +667,42 @@ void AGamePlayerController::OnDeleteSelectedCells()
 	}
 
 	Orchestrator->DeleteSelectedCells();
+}
+
+void AGamePlayerController::OnMoveCullVolumeToSelection()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnMoveCullVolumeToSelection: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->MoveCullVolumeToSelection();
+}
+
+void AGamePlayerController::OnSelectCellsInCullVolume()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnSelectCellsInCullVolume: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// Модификатор снимается в момент нажатия - та же идиома, что и у
+	// OnSelectDragStarted() (Ctrl приоритетнее Shift, если зажаты оба).
+	ESelectionCombineMode CombineMode = ESelectionCombineMode::Replace;
+	if (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))
+	{
+		CombineMode = ESelectionCombineMode::Subtract;
+	}
+	else if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+	{
+		CombineMode = ESelectionCombineMode::Add;
+	}
+
+	Orchestrator->SelectCellsInCullVolume(CombineMode);
 }
 
 void AGamePlayerController::OnSaveOrSaveAs()
