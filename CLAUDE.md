@@ -10,7 +10,11 @@ The project briefly depended on the third-party **VoxelFree** plugin (SDF/marchi
 
 ## Build / run
 
-There is no CLI test suite or lint config in this repo — it's a standard UE C++ project built through the Unreal toolchain.
+No lint config — it's a standard UE C++ project built through the Unreal toolchain. There *is* a small automation test suite (`Source/CellularAutomata/Private/Tests/AutomataTests.cpp`, whole file under `#if WITH_DEV_AUTOMATION_TESTS`, no extra `Build.cs` dependency), run headless with:
+
+`"C:\Program Files\Epic Games\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "<repo>\CellularAutomata.uproject" -ExecCmds="Automation RunTests CellularAutomata" -testexit="Automation Test Queue Empty" -unattended -nopause -nosplash -abslog=<file>`
+
+Four tests, chosen for the places where a bug is both likely and invisible: `Grid.NegativeCoords` (chunk math on negative coordinates — the floor-division trap flagged under `Automata/Grid/`, and generation is centred on the origin so negative coordinates are the norm, plus the "a re-created chunk must not inherit stale ages" guarantee), `Rules.RuleStringRoundTrip` (`Parse → Format → Parse`, range compression, and seven malformed strings that must each be rejected *whole* with a non-empty error), `Compute.CpuGpuParity` and `Compute.GpuBatchParity` (differential tests — they need no known-good answer, only that two implementations agree: CPU against GPU, and one batched dispatch against N single steps, comparing live cells, ages **and** decay stages). The last two are the automated form of the manual check the batching work was verified with, and they carry `EAutomationTestFlags::NonNullRHI` plus their own `GMaxRHIFeatureLevel` check so they report "skipped" rather than fail under `-nullrhi`. Note the whole run costs an editor startup (tens of seconds) — there is no fast inner loop for UE automation tests. Deliberately not covered: anything requiring an actor, a tick or a render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead.
 
 - Engine install: `C:\Program Files\Epic Games\UE_5.7`
 - Regenerate Visual Studio project files after adding/removing source files:
