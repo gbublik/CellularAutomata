@@ -2163,11 +2163,6 @@ void AAutomataOrchestrator::StepAsync()
 	const float CellSizeSnapshot = CellSize;
 	const int32 ChunkSizeSnapshot = ChunkSize;
 
-	// Темп в Tick() считается по этому числу: интервал между заходами -
-	// BatchGenerations/Speed, чтобы Speed по-прежнему означал "поколений в
-	// секунду", а не "заходов в секунду" (см. LastDispatchGenerations).
-	LastDispatchGenerations = BatchGenerations;
-
 	bStepInProgress = true;
 
 	FCellGrid* CurrentGridPtr = Grid.Get();
@@ -2202,7 +2197,21 @@ void AAutomataOrchestrator::StepAsync()
 				}
 
 				GenerationsAdvanced += FMath::Max(1, StepsAdvanced);
-				if (GenerationsAdvanced >= BatchGenerations)
+
+				// Выходим и когда набрали всю пачку, и когда стратегия
+				// фактически НЕ пачкует. Второе - не теория: стратегия отвечает
+				// на SupportsStepBatching() один раз за заход, а влезает ли
+				// пачка, решается уже внутри StepBatch() по текущему объёму
+				// AABB, который растёт вместе с сеткой. Дорастив объём до
+				// потолка, пачка урезается до 1 - и без этого выхода цикл
+				// намолотил бы BatchGenerations одиночных шагов внутри ОДНОГО
+				// фонового захода: та же работа, но одним блоком на несколько
+				// секунд, с висящим всё это время bStepInProgress (он блокирует
+				// R и генерацию) и с прерванным чанковым разливом. Наблюдалось
+				// живьём: на 11 млн клеток такой заход занял 7.7 с. Возврат к
+				// прежнему ритму "одно поколение за заход" здесь строго лучше -
+				// следующее посчитается следующим Tick()'ом.
+				if (StepsAdvanced <= 1 || GenerationsAdvanced >= BatchGenerations)
 				{
 					break;
 				}
@@ -2488,6 +2497,14 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// а не заходы, поэтому идут шагом GenerationsAdvanced. При обычном
 	// одиночном шаге это 1, и поведение прежнее.
 	const int32 Generations = FMath::Max(1, GenerationsAdvanced);
+
+	// Темп следующих заходов - по ФАКТИЧЕСКОМУ размеру этого, а не по тому,
+	// что планировалось до дispatch'а: пачка могла быть урезана внутри
+	// стратегии (объём AABB упёрся в её потолок), и тогда ждать
+	// StepsPerRender/Speed ради одного посчитанного поколения значило бы
+	// замедлить симуляцию ровно в StepsPerRender раз. Так интервал сам
+	// сходится к реальности за один заход - в обе стороны.
+	LastDispatchGenerations = Generations;
 
 	Grid = MoveTemp(NewGrid);
 	LastGpuComputeUploadBytes = ComputeUploadBytes;
