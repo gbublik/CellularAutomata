@@ -2031,22 +2031,17 @@ void AAutomataOrchestrator::Next()
 				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
 				const int32 StepsAdvanced = ComputeStrategy->StepBatch(*SourceGrid, *NextGrid, AutomatonRule, NumSteps - StepsDone);
 
-				// Возрасты: ComputeAges() умеет только диффить два СОСЕДНИХ
-				// поколения, а внутри пачки промежуточных не существует -
-				// стратегия, продвинувшая больше одного, обязана была
-				// заполнить возрасты сама (см. её doc-comment). Позвать
-				// ComputeAges() поверх этого значило бы затереть верные
-				// значения неверными (+1 вместо +N).
+				// Оба прохода умеют продвинуть состояние только с одного
+				// поколения на СОСЕДНЕЕ, а внутри пачки промежуточных не
+				// существует - стратегия, продвинувшая больше одного, обязана
+				// была заполнить и возрасты, и угасание сама (см. её
+				// doc-comment). Позвать их поверх этого значило бы затереть
+				// верные значения неверными.
 				if (StepsAdvanced <= 1)
 				{
 					CellAging::ComputeAges(SourceGrid, *NextGrid);
+					CellDecay::AdvanceDecayStates(SourceGrid, *NextGrid, AutomatonRule.GetStates());
 				}
-
-				// Пачка и Generations взаимоисключающи (StepBatch() при
-				// HasDecayStates() всегда возвращает 1), так что этот проход
-				// по-прежнему видит каждое поколение. При States == 2 он и так
-				// сразу выходит.
-				CellDecay::AdvanceDecayStates(SourceGrid, *NextGrid, AutomatonRule.GetStates());
 
 				ResultGrid = MoveTemp(NextGrid);
 				SourceGrid = ResultGrid.Get();
@@ -2203,8 +2198,8 @@ void AAutomataOrchestrator::StepAsync()
 				if (StepsAdvanced <= 1)
 				{
 					CellAging::ComputeAges(SourceGrid, *NextGridBuffer);
+					CellDecay::AdvanceDecayStates(SourceGrid, *NextGridBuffer, AutomatonRule.GetStates());
 				}
-				CellDecay::AdvanceDecayStates(SourceGrid, *NextGridBuffer, AutomatonRule.GetStates());
 
 				GenerationsAdvanced += FMath::Max(1, StepsAdvanced);
 				if (GenerationsAdvanced >= BatchGenerations)

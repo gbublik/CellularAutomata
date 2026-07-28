@@ -52,11 +52,20 @@ public:
 		// StepBatch()). ==1 - шаг внутри пачки, промежуточных поколений на
 		// CPU не будет, возраст ведёт шейдер.
 		SHADER_PARAMETER(uint32, bTrackAges)
+		// bTrackDecayStates==1 - шаг внутри пачки при States > 2: угасание
+		// ведёт шейдер по байтовой плоскости состояний, потому что
+		// CellDecay::AdvanceDecayStates() между поколениями пачки не
+		// выполняется. ==0 - прежний путь с битовой плоскостью InputDecayBits
+		// (см. .usf).
+		SHADER_PARAMETER(uint32, bTrackDecayStates)
+		SHADER_PARAMETER(uint32, MaxStates)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputBits)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecayBits)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputAges)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecayStates)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputBits)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputAges)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputDecayStates)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -77,7 +86,7 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 
 bool FGpuComputeStrategy::SupportsStepBatching(const FCellularAutomatonRule& Rule) const
 {
-	return !Rule.HasDecayStates();
+	return true;
 }
 
 int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& NextGrid, const FCellularAutomatonRule& Rule, int32 NumSteps) const
@@ -134,10 +143,11 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	// молча терялись бы, и GPU разошёлся бы с CPU - поэтому подбирается не
 	// гало под объём, а размер пачки под лимиты.
 	//
-	// Generations (States > 2) пачку не поддерживает вовсе - см. второе
-	// обязательство в doc-comment'е базового StepBatch(): угасание продвигает
-	// CellDecay::AdvanceDecayStates() между поколениями на CPU.
-	int32 EffectiveSteps = Rule.HasDecayStates() ? 1 : RequestedSteps;
+	// Generations (States > 2) пачке не мешает: угасание в этом режиме ведёт
+	// сам шейдер по байтовой плоскости состояний (см. bTrackDecayStates ниже
+	// и в .usf), а не CellDecay::AdvanceDecayStates() между поколениями.
+	const bool bDecayActive = Rule.HasDecayStates();
+	int32 EffectiveSteps = RequestedSteps;
 
 	FIntVector MinCell;
 	FIntVector VolumeDim;
@@ -147,7 +157,8 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	// Пачка не влезает - урезаем её (а не отбрасываем): меньше шагов -> меньше
 	// гало -> меньше объём, так что цикл сходится монотонно. Даже пачка из 3
 	// шагов вместо 10 экономит две трети кругов через GPU.
-	while (EffectiveSteps > 1 && (VolumeCells <= 0 || VolumeCells > MaxVolumeCells || VolumeCells > BatchVolumeCellLimit()))
+	const int64 BatchLimit = BatchVolumeCellLimit(bDecayActive);
+	while (EffectiveSteps > 1 && (VolumeCells <= 0 || VolumeCells > MaxVolumeCells || VolumeCells > BatchLimit))
 	{
 		--EffectiveSteps;
 		ComputeHaloVolume(MinAlive, MaxAlive, EffectiveSteps, MinCell, VolumeDim, VolumeCells);
@@ -174,9 +185,18 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	// плоскости по байту на клетку не создаётся вовсе.
 	const bool bTrackAges = EffectiveSteps > 1;
 
+	// Угасание ведёт шейдер ровно тогда же, когда и возрасты, и по той же
+	// причине: внутри пачки промежуточных поколений на CPU не существует,
+	// а CellDecay::AdvanceDecayStates() умеет продвигать состояние только с
+	// одного поколения на соседнее. При одиночном шаге остаётся прежний путь -
+	// битовая плоскость "угасает" на вход и CPU-проход после.
+	const bool bTrackDecayStates = bDecayActive && EffectiveSteps > 1;
+
 	const int32 VolumeCellsI32 = (int32)VolumeCells;
 	const int32 WordCount = FMath::DivideAndRoundUp(VolumeCellsI32, 32);
-	const int32 AgeWordCount = bTrackAges ? FMath::DivideAndRoundUp(VolumeCellsI32, 4) : 1;
+	const int32 BytePlaneWordCount = FMath::DivideAndRoundUp(VolumeCellsI32, 4);
+	const int32 AgeWordCount = bTrackAges ? BytePlaneWordCount : 1;
+	const int32 DecayStateWordCount = bTrackDecayStates ? BytePlaneWordCount : 1;
 
 	TArray<uint32> InputWords;
 	InputWords.SetNumZeroed(WordCount);
@@ -202,27 +222,35 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 		}
 	}
 
-	// При Rule.HasDecayStates() (States > 2) собираем второй битовый план -
-	// "угасает" (см. FCellGrid::IsDecaying()) - той же AABB/индексацией, что
-	// InputWords, БЕЗ расширения границ под угасающие клетки: угасающая
-	// клетка вдали от всего живого всё равно не может родиться (birth
-	// возможен только рядом с чем-то живым), а её собственное угасание
-	// считает CellDecay::AdvanceDecayStates() независимо от этого AABB.
-	// При States == 2 этот блок вообще не выполняется - ни GetDecayingCells(),
-	// ни лишняя аллокация. Пачка и угасание взаимоисключающи (см. выше), так
-	// что здесь всегда EffectiveSteps == 1.
-	const bool bDecayActive = Rule.HasDecayStates();
+	// При Rule.HasDecayStates() (States > 2) собираем угасающие клетки той же
+	// AABB/индексацией, что InputWords, БЕЗ расширения границ под них:
+	// угасающая клетка вдали от всего живого всё равно не может родиться
+	// (birth возможен только рядом с чем-то живым). Форма зависит от режима:
+	// под пачкой - байтовая плоскость состояний (шейдеру нужна конкретная
+	// стадия, чтобы её продвигать), иначе - прежняя битовая плоскость "просто
+	// угасает" (стадию в этом режиме продвигает CPU после шага, и её
+	// собственное продвижение от этого AABB не зависит вовсе). При States == 2
+	// не выполняется ни то, ни другое - ни GetDecayingCells(), ни аллокация.
 	TArray<uint32> InputDecayWords;
+	TArray<uint32> InputDecayStateWords;
 	if (bDecayActive)
 	{
-		InputDecayWords.SetNumZeroed(WordCount);
+		if (bTrackDecayStates)
+		{
+			InputDecayStateWords.SetNumZeroed(DecayStateWordCount);
+		}
+		else
+		{
+			InputDecayWords.SetNumZeroed(WordCount);
+		}
 
 		TArray<FIntVector> DecayingCells;
 		TArray<uint8> DecayingStates;
 		CurrentGrid.GetDecayingCells(DecayingCells, DecayingStates);
 		const FIntVector MaxCell = MinCell + VolumeDim - FIntVector(1, 1, 1);
-		for (const FIntVector& Cell : DecayingCells)
+		for (int32 CellIndex = 0; CellIndex < DecayingCells.Num(); ++CellIndex)
 		{
+			const FIntVector& Cell = DecayingCells[CellIndex];
 			if (Cell.X < MinCell.X || Cell.X > MaxCell.X ||
 				Cell.Y < MinCell.Y || Cell.Y > MaxCell.Y ||
 				Cell.Z < MinCell.Z || Cell.Z > MaxCell.Z)
@@ -232,7 +260,14 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 
 			const FIntVector Local = Cell - MinCell;
 			const int32 Index = (Local.Z * VolumeDim.Y + Local.Y) * VolumeDim.X + Local.X;
-			InputDecayWords[Index >> 5] |= (1u << (Index & 31));
+			if (bTrackDecayStates)
+			{
+				InputDecayStateWords[Index >> 2] |= (uint32(DecayingStates[CellIndex]) << ((Index & 3) * 8));
+			}
+			else
+			{
+				InputDecayWords[Index >> 5] |= (1u << (Index & 31));
+			}
 		}
 	}
 
@@ -241,8 +276,9 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	// возрастной буферы, только если они реально были загружены. Для пачки
 	// это по-прежнему ОДНА заливка, а не по заливке на поколение - в этом вся
 	// суть StepBatch().
-	LastInputBufferBytes = int64(WordCount) * sizeof(uint32) * (bDecayActive ? 2 : 1)
-		+ (bTrackAges ? int64(AgeWordCount) * sizeof(uint32) : 0);
+	LastInputBufferBytes = int64(WordCount) * sizeof(uint32) * ((bDecayActive && !bTrackDecayStates) ? 2 : 1)
+		+ (bTrackAges ? int64(AgeWordCount) * sizeof(uint32) : 0)
+		+ (bTrackDecayStates ? int64(DecayStateWordCount) * sizeof(uint32) : 0);
 
 	TArray<FIntVector4> ShaderOffsets;
 	ShaderOffsets.SetNumZeroed(MaxShaderNeighborOffsets);
@@ -290,12 +326,18 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	OutputWords->SetNumZeroed(WordCount);
 	TSharedRef<TArray<uint32>> OutputAgeWords = MakeShared<TArray<uint32>>();
 	OutputAgeWords->SetNumZeroed(bTrackAges ? AgeWordCount : 0);
+	TSharedRef<TArray<uint32>> OutputDecayStateWords = MakeShared<TArray<uint32>>();
+	OutputDecayStateWords->SetNumZeroed(bTrackDecayStates ? DecayStateWordCount : 0);
+
+	const uint32 MaxStates = (uint32)Rule.GetStates();
 
 	FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	ENQUEUE_RENDER_COMMAND(CellularAutomatonStepCommand)(
 		[InputWords = MoveTemp(InputWords), InputDecayWords = MoveTemp(InputDecayWords), InputAgeWords = MoveTemp(InputAgeWords),
-		 ShaderOffsets = MoveTemp(ShaderOffsets), WordCount, AgeWordCount, VolumeDim, NeighborOffsetCount, BirthMask, SurvivalMask,
-		 bDecayActive, bTrackAges, EffectiveSteps, OutputWords, OutputAgeWords, CompletionEvent](FRHICommandListImmediate& RHICmdList) mutable
+		 InputDecayStateWords = MoveTemp(InputDecayStateWords), ShaderOffsets = MoveTemp(ShaderOffsets),
+		 WordCount, AgeWordCount, DecayStateWordCount, VolumeDim, NeighborOffsetCount, BirthMask, SurvivalMask, MaxStates,
+		 bDecayActive, bTrackAges, bTrackDecayStates, EffectiveSteps, OutputWords, OutputAgeWords, OutputDecayStateWords,
+		 CompletionEvent](FRHICommandListImmediate& RHICmdList) mutable
 		{
 			FRDGBuilder GraphBuilder(RHICmdList);
 
@@ -308,7 +350,11 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 			FRDGBufferRef BitsOut = GraphBuilder.CreateBuffer(
 				FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), WordCount), TEXT("CAOutputBits"));
 
-			FRDGBufferRef InputDecayBuffer = bDecayActive
+			// Битовая плоскость "угасает" нужна ТОЛЬКО вне пачки: под пачкой ту
+			// же роль играет байтовая плоскость состояний, и InputDecayWords
+			// намеренно остаётся пустым - создавать из него буфер на WordCount
+			// слов значило бы прочитать за пределы пустого массива.
+			FRDGBufferRef InputDecayBuffer = (bDecayActive && !bTrackDecayStates)
 				? CreateStructuredBuffer(GraphBuilder, TEXT("CAInputDecayBits"),
 					sizeof(uint32), WordCount, InputDecayWords.GetData(), WordCount * sizeof(uint32))
 				: nullptr;
@@ -325,6 +371,16 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 			FRDGBufferRef AgesOut = GraphBuilder.CreateBuffer(
 				FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), bTrackAges ? AgeWordCount : 1), TEXT("CAOutputAges"));
 
+			// Плоскость угасающих состояний - устроена точно как возрастная
+			// (создаётся только когда реально ведётся, ping-pong'ается тем же
+			// свапом, неиспользуемый SRV-слот берёт текущий BitsIn).
+			FRDGBufferRef DecayStatesIn = bTrackDecayStates
+				? CreateStructuredBuffer(GraphBuilder, TEXT("CAInputDecayStates"),
+					sizeof(uint32), DecayStateWordCount, InputDecayStateWords.GetData(), DecayStateWordCount * sizeof(uint32))
+				: nullptr;
+			FRDGBufferRef DecayStatesOut = GraphBuilder.CreateBuffer(
+				FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), bTrackDecayStates ? DecayStateWordCount : 1), TEXT("CAOutputDecayStates"));
+
 			for (int32 StepIndex = 0; StepIndex < EffectiveSteps; ++StepIndex)
 			{
 				// Шейдер только выставляет биты (InterlockedOr), нулей не
@@ -334,6 +390,10 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 				if (bTrackAges)
 				{
 					AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(AgesOut, PF_R32_UINT), 0u);
+				}
+				if (bTrackDecayStates)
+				{
+					AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(DecayStatesOut, PF_R32_UINT), 0u);
 				}
 
 				FCellularAutomatonStepCS::FParameters* Params = GraphBuilder.AllocParameters<FCellularAutomatonStepCS::FParameters>();
@@ -347,6 +407,8 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 				Params->SurvivalMask = SurvivalMask;
 				Params->bDecayActive = bDecayActive ? 1u : 0u;
 				Params->bTrackAges = bTrackAges ? 1u : 0u;
+				Params->bTrackDecayStates = bTrackDecayStates ? 1u : 0u;
+				Params->MaxStates = MaxStates;
 				// Неиспользуемые SRV-слоты привязываются к ТЕКУЩЕМУ BitsIn, а
 				// не к запомненному один раз до цикла: BitsIn/BitsOut меняются
 				// ролями каждый проход, и заглушка, взятая до цикла, со второго
@@ -356,10 +418,12 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 				// валидирует привязки независимо от того, читает их шейдер или
 				// нет.
 				Params->InputBits = GraphBuilder.CreateSRV(BitsIn);
-				Params->InputDecayBits = GraphBuilder.CreateSRV(bDecayActive ? InputDecayBuffer : BitsIn);
+				Params->InputDecayBits = GraphBuilder.CreateSRV(InputDecayBuffer ? InputDecayBuffer : BitsIn);
 				Params->InputAges = GraphBuilder.CreateSRV(bTrackAges ? AgesIn : BitsIn);
+				Params->InputDecayStates = GraphBuilder.CreateSRV(bTrackDecayStates ? DecayStatesIn : BitsIn);
 				Params->OutputBits = GraphBuilder.CreateUAV(BitsOut, PF_R32_UINT);
 				Params->OutputAges = GraphBuilder.CreateUAV(AgesOut, PF_R32_UINT);
+				Params->OutputDecayStates = GraphBuilder.CreateUAV(DecayStatesOut, PF_R32_UINT);
 
 				TShaderMapRef<FCellularAutomatonStepCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 				FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("CellularAutomatonStep(%d/%d)", StepIndex + 1, EffectiveSteps),
@@ -371,6 +435,10 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 				if (bTrackAges)
 				{
 					Swap(AgesIn, AgesOut);
+				}
+				if (bTrackDecayStates)
+				{
+					Swap(DecayStatesIn, DecayStatesOut);
 				}
 			}
 
@@ -394,6 +462,17 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 					});
 			}
 
+			TSharedPtr<FRHIGPUBufferReadback> DecayStateReadback;
+			if (bTrackDecayStates)
+			{
+				DecayStateReadback = MakeShared<FRHIGPUBufferReadback>(TEXT("CellularAutomatonDecayStateReadback"));
+				AddReadbackBufferPass(GraphBuilder, RDG_EVENT_NAME("CellularAutomatonDecayStateReadback"), DecayStatesIn,
+					[DecayStateReadback, DecayStatesIn](FRHICommandListImmediate& RHICmdListLocal)
+					{
+						DecayStateReadback->EnqueueCopy(RHICmdListLocal, DecayStatesIn->GetRHI(), 0);
+					});
+			}
+
 			GraphBuilder.Execute();
 
 			// Лёгкий flush - проталкивает записанные команды до RHI thread (и тем
@@ -412,7 +491,9 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 			// комментарий выше про причину переноса всего блока сюда). Ждём оба
 			// readback'а: они enqueue'ятся в один граф, но готовы могут стать
 			// не одновременно.
-			while (!Readback->IsReady() || (AgeReadback.IsValid() && !AgeReadback->IsReady()))
+			while (!Readback->IsReady()
+				|| (AgeReadback.IsValid() && !AgeReadback->IsReady())
+				|| (DecayStateReadback.IsValid() && !DecayStateReadback->IsReady()))
 			{
 				FPlatformProcess::Sleep(0.0f);
 			}
@@ -428,6 +509,13 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 				AgeReadback->Unlock();
 			}
 
+			if (DecayStateReadback.IsValid())
+			{
+				const uint32* DecayStateData = (const uint32*)DecayStateReadback->Lock(DecayStateWordCount * sizeof(uint32));
+				FMemory::Memcpy(OutputDecayStateWords->GetData(), DecayStateData, DecayStateWordCount * sizeof(uint32));
+				DecayStateReadback->Unlock();
+			}
+
 			CompletionEvent->Trigger();
 		});
 
@@ -440,13 +528,30 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	const int32 SliceCells = VolumeDim.X * VolumeDim.Y;
 	for (int32 Index = 0; Index < VolumeCellsI32; ++Index)
 	{
-		if (((*OutputWords)[Index >> 5] >> (Index & 31)) & 1u)
+		const bool bCellAlive = (((*OutputWords)[Index >> 5] >> (Index & 31)) & 1u) != 0;
+
+		// Угасающее состояние есть только у НЕ живых клеток, поэтому его
+		// приходится читать и для тех индексов, где бит жизни не выставлен -
+		// иначе весь "хвост" угасания просто не доехал бы обратно в сетку.
+		// Само чтение из уже полученного буфера дешёвое; аллокацию чанка
+		// вызывает только ненулевое состояние (см. SetDecayState()).
+		const uint8 DecayState = bTrackDecayStates
+			? (uint8)(((*OutputDecayStateWords)[Index >> 2] >> ((Index & 3) * 8)) & 0xFFu)
+			: 0;
+
+		if (!bCellAlive && DecayState == 0)
 		{
-			const int32 LocalZ = Index / SliceCells;
-			const int32 Rem = Index % SliceCells;
-			const int32 LocalY = Rem / VolumeDim.X;
-			const int32 LocalX = Rem % VolumeDim.X;
-			const FIntVector Cell = MinCell + FIntVector(LocalX, LocalY, LocalZ);
+			continue;
+		}
+
+		const int32 LocalZ = Index / SliceCells;
+		const int32 Rem = Index % SliceCells;
+		const int32 LocalY = Rem / VolumeDim.X;
+		const int32 LocalX = Rem % VolumeDim.X;
+		const FIntVector Cell = MinCell + FIntVector(LocalX, LocalY, LocalZ);
+
+		if (bCellAlive)
+		{
 			NextGrid.SetAlive(Cell, true);
 
 			if (bTrackAges)
@@ -460,6 +565,10 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 					NextGrid.SetAge(Cell, Age);
 				}
 			}
+		}
+		else
+		{
+			NextGrid.SetDecayState(Cell, DecayState);
 		}
 	}
 

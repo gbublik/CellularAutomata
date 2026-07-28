@@ -23,14 +23,31 @@ uint bDecayActive;
 // шаг идёт внутри пачки (FGpuComputeStrategy::StepBatch()), промежуточных
 // поколений на CPU не будет вовсе, поэтому возраст надо вести здесь.
 uint bTrackAges;
+// bTrackDecayStates==1 - шаг внутри пачки И правило в режиме Generations:
+// угасание ведёт шейдер по БАЙТОВОЙ плоскости состояний (InputDecayStates/
+// OutputDecayStates), потому что CellDecay::AdvanceDecayStates() между
+// поколениями пачки не выполняется. ==0 - прежний путь: угасание продвигает
+// CPU после шага, а шейдеру достаточно БИТОВОЙ плоскости "угасает"
+// (InputDecayBits) только чтобы соблюсти birth-immunity. Две плоскости, а не
+// одна на все случаи, специально: одиночный шаг (подавляющее большинство
+// вызовов) остаётся ровно таким, каким работал и был проверен.
+uint bTrackDecayStates;
+// Общее число состояний клетки (AAutomataOrchestrator::States) - нужно только
+// под bTrackDecayStates, чтобы знать, на каком шаге угасание заканчивается
+// окончательной смертью.
+uint MaxStates;
 
 StructuredBuffer<uint> InputBits;
 StructuredBuffer<uint> InputDecayBits;
 // Возраст - байт на клетку (4 клетки в слове), насыщение на 255: тот же тип
 // и та же семантика, что у FCellGrid::GetAge()/SetAge().
 StructuredBuffer<uint> InputAges;
+// Угасающее состояние - тоже байт на клетку (0 - не угасает, 2..MaxStates-1 -
+// стадия), та же упаковка, что у возрастов. См. FCellGrid::GetDecayState().
+StructuredBuffer<uint> InputDecayStates;
 RWStructuredBuffer<uint> OutputBits;
 RWStructuredBuffer<uint> OutputAges;
+RWStructuredBuffer<uint> OutputDecayStates;
 
 uint CellIndex(int3 Coord)
 {
@@ -60,6 +77,19 @@ bool IsDecayingAt(int3 Coord)
 	return (InputDecayBits[Index >> 5] >> (Index & 31u)) & 1u;
 }
 
+// Байтовый аналог IsDecayingAt() - конкретная стадия угасания, а не просто
+// факт (нужна только под bTrackDecayStates, см. её объявление). Клетка за
+// пределами буфера не угасает, тем же соображением, что и в IsAliveAt().
+uint GetDecayStateAt(int3 Coord)
+{
+	if (any(Coord < 0) || any(Coord >= int3(VolumeDim)))
+	{
+		return 0;
+	}
+	uint Index = CellIndex(Coord);
+	return (InputDecayStates[Index >> 2] >> ((Index & 3u) * 8u)) & 0xFFu;
+}
+
 [numthreads(4, 4, 4)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -81,14 +111,19 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	bool bAlive = IsAliveAt(Coord);
 	// Угасающая (birth-immune) клетка не может родиться заново, даже если у
 	// неё оказалось подходящее число живых соседей - зеркалит
-	// FCpuComputeStrategy::Step()'s bDecayActive-ветку.
-	bool bDecaying = (bDecayActive != 0) && IsDecayingAt(Coord);
+	// FCpuComputeStrategy::Step()'s bDecayActive-ветку. Откуда берётся сам
+	// факт угасания - из байтовой плоскости состояний или из битовой - см.
+	// bTrackDecayStates.
+	uint OldDecayState = (bTrackDecayStates != 0) ? GetDecayStateAt(Coord) : 0u;
+	bool bDecaying = (bDecayActive != 0) &&
+		((bTrackDecayStates != 0) ? (OldDecayState != 0u) : IsDecayingAt(Coord));
 	bool bNextAlive = bAlive ? ((SurvivalMask >> AliveNeighbors) & 1u) != 0
 	                 : (bDecaying ? false : ((BirthMask >> AliveNeighbors) & 1u) != 0);
 
+	uint Index = CellIndex(Coord);
+
 	if (bNextAlive)
 	{
-		uint Index = CellIndex(Coord);
 		InterlockedOr(OutputBits[Index >> 5], 1u << (Index & 31u));
 
 		if (bTrackAges != 0)
@@ -108,6 +143,37 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				// у OutputBits выше).
 				InterlockedOr(OutputAges[Index >> 2], NewAge << ByteShift);
 			}
+		}
+	}
+
+	// Продвижение угасания - СНАРУЖИ ветки bNextAlive: угасают как раз НЕ
+	// живые клетки, так что внутри неё этот код не выполнился бы никогда.
+	// Зеркалит CellDecay::AdvanceDecayStates() один в один:
+	//  - только что перестала выживать -> начинает угасание с состояния 2;
+	//  - уже угасала -> состояние +1, а достигнув MaxStates, окончательно
+	//    умирает (0, запись не делается - буфер и так обнулён);
+	//  - жива в новом поколении -> состояния угасания у неё нет вовсе.
+	if (bTrackDecayStates != 0)
+	{
+		uint NewDecayState = 0u;
+		if (!bNextAlive)
+		{
+			if (bAlive)
+			{
+				NewDecayState = 2u;
+			}
+			else if (OldDecayState >= 2u)
+			{
+				uint AdvancedState = OldDecayState + 1u;
+				NewDecayState = (AdvancedState >= MaxStates) ? 0u : AdvancedState;
+			}
+		}
+
+		if (NewDecayState != 0u)
+		{
+			// InterlockedOr по той же причине, что у возрастов выше - 4 клетки
+			// на слово, разные потоки, непересекающиеся байты, слово обнулено.
+			InterlockedOr(OutputDecayStates[Index >> 2], NewDecayState << ((Index & 3u) * 8u));
 		}
 	}
 }
