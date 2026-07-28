@@ -141,6 +141,31 @@ struct FHudStats
 	 *  показывать, есть ли что извлекать/удалять, и сколько именно. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	int32 SelectedCellCount = 0;
+
+	/** Заданная скорость симуляции - AAutomataOrchestrator::Speed, т.е.
+	 *  ЦЕЛЕВОЕ число поколений в секунду (крутится +/-). Отличается от
+	 *  GenerationsPerSecond выше, которое измеряет ФАКТИЧЕСКУЮ частоту: на
+	 *  больших сетках одно поколение считается дольше 1/Speed, и фактическая
+	 *  оказывается кратно ниже заданной. Оба поля нужны именно в паре - по
+	 *  расхождению между ними и видно, что симуляция упёрлась в вычисления, а
+	 *  не в настройку. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	float SimulationSpeed = 0.0f;
+
+	/** Сколько поколений считается на один рендер - AAutomataOrchestrator::
+	 *  StepsPerRender (крутится T/G). 1 - рисуется каждое поколение. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	int32 StepsPerRender = 1;
+
+	/** Текущая максимальная скорость полёта камеры, юнитов в секунду -
+	 *  читается прямо с UFloatingPawnMovement::MaxSpeed управляемого пешки, а
+	 *  не считается из CameraSpeedMultiplier: пока держат Left Shift,
+	 *  контроллер уже умножил MaxSpeed (см. AGamePlayerController::
+	 *  OnSpeedBoostStarted()), и HUD должен показывать фактическую скорость
+	 *  вместе с ускорением, а не базовую. 0, если пешка/её движение ещё не
+	 *  готовы (в т.ч. вне PIE). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	float CameraSpeed = 0.0f;
 };
 
 UCLASS()

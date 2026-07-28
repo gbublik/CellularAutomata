@@ -11,6 +11,7 @@
 #include "Automata/Rendering/FilteredCellGridView.h"
 #include "Automata/Rendering/RenderCullVolume.h"
 #include "Kismet/GameplayStatics.h"
+#include "GameFramework/FloatingPawnMovement.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
@@ -189,6 +190,26 @@ void AAutomataOrchestrator::UpdateHudStats()
 	// так что читать его дёшево даже на миллионах клеток.
 	LastHudStats.AliveCellCount = Grid.IsValid() ? Grid->Num() : 0;
 	LastHudStats.SelectedCellCount = SelectedCells.Num();
+
+	// Заданные настройки - просто зеркалим, чтобы HUD читал ровно то же, что
+	// крутят хоткеи (+/- и T/G) и Details panel, а не хранил свою копию.
+	LastHudStats.SimulationSpeed = Speed;
+	LastHudStats.StepsPerRender = StepsPerRender;
+
+	// Скорость камеры - фактическая, с учётом удержания Shift (см. doc-comment
+	// FHudStats::CameraSpeed).
+	LastHudStats.CameraSpeed = 0.0f;
+	if (GamePC)
+	{
+		if (const APawn* FlyingPawn = GamePC->GetPawn())
+		{
+			if (const UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(FlyingPawn->GetMovementComponent()))
+			{
+				LastHudStats.CameraSpeed = Movement->MaxSpeed;
+			}
+		}
+	}
+
 	UpdateGenerationsPerSecond();
 }
 
