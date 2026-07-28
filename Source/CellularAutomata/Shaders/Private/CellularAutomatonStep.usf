@@ -17,10 +17,20 @@ uint SurvivalMask;
 // случае привязан C++-стороной на тот же буфер, что InputBits (см.
 // FGpuComputeStrategy::Step()) - безопасно, шейдер его не разыменовывает.
 uint bDecayActive;
+// bTrackAges==0 - возрасты считает CPU (CellAging::ComputeAges) после шага,
+// как и раньше; InputAges/OutputAges в этом случае привязаны C++-стороной к
+// буферам-заглушкам в одно слово, и ветка ниже к ним не обращается. ==1 -
+// шаг идёт внутри пачки (FGpuComputeStrategy::StepBatch()), промежуточных
+// поколений на CPU не будет вовсе, поэтому возраст надо вести здесь.
+uint bTrackAges;
 
 StructuredBuffer<uint> InputBits;
 StructuredBuffer<uint> InputDecayBits;
+// Возраст - байт на клетку (4 клетки в слове), насыщение на 255: тот же тип
+// и та же семантика, что у FCellGrid::GetAge()/SetAge().
+StructuredBuffer<uint> InputAges;
 RWStructuredBuffer<uint> OutputBits;
+RWStructuredBuffer<uint> OutputAges;
 
 uint CellIndex(int3 Coord)
 {
@@ -80,5 +90,24 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	{
 		uint Index = CellIndex(Coord);
 		InterlockedOr(OutputBits[Index >> 5], 1u << (Index & 31u));
+
+		if (bTrackAges != 0)
+		{
+			// Зеркалит CellAging::ComputeAges(): выжившая клетка получает
+			// возраст предыдущего поколения + 1 (с насыщением), только что
+			// родившаяся - 0. Буфер очищен нулями перед проходом, поэтому
+			// нулевой возраст просто не пишется.
+			uint ByteShift = (Index & 3u) * 8u;
+			uint OldAge = bAlive ? ((InputAges[Index >> 2] >> ByteShift) & 0xFFu) : 0u;
+			uint NewAge = bAlive ? min(OldAge + 1u, 255u) : 0u;
+			if (NewAge != 0u)
+			{
+				// InterlockedOr, а не обычная запись: в одном слове живут 4
+				// клетки, и их считают разные потоки - но байты у них разные,
+				// а слово обнулено, так что OR корректен (та же причина, что и
+				// у OutputBits выше).
+				InterlockedOr(OutputAges[Index >> 2], NewAge << ByteShift);
+			}
+		}
 	}
 }

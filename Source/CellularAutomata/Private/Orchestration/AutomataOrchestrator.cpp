@@ -2008,16 +2008,39 @@ void AAutomataOrchestrator::Next()
 		{
 			const double StepStartSeconds = FPlatformTime::Seconds();
 
+			// StepBatch() вместо Step(): стратегия, умеющая считать несколько
+			// поколений за один свой внутренний круг (GPU - см. её
+			// doc-comment), берёт столько, сколько может, и говорит, сколько
+			// реально продвинула; CPU-стратегия всегда возвращает 1, и цикл
+			// вырождается в прежний "по одному поколению за итерацию".
 			TUniquePtr<FCellGrid> ResultGrid;
 			const FCellGrid* SourceGrid = CurrentGridPtr;
-			for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
+			int32 StepsDone = 0;
+			while (StepsDone < NumSteps)
 			{
 				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
-				ComputeStrategy->Step(*SourceGrid, *NextGrid, AutomatonRule);
-				CellAging::ComputeAges(SourceGrid, *NextGrid);
+				const int32 StepsAdvanced = ComputeStrategy->StepBatch(*SourceGrid, *NextGrid, AutomatonRule, NumSteps - StepsDone);
+
+				// Возрасты: ComputeAges() умеет только диффить два СОСЕДНИХ
+				// поколения, а внутри пачки промежуточных не существует -
+				// стратегия, продвинувшая больше одного, обязана была
+				// заполнить возрасты сама (см. её doc-comment). Позвать
+				// ComputeAges() поверх этого значило бы затереть верные
+				// значения неверными (+1 вместо +N).
+				if (StepsAdvanced <= 1)
+				{
+					CellAging::ComputeAges(SourceGrid, *NextGrid);
+				}
+
+				// Пачка и Generations взаимоисключающи (StepBatch() при
+				// HasDecayStates() всегда возвращает 1), так что этот проход
+				// по-прежнему видит каждое поколение. При States == 2 он и так
+				// сразу выходит.
 				CellDecay::AdvanceDecayStates(SourceGrid, *NextGrid, AutomatonRule.GetStates());
+
 				ResultGrid = MoveTemp(NextGrid);
 				SourceGrid = ResultGrid.Get();
+				StepsDone += FMath::Max(1, StepsAdvanced);
 			}
 
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
