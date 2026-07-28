@@ -598,7 +598,10 @@ void AGamePlayerController::Tick(float DeltaTime)
 	{
 		FVector RayOrigin = FVector::ZeroVector;
 		float AxisParam = 0.0f;
-		if (ComputeGizmoAxisParam(CullVolume->GetActorLocation(), CullVolume->GetActiveGizmoAxis(), RayOrigin, AxisParam))
+		// Начало оси - зафиксированное на момент захвата, НЕ текущая позиция
+		// актёра: иначе драг сам себя догоняет и куб дрожит между двумя
+		// точками (см. doc-comment GetGizmoDragOrigin()).
+		if (ComputeGizmoAxisParam(CullVolume->GetGizmoDragOrigin(), CullVolume->GetActiveGizmoAxis(), RayOrigin, AxisParam))
 		{
 			CullVolume->UpdateGizmoDrag(AxisParam);
 		}
