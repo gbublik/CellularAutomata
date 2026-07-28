@@ -8,6 +8,7 @@
 #include "GamePlayerController.generated.h"
 
 class AAutomataOrchestrator;
+class ARenderCullVolume;
 
 /**
  *
@@ -61,6 +62,12 @@ public:
 	FVector2D GetSelectionDragStart() const { return DragStartScreenPos; }
 
 	virtual void BeginPlay() override;
+
+	/** Пока активен режим взаимодействия мышью, каждый кадр подгоняет экранный
+	 *  размер манипулятора куба и, если ручку тянут, продолжает драг (у ЛКМ
+	 *  есть только события нажатия/отпускания, само движение мыши между ними
+	 *  надо опрашивать самим). */
+	virtual void Tick(float DeltaTime) override;
 
 	/** Перехватывает P на уровне сырых оконных событий, в обход Enhanced
 	 *  Input - см. подробный комментарий в реализации: при лагах (тяжёлый
@@ -358,6 +365,26 @@ protected:
 	 *  до OnSelectDragFinished() - читается AGameHud::DrawHUD() через
 	 *  IsDraggingSelection(). */
 	bool bIsDraggingSelection = false;
+
+	/** Куб отсечения, за ручку которого сейчас тянут (см. ARenderCullVolume::
+	 *  BeginGizmoDrag()). Пока он есть, ЛКМ занята манипулятором, а рамка
+	 *  выделения не начинается вовсе - иначе одно нажатие делало бы сразу два
+	 *  дела. */
+	UPROPERTY(Transient)
+	TObjectPtr<ARenderCullVolume> DraggedCullVolume;
+
+	/** Резолвит ARenderCullVolume в мире (лениво, с ревалидацией) - тот же
+	 *  идиом, что AAutomataOrchestrator::EnsureRenderCullVolume(). */
+	ARenderCullVolume* FindCullVolume();
+
+	UPROPERTY(Transient)
+	TObjectPtr<ARenderCullVolume> CachedCullVolume;
+
+	/** Ближайшая к лучу курсора точка на оси ручки, в мировых единицах вдоль
+	 *  этой оси - то, что ARenderCullVolume ждёт в Begin/UpdateGizmoDrag().
+	 *  Возвращает false, если луч почти параллелен оси (тогда точка уезжает в
+	 *  бесконечность и драг дёргается). */
+	bool ComputeGizmoAxisParam(const FVector& AxisOrigin, const FVector& Axis, FVector& OutRayOrigin, float& OutAxisParam) const;
 
 	/** Экранная точка старта текущего драг-выделения (пиксели, viewport-
 	 *  relative), зафиксированная в OnSelectDragStarted(). */

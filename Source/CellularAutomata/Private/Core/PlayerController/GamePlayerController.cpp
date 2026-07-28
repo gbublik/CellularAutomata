@@ -8,6 +8,7 @@
 #include "InputMappingContext.h"
 #include "Kismet/GameplayStatics.h"
 #include "Orchestration/AutomataOrchestrator.h"
+#include "Automata/Rendering/RenderCullVolume.h"
 #include "GameFramework/DefaultPawn.h"
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Engine/LocalPlayer.h"
@@ -519,6 +520,19 @@ void AGamePlayerController::SetSelectionModeActive(bool bActive)
 	// пользователь вышел из режима прямо во время удержания ЛКМ.
 	bIsDraggingSelection = false;
 
+	// Манипулятор куба живёт ровно столько же, сколько режим взаимодействия
+	// мышью: вне его нет курсора, чтобы за ручку взяться. Незавершённый драг
+	// закрываем, иначе куб остался бы "приклеен" к курсору после Tab.
+	if (ARenderCullVolume* CullVolume = FindCullVolume())
+	{
+		if (!bActive && DraggedCullVolume)
+		{
+			DraggedCullVolume->EndGizmoDrag();
+			DraggedCullVolume = nullptr;
+		}
+		CullVolume->SetGizmoVisible(bActive);
+	}
+
 	// Единый режим взаимодействия мышкой - и клетки, и HUD (см. doc-comment
 	// в заголовке).
 	SetCameraControlEnabled(!bActive);
@@ -526,11 +540,100 @@ void AGamePlayerController::SetSelectionModeActive(bool bActive)
 	UE_LOG(LogTemp, Log, TEXT("Режим выделения клеток/HUD: %s"), bActive ? TEXT("включён") : TEXT("выключен"));
 }
 
+ARenderCullVolume* AGamePlayerController::FindCullVolume()
+{
+	if (!IsValid(CachedCullVolume))
+	{
+		CachedCullVolume = Cast<ARenderCullVolume>(UGameplayStatics::GetActorOfClass(GetWorld(), ARenderCullVolume::StaticClass()));
+	}
+	return CachedCullVolume;
+}
+
+bool AGamePlayerController::ComputeGizmoAxisParam(const FVector& AxisOrigin, const FVector& Axis, FVector& OutRayOrigin, float& OutAxisParam) const
+{
+	FVector RayDirection = FVector::ZeroVector;
+	if (!const_cast<AGamePlayerController*>(this)->DeprojectMousePositionToWorld(OutRayOrigin, RayDirection))
+	{
+		return false;
+	}
+
+	// Ближайшая точка на прямой оси к прямой луча - классическая задача о двух
+	// скрещивающихся прямых. Обе направляющие единичные, поэтому a = c = 1 и
+	// знаменатель вырождается в (1 - b^2): он же и есть мера параллельности.
+	const FVector AxisDir = Axis.GetSafeNormal();
+	const FVector RayDir = RayDirection.GetSafeNormal();
+	const FVector ToAxis = AxisOrigin - OutRayOrigin;
+
+	const float B = FVector::DotProduct(AxisDir, RayDir);
+	const float Denominator = 1.0f - B * B;
+	if (FMath::Abs(Denominator) < KINDA_SMALL_NUMBER)
+	{
+		// Смотрим почти вдоль оси - ближайшая точка убегает в бесконечность, и
+		// драг превратился бы в рывок на много тысяч юнитов.
+		return false;
+	}
+
+	const float D = FVector::DotProduct(AxisDir, ToAxis);
+	const float E = FVector::DotProduct(RayDir, ToAxis);
+	OutAxisParam = (B * E - D) / Denominator;
+	return true;
+}
+
+void AGamePlayerController::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	ARenderCullVolume* CullVolume = FindCullVolume();
+	if (!CullVolume || !CullVolume->IsGizmoVisible())
+	{
+		return;
+	}
+
+	if (PlayerCameraManager)
+	{
+		CullVolume->UpdateGizmoScreenSize(PlayerCameraManager->GetCameraLocation(), PlayerCameraManager->GetFOVAngle());
+	}
+
+	if (DraggedCullVolume == CullVolume && CullVolume->IsGizmoDragging())
+	{
+		FVector RayOrigin = FVector::ZeroVector;
+		float AxisParam = 0.0f;
+		if (ComputeGizmoAxisParam(CullVolume->GetActorLocation(), CullVolume->GetActiveGizmoAxis(), RayOrigin, AxisParam))
+		{
+			CullVolume->UpdateGizmoDrag(AxisParam);
+		}
+	}
+}
+
 void AGamePlayerController::OnSelectDragStarted()
 {
 	if (!bSelectionModeActive)
 	{
 		return;
+	}
+
+	// Манипулятор проверяется ПЕРЕД рамкой: если нажали на ручку, ЛКМ занята
+	// перетаскиванием куба, и выделение в этот раз не начинается вовсе.
+	if (ARenderCullVolume* CullVolume = FindCullVolume())
+	{
+		FVector RayOrigin = FVector::ZeroVector;
+		FVector RayDirection = FVector::ZeroVector;
+		if (CullVolume->IsGizmoVisible() && DeprojectMousePositionToWorld(RayOrigin, RayDirection))
+		{
+			FVector HandleAxis = FVector::ZeroVector;
+			const EVolumeGizmoHandle Handle = CullVolume->TraceGizmoHandle(RayOrigin, RayDirection, HandleAxis);
+			if (Handle != EVolumeGizmoHandle::None)
+			{
+				float AxisParam = 0.0f;
+				FVector UnusedOrigin = FVector::ZeroVector;
+				if (ComputeGizmoAxisParam(CullVolume->GetActorLocation(), HandleAxis, UnusedOrigin, AxisParam))
+				{
+					CullVolume->BeginGizmoDrag(Handle, HandleAxis, AxisParam);
+					DraggedCullVolume = CullVolume;
+					return;
+				}
+			}
+		}
 	}
 
 	float MouseX = 0.0f;
@@ -559,6 +662,15 @@ void AGamePlayerController::OnSelectDragStarted()
 
 void AGamePlayerController::OnSelectDragFinished()
 {
+	// Тянули ручку манипулятора, а не рамку - завершаем драг (там же уйдёт
+	// запрос на перерисовку) и выходим, выделение здесь ни при чём.
+	if (DraggedCullVolume)
+	{
+		DraggedCullVolume->EndGizmoDrag();
+		DraggedCullVolume = nullptr;
+		return;
+	}
+
 	if (!bIsDraggingSelection)
 	{
 		return;
