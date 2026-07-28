@@ -100,16 +100,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// bFastStepActive/!bSimulationRunning ниже (у обеих есть ранний return) -
 	// HUD должен показывать FPS/занятость даже когда симуляция на паузе, не
 	// только пока Play/автошаг активны.
-	LastHudStats.bIsComputing = bStepInProgress;
-	LastHudStats.bIsRendering = bChunkedRenderInProgress;
-	LastHudStats.CurrentFPS = GAverageFPS;
-	LastHudStats.GenerationCount = GenerationCount;
-	LastHudStats.EstimatedGpuComputeUploadMB = LastGpuComputeUploadBytes / (1024.0 * 1024.0);
-	// Grid->Num() - готовый счётчик в чанках, не скан сетки (см. FDenseCellGrid),
-	// так что читать его каждый тик дёшево даже на миллионах клеток.
-	LastHudStats.AliveCellCount = Grid.IsValid() ? Grid->Num() : 0;
-	LastHudStats.SelectedCellCount = SelectedCells.Num();
-	UpdateGenerationsPerSecond();
+	UpdateHudStats();
 
 	// Разлитый по кадрам рендер (см. bEnableChunkedRender) продолжается
 	// независимо от bSimulationRunning - если игру остановили посреди
@@ -185,6 +176,20 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		TimeSinceLastStep = 0.0f;
 		StepAsync();
 	}
+}
+
+void AAutomataOrchestrator::UpdateHudStats()
+{
+	LastHudStats.bIsComputing = bStepInProgress;
+	LastHudStats.bIsRendering = bChunkedRenderInProgress;
+	LastHudStats.CurrentFPS = GAverageFPS;
+	LastHudStats.GenerationCount = GenerationCount;
+	LastHudStats.EstimatedGpuComputeUploadMB = LastGpuComputeUploadBytes / (1024.0 * 1024.0);
+	// Grid->Num() - готовый счётчик в чанках, не скан сетки (см. FDenseCellGrid),
+	// так что читать его дёшево даже на миллионах клеток.
+	LastHudStats.AliveCellCount = Grid.IsValid() ? Grid->Num() : 0;
+	LastHudStats.SelectedCellCount = SelectedCells.Num();
+	UpdateGenerationsPerSecond();
 }
 
 void AAutomataOrchestrator::UpdateGenerationsPerSecond()

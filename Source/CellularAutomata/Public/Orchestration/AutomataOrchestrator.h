@@ -712,11 +712,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
 	bool IsChunkedRenderInProgress() const { return bChunkedRenderInProgress; }
 
-	/** Сводка для HUD (см. doc-comment FHudStats) - читает уже посчитанное
-	 *  (обновляется в Tick()/ApplyStepResult()/Next(), не пересчитывается
-	 *  на каждый вызов из Blueprint). */
+	/** Сводка для HUD (см. doc-comment FHudStats). Пересобирает снимок ПЕРЕД
+	 *  выдачей, а не только отдаёт посчитанное в Tick() - и поэтому НЕ const.
+	 *
+	 *  Иначе HUD врёт всякий раз, когда состояние меняется, а актор не тикает:
+	 *  тик включается только Start()/StartFastStep() и выключается Stop()
+	 *  (см. bStartWithTickEnabled в конструкторе), так что ручной шаг F при
+	 *  остановленном Play исправно увеличивал GenerationCount, но снимок для
+	 *  HUD не обновлялся, и счётчик эпох на экране стоял на месте. То же
+	 *  касалось SelectedCellCount при выделении мышкой на паузе. Обновление
+	 *  здесь закрывает все такие пути разом, вместо того чтобы дописывать
+	 *  вызов в каждый из них и забыть в следующем.
+	 *
+	 *  Дёшево даже при нескольких биндингах виджета на кадр: все поля - это
+	 *  либо чтение уже готовых значений, либо Grid->Num() (счётчик в чанках,
+	 *  O(1)); единственный нетривиальный кусок, UpdateGenerationsPerSecond(),
+	 *  сам себя ограничивает окном в секунду. */
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
-	const FHudStats& GetHudStats() const { return LastHudStats; }
+	const FHudStats& GetHudStats() { UpdateHudStats(); return LastHudStats; }
 
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
 	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
@@ -1329,8 +1342,13 @@ private:
 	double LastGenerationCountSampleSeconds = 0.0;
 
 	/** Раз в секунду (не каждый кадр) пересчитывает LastHudStats.
-	 *  GenerationsPerSecond из GenerationCount - вызывается из Tick(). */
+	 *  GenerationsPerSecond из GenerationCount - вызывается из UpdateHudStats(). */
 	void UpdateGenerationsPerSecond();
+
+	/** Пересобирает LastHudStats из текущего состояния. Зовётся и из Tick()
+	 *  (пока симуляция идёт), и из самого GetHudStats() - см. его doc-comment
+	 *  за тем, почему одного Tick() недостаточно. */
+	void UpdateHudStats();
 
 	/** Сбрасывает GenerationCount и точку отсчёта GenerationsPerSecond в 0 -
 	 *  общий код для всех мест, начинающих новый прогон "с нуля" (GenerateRandom()/
