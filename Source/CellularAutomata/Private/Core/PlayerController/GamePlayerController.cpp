@@ -94,10 +94,10 @@ void AGamePlayerController::SetupInputComponent()
 	LoadStateAction = NewObject<UInputAction>(this, TEXT("IA_LoadState"));
 	LoadStateAction->ValueType = EInputActionValueType::Boolean;
 
-	// P (пауза) и R (сброс) намеренно не маппятся сюда - см. InputKey() ниже,
-	// оба перехватываются на уровне сырых оконных событий в обход Enhanced
-	// Input (у R тот же лаговый баг пропущенного нажатия, что был у P -
-	// см. doc-comment InputKey()).
+	// P (пауза), R (сброс) и N (новый сид) намеренно не маппятся сюда - см.
+	// InputKey() ниже, все три перехватываются на уровне сырых оконных событий
+	// в обход Enhanced Input (у R и N тот же лаговый баг пропущенного нажатия,
+	// что был у P - см. doc-comment InputKey()).
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
 	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
@@ -207,6 +207,17 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnResetSimulation();
 	}
 
+	// N (новый сид, OnNewSeed()) - третий случай того же бага: реролл нажимают
+	// именно тогда, когда картинка не нравится и сетка уже разрослась, т.е.
+	// ровно в момент худшего лага, когда выборка Enhanced Input раз в кадр
+	// пропускает короткие нажатия. Второй, независимый источник того же
+	// симптома - молчаливый отказ GenerateRandom() во время фонового шага -
+	// закрыт отложенным путём на стороне оркестратора (см. bNewSeedPending).
+	if (Params.Key == EKeys::N && Params.Event == IE_Pressed)
+	{
+		OnNewSeed();
+	}
+
 	return Super::InputKey(Params);
 }
 
@@ -275,6 +286,18 @@ void AGamePlayerController::OnResetSimulation()
 	}
 
 	Orchestrator->ResetToInitialState();
+}
+
+void AGamePlayerController::OnNewSeed()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnNewSeed: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->NewSeed();
 }
 
 void AGamePlayerController::OnSetLitMode()

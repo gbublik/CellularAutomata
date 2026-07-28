@@ -275,6 +275,20 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 
 void AAutomataOrchestrator::NewSeed()
 {
+	if (bStepInProgress)
+	{
+		// Не отказываем молча (GenerateRandom() ниже всё равно откажется -
+		// фоновый поток читает *Grid), а откладываем до завершения шага, как
+		// это делает R - см. doc-comment bNewSeedPending. Seed намеренно НЕ
+		// перекатывается здесь: он должен смениться ровно один раз, в момент
+		// фактического реролла, иначе несколько отложенных нажатий сожгли бы
+		// несколько сидов, а показали бы только последний.
+		bNewSeedPending = true;
+		bResetToInitialStatePending = false;
+		UE_LOG(LogTemp, Warning, TEXT("NewSeed: фоновый шаг StepAsync() ещё считается - новый сид отложен до его завершения"));
+		return;
+	}
+
 	Seed = FMath::Rand();
 	GenerateRandom();
 }
@@ -1365,6 +1379,9 @@ void AAutomataOrchestrator::ResetToInitialState()
 		// фоновым шагом, терялось молча, симуляция просто продолжала идти
 		// дальше без сброса (см. doc-comment bResetToInitialStatePending).
 		bResetToInitialStatePending = true;
+		// Взаимоисключающ с отложенным рероллом: R после N означает "верни
+		// исходный узор", а не "сначала перекати сид" (см. bNewSeedPending).
+		bNewSeedPending = false;
 		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: фоновый шаг StepAsync() ещё считается - сброс отложен до его завершения"));
 		return;
 	}
@@ -2083,6 +2100,14 @@ void AAutomataOrchestrator::Next()
 					return;
 				}
 
+				// Отложенный реролл (N) - см. doc-comment bNewSeedPending.
+				if (StrongThis->bNewSeedPending)
+				{
+					StrongThis->bNewSeedPending = false;
+					StrongThis->NewSeed();
+					return;
+				}
+
 				// NumSteps реально посчитанных поколений за одно нажатие F -
 				// см. GenerationCount/FHudStats.
 				StrongThis->GenerationCount += NumSteps;
@@ -2532,6 +2557,16 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	{
 		bResetToInitialStatePending = false;
 		ResetToInitialState();
+		return;
+	}
+
+	// То же для N, нажатой во время этого шага - реролл вместо применения
+	// только что посчитанного поколения (оно всё равно было бы перезаписано
+	// новой случайной сеткой). См. doc-comment bNewSeedPending.
+	if (bNewSeedPending)
+	{
+		bNewSeedPending = false;
+		NewSeed();
 		return;
 	}
 
