@@ -81,7 +81,7 @@ void AAutomataOrchestrator::BeginPlay()
 	ClearGhostShape();
 
 	InitializePlayerController();
-	RebuildAgeMeshComponents();
+	EnsureCellsRenderer();
 	EnsureSelectionMeshComponent();
 	GenerateRandom();
 
@@ -283,7 +283,7 @@ void AAutomataOrchestrator::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AAutomataOrchestrator::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
-	RebuildAgeMeshComponents();
+	EnsureCellsRenderer();
 	EnsureSelectionMeshComponent();
 }
 
@@ -293,10 +293,25 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, AgeMaterials)
-		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellMeshComponentType))
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellMeshComponentType))
 	{
-		RebuildAgeMeshComponents();
+		EnsureCellsRenderer();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellMaterial)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, AgeColors)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, AgeColorMaxAge)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, DecayColors)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, SelectionColor))
+	{
+		// Цвет - чистая функция уже посчитанного состояния, ждать следующего
+		// поколения незачем (а на паузе его и не будет). Перерисовываем
+		// текущее состояние на месте: только если сетка есть и фоновый шаг
+		// её сейчас не читает - RenderGridImmediate() иначе гонялся бы с ним
+		// за Grid, ровно как и все прочие пути, трогающие сетку.
+		if (Grid && !bStepInProgress)
+		{
+			RenderGridImmediate();
+		}
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellCullStartDistance)
 		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellCullEndDistance))
@@ -308,7 +323,7 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 		// между шагами значение выглядело "зафиксированным" и не
 		// реагирующим на CellCullEndDistance, хотя число менялось честно.
 		// ApplyCellCullDistances() безопасно звать когда угодно - трогает
-		// только CellsMeshHierarchical/CellsMeshFlat/AgeMeshComponents/
+		// только CellsMeshHierarchical/CellsMeshFlat/
 		// SelectionMeshComponent (все существуют с конструктора) и
 		// GamePC/Grid только под null-проверками для диагностического лога.
 		ApplyCellCullDistances();
@@ -443,9 +458,9 @@ void AAutomataOrchestrator::SpawnRuleVerificationPattern()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("SpawnRuleVerificationPattern: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("SpawnRuleVerificationPattern: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -554,6 +569,19 @@ UInstancedStaticMeshComponent* AAutomataOrchestrator::GetActiveCellsMeshComponen
 		: static_cast<UInstancedStaticMeshComponent*>(CellsMeshFlat);
 }
 
+void AAutomataOrchestrator::ClearInactiveCellsMeshComponent()
+{
+	UInstancedStaticMeshComponent* InactiveComponent =
+		(CellMeshComponentType == ECellMeshComponentType::HierarchicalInstanced)
+			? static_cast<UInstancedStaticMeshComponent*>(CellsMeshFlat)
+			: static_cast<UInstancedStaticMeshComponent*>(CellsMeshHierarchical);
+
+	if (InactiveComponent && InactiveComponent->GetInstanceCount() > 0)
+	{
+		InactiveComponent->ClearInstances();
+	}
+}
+
 void AAutomataOrchestrator::ApplyCellCullDistances()
 {
 	// Отсечение по расстоянию (не HLOD - см. doc-comment CellCullEndDistance
@@ -596,17 +624,6 @@ void AAutomataOrchestrator::ApplyCellCullDistances()
 
 	CellsMeshHierarchical->SetCullDistances(CullStart, CullEnd);
 	CellsMeshFlat->SetCullDistances(CullStart, CullEnd);
-
-	// Компоненты рендера по возрасту (см. AgeMaterials) - те же дистанции,
-	// иначе переключение в режим AgeMaterials молча теряло бы уже
-	// подобранное отсечение по расстоянию.
-	for (UInstancedStaticMeshComponent* AgeComponent : AgeMeshComponents)
-	{
-		if (AgeComponent)
-		{
-			AgeComponent->SetCullDistances(CullStart, CullEnd);
-		}
-	}
 
 	if (SelectionMeshComponent)
 	{
@@ -656,69 +673,86 @@ void AAutomataOrchestrator::ApplyCellCullDistances()
 	}
 }
 
-void AAutomataOrchestrator::RebuildAgeMeshComponents()
+void AAutomataOrchestrator::EnsureCellsRenderer()
 {
-	// После реинстансинга Live Coding'ом (правка reflection-полей класса,
-	// например самого AgeMaterials) AgeMeshComponents (UPROPERTY) переживает
-	// пересборку класса, а AgeRenderers (обычный член) - нет, обнуляется
-	// вместе с новым экземпляром. Пересинхронизируем рендереры вокруг уже
-	// существующих компонентов, не трогая сами компоненты, прежде чем решать,
-	// нужно ли расти/сокращаться дальше.
-	if (AgeRenderers.Num() != AgeMeshComponents.Num())
+	UInstancedStaticMeshComponent* Target = GetActiveCellsMeshComponent();
+	if (!Target)
 	{
-		AgeRenderers.Reset();
-		for (UInstancedStaticMeshComponent* ExistingComponent : AgeMeshComponents)
+		return;
+	}
+
+	// Одно условие на три случая: рендерера ещё нет (первый вызов либо
+	// обнуление после реинстансинга Live Coding - сами компоненты default
+	// subobject'ы и переживают его, а TUniquePtr нет), либо он обёрнут вокруг
+	// другого компонента (поменяли CellMeshComponentType).
+	if (CellsRenderer && CellsRenderer->GetComponent() == Target)
+	{
+		return;
+	}
+
+	// Перепривязка: прежний компонент обязан остаться пустым, иначе его
+	// инстансы висят внахлёст с новыми.
+	if (CellsRenderer)
+	{
+		if (UInstancedStaticMeshComponent* PreviousComponent = CellsRenderer->GetComponent())
 		{
-			AgeRenderers.Add(MakeUnique<FInstancedMeshCellGridRenderer>(ExistingComponent));
+			PreviousComponent->ClearInstances();
 		}
 	}
 
-	const bool bHierarchical = (CellMeshComponentType == ECellMeshComponentType::HierarchicalInstanced);
-	const bool bExistingAreHierarchical = (AgeMeshComponents.Num() > 0)
-		&& (Cast<UHierarchicalInstancedStaticMeshComponent>(AgeMeshComponents[0]) != nullptr);
+	CellsRenderer = MakeUnique<FInstancedMeshCellGridRenderer>(Target);
+}
 
-	if (AgeMeshComponents.Num() > 0 && bExistingAreHierarchical != bHierarchical)
+FLinearColor AAutomataOrchestrator::SampleColorRamp(const TArray<FLinearColor>& Keys, float T)
+{
+	if (Keys.Num() == 0)
 	{
-		// CellMeshComponentType поменяли - пересоздаём весь пул под новый
-		// класс. В отличие от CellsMeshFlat/CellsMeshHierarchical (CreateDefaultSubobject,
-		// не пересоздаются никогда - см. их doc-comment), эти компоненты
-		// созданы рантаймом через NewObject(), так что уничтожить и
-		// пересоздать их безопасно - это не тот сценарий с Live Coding,
-		// который бьёт по default subobject'ам.
-		for (UInstancedStaticMeshComponent* OldComponent : AgeMeshComponents)
-		{
-			if (OldComponent)
-			{
-				OldComponent->DestroyComponent();
-			}
-		}
-		AgeMeshComponents.Reset();
-		AgeRenderers.Reset();
+		// Белый, а не отказ рисовать: пустая рампа - это нормальное
+		// промежуточное состояние настройки, и белый цвет означает "как
+		// выглядит сам материал" (см. doc-comment AgeColors).
+		return FLinearColor::White;
+	}
+	if (Keys.Num() == 1)
+	{
+		return Keys[0];
 	}
 
-	const int32 DesiredNum = AgeMaterials.Num();
+	const float Position = FMath::Clamp(T, 0.0f, 1.0f) * float(Keys.Num() - 1);
+	const int32 LowIndex = FMath::Clamp(FMath::FloorToInt(Position), 0, Keys.Num() - 1);
+	const int32 HighIndex = FMath::Min(LowIndex + 1, Keys.Num() - 1);
+	return FMath::Lerp(Keys[LowIndex], Keys[HighIndex], Position - float(LowIndex));
+}
 
-	while (AgeMeshComponents.Num() > DesiredNum)
+void AAutomataOrchestrator::BuildAgeColorLut(TArray<FColor>& OutLut) const
+{
+	OutLut.SetNumUninitialized(256);
+	const float MaxAge = float(FMath::Max(1, AgeColorMaxAge));
+	for (int32 Age = 0; Age < 256; ++Age)
 	{
-		if (UInstancedStaticMeshComponent* ExcessComponent = AgeMeshComponents.Pop())
-		{
-			ExcessComponent->DestroyComponent();
-		}
-		AgeRenderers.Pop();
+		// bSRGB=false обязательно: PerInstanceCustomData это сырой float,
+		// материал никакого sRGB-декода не делает - гамма-кодирование здесь
+		// тихо испортило бы всю рампу (см. FCellRenderInstance).
+		OutLut[Age] = SampleColorRamp(AgeColors, float(Age) / MaxAge).ToFColor(/*bSRGB=*/false);
 	}
+}
 
-	while (AgeMeshComponents.Num() < DesiredNum)
+void AAutomataOrchestrator::BuildDecayColorLut(TArray<FColor>& OutLut) const
+{
+	OutLut.SetNumUninitialized(256);
+
+	// Пустой DecayColors - берём возрастную рампу, т.е. "как было до появления
+	// отдельной шкалы угасания" (см. doc-comment DecayColors).
+	const TArray<FLinearColor>& Ramp = (DecayColors.Num() > 0) ? DecayColors : AgeColors;
+
+	// Стадии угасания - это [2 .. States-1]: 2 "только начала гаснуть",
+	// States-1 "последняя стадия перед смертью". Итого States-2 стадий, а
+	// значит States-3 интервалов между ними. При States == 3 стадия ровно
+	// одна - знаменатель зажимаем в 1, T выходит 0, берётся первый ключ.
+	const int32 Denominator = FMath::Max(1, States - 3);
+	for (int32 State = 0; State < 256; ++State)
 	{
-		UInstancedStaticMeshComponent* NewComponent = bHierarchical
-			? static_cast<UInstancedStaticMeshComponent*>(NewObject<UHierarchicalInstancedStaticMeshComponent>(this))
-			: NewObject<UInstancedStaticMeshComponent>(this);
-
-		NewComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		NewComponent->SetupAttachment(CellsMeshHierarchical);
-		NewComponent->RegisterComponent();
-
-		AgeMeshComponents.Add(NewComponent);
-		AgeRenderers.Add(MakeUnique<FInstancedMeshCellGridRenderer>(NewComponent));
+		const float T = float(FMath::Clamp(State - 2, 0, Denominator)) / float(Denominator);
+		OutLut[State] = SampleColorRamp(Ramp, T).ToFColor(/*bSRGB=*/false);
 	}
 }
 
@@ -727,8 +761,8 @@ void AAutomataOrchestrator::EnsureSelectionMeshComponent()
 	if (SelectionMeshComponent && !SelectionRenderer)
 	{
 		// Пережил реинстансинг Live Coding (UPROPERTY), а SelectionRenderer
-		// (обычный член) - нет, см. doc-comment AgeMeshComponents про тот же
-		// сценарий.
+		// (обычный член) - нет; EnsureCellsRenderer() ловит ровно тот же
+		// сценарий для CellsRenderer.
 		SelectionRenderer = MakeUnique<FInstancedMeshCellGridRenderer>(SelectionMeshComponent);
 	}
 
@@ -752,14 +786,14 @@ void AAutomataOrchestrator::RenderSelectionOverlay()
 {
 	EnsureSelectionMeshComponent();
 
-	if (SelectedCells.Num() > 0 && !SelectionMaterial)
+	if (SelectedCells.Num() > 0 && !CellMaterial)
 	{
 		// Иначе подсветка молча не рисуется, и выглядит это как "выделение
 		// не работает" - уже кусало при настройке.
-		UE_LOG(LogTemp, Warning, TEXT("RenderSelectionOverlay: SelectionMaterial не назначен - подсветка выделения не будет видна, назначьте материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("RenderSelectionOverlay: CellMaterial не назначен - подсветка выделения не будет видна, назначьте материал клеток в Details panel"));
 	}
 
-	if (!Grid || SelectedCells.Num() == 0 || !SelectionMaterial)
+	if (!Grid || SelectedCells.Num() == 0 || !CellMaterial)
 	{
 		SelectionMeshComponent->ClearInstances();
 		return;
@@ -768,32 +802,34 @@ void AAutomataOrchestrator::RenderSelectionOverlay()
 	// Отфильтровываем до реально живых - на случай, если SelectedCells
 	// вызвали до какого-то не прошедшего через инвалидацию изменения Grid
 	// (сегодня такого пути нет, но проверка дешёвая, а рассинхрон иначе тихий).
-	TArray<FIntVector> AliveSelected;
-	AliveSelected.Reserve(SelectedCells.Num());
+	const FColor HighlightColor = SelectionColor.ToFColor(/*bSRGB=*/false);
+	TArray<FCellRenderInstance> SelectionInstances;
+	SelectionInstances.Reserve(SelectedCells.Num());
 	for (const FIntVector& Cell : SelectedCells)
 	{
 		if (Grid->IsAlive(Cell))
 		{
-			AliveSelected.Add(Cell);
+			SelectionInstances.Add({ FVector3f(Grid->GridToWorld(Cell)), HighlightColor });
 		}
 	}
 
-	if (AliveSelected.Num() == 0)
+	if (SelectionInstances.Num() == 0)
 	{
 		SelectionMeshComponent->ClearInstances();
 		return;
 	}
 
+	// Тот же материал, что и у обычных клеток - отличается только цветом в
+	// per-instance custom data (см. doc-comment SelectionColor).
 	SelectionRenderer->SetMesh(CellMesh);
-	SelectionRenderer->SetMaterial(SelectionMaterial);
+	SelectionRenderer->SetMaterial(CellMaterial);
 	// Чуть крупнее обычного кубика - иначе поверхности совпадают и мерцают
 	// (z-fighting), см. doc-comment SelectionScaleMultiplier.
 	SelectionRenderer->SetScaleMultiplier(SelectionScaleMultiplier);
 
-	FFilteredCellGridView SelectionView(*Grid, MoveTemp(AliveSelected));
 	// Всегда одним снимком - выделение всегда маленькое, чанкинг не нужен
 	// даже во время непрерывного Play.
-	SelectionRenderer->Render(SelectionView);
+	SelectionRenderer->Render(*Grid, MoveTemp(SelectionInstances));
 }
 
 void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectionMatrix, const FVector2D& ViewportSize, const FVector2D& RectMin, const FVector2D& RectMax, ESelectionCombineMode CombineMode)
@@ -805,7 +841,7 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 	}
 
 	// Куб отсечения (см. bEnableRenderCullVolume) прячет клетки снаружи себя
-	// от рендера (BuildAgeBuckets() ограничивает по тем же границам) -
+	// от рендера (BuildCellRenderData() ограничивает по тем же границам) -
 	// выделение обязано ловить ровно то же подмножество, иначе марки видят
 	// клетки, которых физически нет на экране.
 	ARenderCullVolume* CullVolume = GetActiveCullVolume();
@@ -971,9 +1007,9 @@ void AAutomataOrchestrator::DeleteSelectedCells()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("DeleteSelectedCells: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("DeleteSelectedCells: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -1041,29 +1077,23 @@ void AAutomataOrchestrator::ClearAllCellInstances()
 {
 	// Полный обход ВСЕХ реально прикреплённых к актору
 	// UInstancedStaticMeshComponent, а не только тех, что перечислены в
-	// AgeMeshComponents/CellsMeshFlat/CellsMeshHierarchical/
-	// SelectionMeshComponent - защита от осиротевших компонентов: если
-	// массив AgeMeshComponents в какой-то момент разошёлся с реальным
-	// набором прикреплённых компонентов (например, из-за более раннего
-	// сбоя при реинстансинге Live Coding), лишние компоненты остаются
+	// CellsMeshFlat/CellsMeshHierarchical/SelectionMeshComponent - защита от
+	// осиротевших компонентов: лишние компоненты остаются
 	// physически прикреплены и видимы, продолжая рисовать свои старые
 	// инстансы поверх честно посчитанных - visуально выглядит как
 	// наложение/мерцание двух состояний, хотя логическое состояние
 	// симуляции (Grid) при этом только одно. Обнаруженный на практике
-	// случай: AgeMaterials.Num()==3, но на акторе висело 8
-	// InstancedStaticMeshComponent - 5 лишних, ClearInstances() по одному
-	// только легитимному набору их не касался.
+	// случай (ещё во времена пула возрастных компонентов): материалов было 3,
+	// а на акторе висело 8 InstancedStaticMeshComponent - 5 лишних,
+	// ClearInstances() по одному только легитимному набору их не касался.
+	//
+	// После перехода на per-instance цвет этот же механизм заодно подчищает
+	// сам бывший пул: легитимный набор сократился до трёх компонентов, и все
+	// рантайм-созданные возрастные компоненты стали здесь сиротами.
 	TArray<UInstancedStaticMeshComponent*> AllInstancedComponents;
 	GetComponents<UInstancedStaticMeshComponent>(AllInstancedComponents);
 
 	TSet<UInstancedStaticMeshComponent*> KeepSet;
-	for (UInstancedStaticMeshComponent* Comp : AgeMeshComponents)
-	{
-		if (Comp)
-		{
-			KeepSet.Add(Comp);
-		}
-	}
 	if (CellsMeshFlat)
 	{
 		KeepSet.Add(CellsMeshFlat);
@@ -1147,7 +1177,7 @@ void AAutomataOrchestrator::RefreshGhostShape()
 
 	// Куб отсечения активен (см. GetActiveCullVolume()) - оставляем только
 	// чанки СНАРУЖИ куба, внутри уже рисует обычный детальный путь
-	// (BuildAgeBuckets()), силуэт здесь чистое дополнение.
+	// (BuildCellRenderData()), силуэт здесь чистое дополнение.
 	// Иначе (куб выключен хоткеем C, спрятан Ctrl+C, либо его вообще нет) -
 	// границы отсечения нет, "снаружи" значит "везде": силуэт покрывает всю
 	// сетку целиком и заменяет детальный рендер (см.
@@ -1185,10 +1215,13 @@ void AAutomataOrchestrator::RefreshGhostShape()
 	}
 
 	UMaterialInterface* MeshMaterial = GhostShapeMaterial;
-	if (!MeshMaterial && AgeMaterials.Num() > 0)
+	if (!MeshMaterial)
 	{
-		MeshMaterial = AgeMaterials[0];
-		UE_LOG(LogTemp, Log, TEXT("RefreshGhostShape: GhostShapeMaterial не назначен - использую AgeMaterials[0]"));
+		// Фолбэка больше нет: раньше подставлялся AgeMaterials[0], но
+		// подставить сюда CellMaterial нельзя - он берёт цвет из per-instance
+		// custom data, которых у UProceduralMeshComponent нет, и силуэт вышел
+		// бы ЧЁРНЫМ, молча. Серый дефолт движка плюс эта строчка честнее.
+		UE_LOG(LogTemp, Warning, TEXT("RefreshGhostShape: GhostShapeMaterial не назначен - силуэт будет нарисован дефолтным материалом движка"));
 	}
 
 	const double BuildStartSeconds = FPlatformTime::Seconds();
@@ -1221,7 +1254,7 @@ bool AAutomataOrchestrator::ShouldGhostShapeReplaceDetailedRender()
 	// его вообще нет - см. GetActiveCullVolume()) - RefreshGhostShape() в
 	// этом случае строит силуэт по ВСЕМ занятым чанкам (см. её doc-comment),
 	// т.е. он уже покрывает всю сетку целиком, и детальный поклеточный
-	// рендер (BuildAgeBuckets()+AddInstances по каждой живой клетке) здесь
+	// рендер (BuildCellRenderData()+AddInstances по каждой живой клетке) здесь
 	// был бы именно той дорогой работой, которую эта фича должна заменять
 	// при большом числе клеток. Пока куб активен, детальный путь и так уже
 	// дешёвый (Grid->GetAliveCellsInBounds() ограничивает его объёмом куба) -
@@ -1283,10 +1316,10 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	}
 
 	UMaterialInterface* MeshMaterial = BakedMeshMaterial;
-	if (!MeshMaterial && AgeMaterials.Num() > 0)
+	if (!MeshMaterial)
 	{
-		MeshMaterial = AgeMaterials[0];
-		UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: BakedMeshMaterial не назначен - использую AgeMaterials[0]"));
+		// Фолбэка больше нет - причина та же, что и в RefreshGhostShape().
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: BakedMeshMaterial не назначен - меш будет нарисован дефолтным материалом движка"));
 	}
 
 	const double BakeStartSeconds = FPlatformTime::Seconds();
@@ -1308,13 +1341,6 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	// чанкового разлива сбрасываем тоже - иначе недоигранный разлив
 	// (AdvanceChunkedRender() в Tick()) досыпал бы инстансы обратно уже
 	// ПОСЛЕ очистки.
-	for (UInstancedStaticMeshComponent* AgeComponent : AgeMeshComponents)
-	{
-		if (AgeComponent)
-		{
-			AgeComponent->ClearInstances();
-		}
-	}
 	if (SelectionMeshComponent)
 	{
 		SelectionMeshComponent->ClearInstances();
@@ -1323,6 +1349,7 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	{
 		BaseComponent->ClearInstances();
 	}
+	ClearInactiveCellsMeshComponent();
 	bChunkedRenderInProgress = false;
 	SelectedCells.Reset();
 	// InitialStateCells намеренно НЕ трогаем - R после осмотра снимка
@@ -1356,9 +1383,9 @@ void AAutomataOrchestrator::StartFromSelection()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("StartFromSelection: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -1435,9 +1462,9 @@ void AAutomataOrchestrator::ResetToInitialState()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("ResetToInitialState: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -1739,9 +1766,9 @@ void AAutomataOrchestrator::LoadStateFromFile()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("LoadStateFromFile: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("LoadStateFromFile: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -1944,9 +1971,9 @@ void AAutomataOrchestrator::GenerateRandom()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -2040,9 +2067,9 @@ void AAutomataOrchestrator::Next()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Next: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("Next: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -2200,9 +2227,9 @@ void AAutomataOrchestrator::StepAsync()
 		return;
 	}
 
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("StepAsync: AgeMaterials пуст - назначьте хотя бы один материал в Details panel"));
+		UE_LOG(LogTemp, Warning, TEXT("StepAsync: CellMaterial не назначен - назначьте материал клеток в Details panel"));
 		return;
 	}
 
@@ -2316,18 +2343,20 @@ void AAutomataOrchestrator::StepAsync()
 		});
 }
 
-TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
+void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& OutInstances)
 {
-	const int32 NumBuckets = AgeMaterials.Num();
+	OutInstances.Reset();
 
-	// Бакетируем живые клетки по возрасту: MaterialIndex = N-1-min(Age, N-1) -
-	// последний материал массива достаётся самым молодым (Age=0) клеткам,
-	// первый - клеткам, доживших до (N-1) эпох и старше (см. doc-comment
-	// AgeMaterials).
+	// Таблица цвета считается один раз на весь рендер, а не на клетку: при
+	// миллионах клеток интерполяция в цикле - это миллионы лишних лерпов,
+	// тогда как таблица занимает 1 КБ и даёт одно чтение по индексу.
+	TArray<FColor> AgeLut;
+	BuildAgeColorLut(AgeLut);
+
 	TArray<FIntVector> AliveCells;
 
 	// Если отсечение активно (см. GetActiveCullVolume()) - отсекаем клетки вне
-	// границ куба ДО бакетирования/построения трансформов, иначе рендерим всё
+	// границ куба ДО построения инстансов/трансформов, иначе рендерим всё
 	// как раньше.
 	ARenderCullVolume* CullVolume = GetActiveCullVolume();
 	if (CullVolume)
@@ -2339,26 +2368,25 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
 		Grid->GetAliveCells(AliveCells);
 	}
 
-	TArray<TArray<FIntVector>> Buckets;
-	Buckets.SetNum(NumBuckets);
+	OutInstances.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
-		const uint8 Age = Grid->GetAge(Cell);
-		const int32 MaterialIndex = NumBuckets - 1 - FMath::Min(static_cast<int32>(Age), NumBuckets - 1);
-		Buckets[MaterialIndex].Add(Cell);
+		OutInstances.Add({ FVector3f(Grid->GridToWorld(Cell)), AgeLut[Grid->GetAge(Cell)] });
 	}
 
 	// Generations (States > 2) - угасающие клетки (не живые, но ещё не
 	// полностью мёртвые, см. FCellGrid::IsDecaying()) тоже нужно рисовать
 	// (иначе они просто невидимы, хотя реально "занимают" клетку и угасают
-	// на глазах у CellDecay::AdvanceDecayStates()). Ключ бакета -
-	// DecayState-1 (состояние 2 -> 1, состояние 3 -> 2, ...), в ту же
-	// формулу MaterialIndex, что и у живых клеток (BucketKey=0 у живых
-	// эквивалентно Age==0 - "самые свежие"). При States == 2 этот блок
-	// вообще не выполняется - ни GetDecayingCells()/GetDecayingCellsInBounds(),
-	// ни лишний проход.
+	// на глазах у CellDecay::AdvanceDecayStates()). Цвет берётся из СВОЕЙ
+	// таблицы (см. DecayColors) - раньше угасающие шли в те же возрастные
+	// бакеты, что и живые, и были от них визуально неотличимы. При States == 2
+	// этот блок вообще не выполняется - ни GetDecayingCells()/
+	// GetDecayingCellsInBounds(), ни лишний проход, ни построение таблицы.
 	if (States > 2)
 	{
+		TArray<FColor> DecayLut;
+		BuildDecayColorLut(DecayLut);
+
 		TArray<FIntVector> DecayingCells;
 		TArray<uint8> DecayingStates;
 		if (CullVolume)
@@ -2370,11 +2398,10 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
 			Grid->GetDecayingCells(DecayingCells, DecayingStates);
 		}
 
+		OutInstances.Reserve(OutInstances.Num() + DecayingCells.Num());
 		for (int32 Index = 0; Index < DecayingCells.Num(); ++Index)
 		{
-			const int32 BucketKey = static_cast<int32>(DecayingStates[Index]) - 1;
-			const int32 MaterialIndex = NumBuckets - 1 - FMath::Min(BucketKey, NumBuckets - 1);
-			Buckets[MaterialIndex].Add(DecayingCells[Index]);
+			OutInstances.Add({ FVector3f(Grid->GridToWorld(DecayingCells[Index])), DecayLut[DecayingStates[Index]] });
 		}
 	}
 
@@ -2389,16 +2416,22 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
 	// LastRenderStats - UE_LOG ниже читает уже посчитанное оттуда, а не из
 	// локальных переменных, чтобы будущий HUD (GetLastRenderStats()) видел
 	// те же самые цифры, что и лог.
-	LastRenderStats.RenderedCellCount = AliveCells.Num();
+	//
+	// RenderedCellCount берётся из ИТОГОВОГО массива, а не из AliveCells:
+	// раньше сюда шло AliveCells.Num() уже ПОСЛЕ того, как угасающие клетки
+	// были добавлены в бакеты и уходили в AddInstances - при States > 2
+	// "отрисовано" систематически занижалось ровно на их число, а вместе с
+	// ним и EstimatedUploadMB. Обратная сторона: теперь RenderedCellCount
+	// может законно превышать TotalCellCount (Grid->Num() считает только
+	// живых) - см. doc-comment FCellRenderStats.
+	LastRenderStats.RenderedCellCount = OutInstances.Num();
 	LastRenderStats.TotalCellCount = Grid->Num();
-	LastRenderStats.BytesPerInstance = (int32)sizeof(FTransform);
+	LastRenderStats.BytesPerInstance = (int32)(sizeof(FTransform) + CellCustomDataFloats * sizeof(float));
 	LastRenderStats.EstimatedUploadMB = (double(LastRenderStats.RenderedCellCount) * LastRenderStats.BytesPerInstance) / (1024.0 * 1024.0);
 
-	UE_LOG(LogTemp, Log, TEXT("BuildAgeBuckets: %d/%d живых клеток (отрисовано/всего) - выгрузка в AddInstances ~%.2f МБ (%d байт/инстанс, TArray<FTransform>, без учёта оверхеда HISM/драйвера)"),
+	UE_LOG(LogTemp, Log, TEXT("BuildCellRenderData: %d/%d клеток (отрисовано/живых в сетке) - выгрузка в AddInstances ~%.2f МБ (%d байт/инстанс: FTransform + %d float per-instance цвета, без учёта оверхеда HISM/драйвера)"),
 		LastRenderStats.RenderedCellCount, LastRenderStats.TotalCellCount,
-		LastRenderStats.EstimatedUploadMB, LastRenderStats.BytesPerInstance);
-
-	return Buckets;
+		LastRenderStats.EstimatedUploadMB, LastRenderStats.BytesPerInstance, CellCustomDataFloats);
 }
 
 ARenderCullVolume* AAutomataOrchestrator::EnsureRenderCullVolume()
@@ -2424,134 +2457,114 @@ ARenderCullVolume* AAutomataOrchestrator::GetActiveCullVolume()
 
 void AAutomataOrchestrator::RenderGridImmediate()
 {
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("RenderGridImmediate: AgeMaterials пуст - рендер пропущен"));
+		UE_LOG(LogTemp, Warning, TEXT("RenderGridImmediate: CellMaterial не назначен - рендер пропущен"));
 		return;
 	}
 
-	RebuildAgeMeshComponents();
+	EnsureCellsRenderer();
 	ApplyCellCullDistances();
+	ClearInactiveCellsMeshComponent();
 
-	// Без этого старый снимок на базовом компоненте (например, оставшийся
-	// от версии до появления AgeMaterials/из старого сохранённого уровня)
-	// остаётся виден одновременно с новыми возрастными компонентами.
-	if (UInstancedStaticMeshComponent* BaseComponent = GetActiveCellsMeshComponent())
+	if (!CellsRenderer)
 	{
-		BaseComponent->ClearInstances();
+		return;
 	}
 
-	const int32 NumBuckets = AgeMaterials.Num();
+	CellsRenderer->SetMesh(CellMesh);
+	CellsRenderer->SetMaterial(CellMaterial);
+	// Явно 1.0: тот же класс рендерера используется и для подсветки выделения,
+	// где множитель 1.1 (см. SelectionScaleMultiplier). Инвариант "обычные
+	// клетки - ровно в размер клетки" лучше держать локально и видимо, чем
+	// полагаться на то, что этих двух рендереров никто никогда не смешает.
+	CellsRenderer->SetScaleMultiplier(1.0f);
 
 	if (ShouldGhostShapeReplaceDetailedRender())
 	{
 		// Ghost Shape уже покрывает всю сетку целиком (см. doc-comment
 		// ShouldGhostShapeReplaceDetailedRender()) - пропускаем именно ту
-		// дорогую работу (BuildAgeBuckets()+AddInstances по каждой живой
+		// дорогую работу (BuildCellRenderData()+AddInstances по каждой живой
 		// клетке), ради которой эта фича существует. Через Render() с
-		// пустым списком клеток на каждый бакет, а не сырой ClearInstances()
-		// на компоненте - так внутренняя бухгалтерия рендерера
-		// (PendingTransforms/PendingCursor) остаётся согласованной с самим
-		// компонентом, вместо того чтобы её обходить.
-		for (int32 MaterialIndex = 0; MaterialIndex < NumBuckets; ++MaterialIndex)
-		{
-			FFilteredCellGridView EmptyView(*Grid, TArray<FIntVector>());
-			AgeRenderers[MaterialIndex]->Render(EmptyView);
-		}
+		// пустым списком инстансов, а не сырой ClearInstances() на компоненте -
+		// так внутренняя бухгалтерия рендерера (PendingInstances/PendingCursor)
+		// остаётся согласованной с самим компонентом, вместо того чтобы её
+		// обходить.
+		CellsRenderer->Render(*Grid, TArray<FCellRenderInstance>());
 		RenderSelectionOverlay();
 		UE_LOG(LogTemp, Log, TEXT("RenderGridImmediate: детальный рендер пропущен - Ghost Shape покрывает всю сетку целиком (%d живых клеток)"),
 			Grid->Num());
 		return;
 	}
 
-	TArray<TArray<FIntVector>> Buckets = BuildAgeBuckets();
+	TArray<FCellRenderInstance> Instances;
+	BuildCellRenderData(Instances);
 
-	for (int32 MaterialIndex = 0; MaterialIndex < NumBuckets; ++MaterialIndex)
-	{
-		FInstancedMeshCellGridRenderer* BucketRenderer = AgeRenderers[MaterialIndex].Get();
-		BucketRenderer->SetMesh(CellMesh);
-		BucketRenderer->SetMaterial(AgeMaterials[MaterialIndex]);
-
-		FFilteredCellGridView FilteredView(*Grid, MoveTemp(Buckets[MaterialIndex]));
-		// Всегда одним снимком (не BeginRender()/чанкинг) - Next()/GenerateRandom()
-		// рендерят немедленно и целиком, независимо от bEnableChunkedRender
-		// (см. doc-comment RenderGridImmediate() в заголовке).
-		BucketRenderer->Render(FilteredView);
-	}
+	// Всегда одним снимком (не BeginRender()/чанкинг) - Next()/GenerateRandom()
+	// рендерят немедленно и целиком, независимо от bEnableChunkedRender
+	// (см. doc-comment RenderGridImmediate() в заголовке).
+	CellsRenderer->Render(*Grid, MoveTemp(Instances));
 
 	// Не-op, если SelectedCells пуст (свежая сетка/шаг уже его сбросили) -
 	// сам чистит SelectionMeshComponent в этом случае.
 	RenderSelectionOverlay();
 
-	UE_LOG(LogTemp, Log, TEXT("RenderGridImmediate: живых клеток %d отрисовано по %d материалам (одним снимком)"),
-		Grid->Num(), NumBuckets);
+	UE_LOG(LogTemp, Log, TEXT("RenderGridImmediate: живых клеток %d отрисовано одним снимком"),
+		Grid->Num());
 }
 
 void AAutomataOrchestrator::RenderCurrentGrid()
 {
-	if (AgeMaterials.Num() == 0)
+	if (!CellMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("RenderCurrentGrid: AgeMaterials пуст - рендер пропущен"));
+		UE_LOG(LogTemp, Warning, TEXT("RenderCurrentGrid: CellMaterial не назначен - рендер пропущен"));
 		return;
 	}
 
-	RebuildAgeMeshComponents();
+	EnsureCellsRenderer();
 	ApplyCellCullDistances();
+	ClearInactiveCellsMeshComponent();
 
-	// Без этого старый снимок на базовом компоненте (например, от Next()/
-	// GenerateRandom(), которые сами тоже рендерят через RenderGridImmediate() -
-	// на самом деле этого не произойдёт, но проверка дешёвая - или от старого
-	// сохранённого уровня) остаётся виден одновременно с новыми возрастными
-	// компонентами.
-	if (UInstancedStaticMeshComponent* BaseComponent = GetActiveCellsMeshComponent())
+	if (!CellsRenderer)
 	{
-		BaseComponent->ClearInstances();
+		return;
 	}
 
-	const int32 NumBuckets = AgeMaterials.Num();
+	CellsRenderer->SetMesh(CellMesh);
+	CellsRenderer->SetMaterial(CellMaterial);
+	// См. одноимённый комментарий в RenderGridImmediate().
+	CellsRenderer->SetScaleMultiplier(1.0f);
 
 	if (ShouldGhostShapeReplaceDetailedRender())
 	{
 		// Тот же принцип, что в RenderGridImmediate() - см. её doc-comment
 		// у аналогичной ветки. bEnableChunkedRender здесь тоже не важен:
 		// нет живых инстансов - нечего разливать по кадрам, а если реавил
-		// с прошлого поколения ещё шёл, Render() с пустым списком клеток
+		// с прошлого поколения ещё шёл, Render() с пустым списком инстансов
 		// (через BeginRender()+полный слив внутри) сам обнуляет
-		// PendingTransforms/PendingCursor каждого рендерера - bChunkedRenderInProgress
+		// PendingInstances/PendingCursor - bChunkedRenderInProgress
 		// сама подхватит это на следующем Tick()/AdvanceChunkedRender().
-		for (int32 MaterialIndex = 0; MaterialIndex < NumBuckets; ++MaterialIndex)
-		{
-			FFilteredCellGridView EmptyView(*Grid, TArray<FIntVector>());
-			AgeRenderers[MaterialIndex]->Render(EmptyView);
-		}
+		CellsRenderer->Render(*Grid, TArray<FCellRenderInstance>());
 		RenderSelectionOverlay();
 		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: детальный рендер пропущен - Ghost Shape покрывает всю сетку целиком (%d живых клеток)"),
 			Grid->Num());
 		return;
 	}
 
-	TArray<TArray<FIntVector>> Buckets = BuildAgeBuckets();
+	TArray<FCellRenderInstance> Instances;
+	BuildCellRenderData(Instances);
 
 	const FVector CameraLocation = (GamePC && GamePC->PlayerCameraManager)
 		? GamePC->PlayerCameraManager->GetCameraLocation()
 		: FVector::ZeroVector;
 
-	for (int32 MaterialIndex = 0; MaterialIndex < NumBuckets; ++MaterialIndex)
+	if (bEnableChunkedRender)
 	{
-		FInstancedMeshCellGridRenderer* BucketRenderer = AgeRenderers[MaterialIndex].Get();
-		BucketRenderer->SetMesh(CellMesh);
-		BucketRenderer->SetMaterial(AgeMaterials[MaterialIndex]);
-
-		FFilteredCellGridView FilteredView(*Grid, MoveTemp(Buckets[MaterialIndex]));
-
-		if (bEnableChunkedRender)
-		{
-			BucketRenderer->BeginRender(FilteredView, ChunkedRenderOrder, CameraLocation);
-		}
-		else
-		{
-			BucketRenderer->Render(FilteredView);
-		}
+		CellsRenderer->BeginRender(*Grid, MoveTemp(Instances), ChunkedRenderOrder, CameraLocation);
+	}
+	else
+	{
+		CellsRenderer->Render(*Grid, MoveTemp(Instances));
 	}
 
 	// Подсветка выделения - всегда одним снимком (не чанкуется, выделение
@@ -2564,13 +2577,13 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 		ChunkedRenderStartSeconds = FPlatformTime::Seconds();
 		ChunkedRenderFrameCount = 0;
 
-		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: живых клеток %d по %d материалам - рендер разлит по кадрам"),
-			Grid->Num(), NumBuckets);
+		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: живых клеток %d - рендер разлит по кадрам"),
+			Grid->Num());
 	}
 	else
 	{
-		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: живых клеток %d отрисовано по %d материалам"),
-			Grid->Num(), NumBuckets);
+		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: живых клеток %d отрисовано"),
+			Grid->Num());
 	}
 }
 
@@ -2757,7 +2770,7 @@ void AAutomataOrchestrator::RefreshRenderCullVolume()
 	// SetCullDistances() на уже построенных инстансах), изменение куба
 	// меняет САМ набор клеток, попадающих в AddInstances - недостаточно
 	// применить настройку "на лету" без полного набора инстансов, нужно
-	// заново пройти BuildAgeBuckets()/AddInstances() для текущего состояния
+	// заново пройти BuildCellRenderData()/AddInstances() для текущего состояния
 	// (не считая новое поколение - RenderGridImmediate() рендерит уже
 	// посчитанный Grid как есть, тот же путь, что Next()/GenerateRandom()).
 	// Иначе переключение хоткеем C или перетаскивание ARenderCullVolume
@@ -2822,20 +2835,10 @@ void AAutomataOrchestrator::AdvanceChunkedRender()
 {
 	++ChunkedRenderFrameCount;
 
-	const int32 NumBuckets = AgeRenderers.Num();
-	// Бюджет ChunkedRenderCellsPerFrame делится между бакетами, а не
-	// применяется к каждому целиком - иначе цена кадра умножилась бы на
-	// число материалов незаметно для пользователя (см. doc-comment
-	// AdvanceChunkedRender() в заголовке).
-	const int32 PerBucketBudget = FMath::Max(1, ChunkedRenderCellsPerFrame / FMath::Max(1, NumBuckets));
-
-	bool bMoreRemaining = false;
-	for (const TUniquePtr<FInstancedMeshCellGridRenderer>& BucketRenderer : AgeRenderers)
-	{
-		bMoreRemaining |= BucketRenderer->AdvanceRenderChunk(PerBucketBudget);
-	}
-
-	if (bMoreRemaining)
+	// Бюджет ChunkedRenderCellsPerFrame уходит единственному рендереру
+	// ЦЕЛИКОМ - прежнее деление между возрастными бакетами исчезло вместе с
+	// ними (см. doc-comment AdvanceChunkedRender() в заголовке).
+	if (CellsRenderer && CellsRenderer->AdvanceRenderChunk(ChunkedRenderCellsPerFrame))
 	{
 		return;
 	}
@@ -2843,8 +2846,8 @@ void AAutomataOrchestrator::AdvanceChunkedRender()
 	bChunkedRenderInProgress = false;
 
 	const double TotalSeconds = FPlatformTime::Seconds() - ChunkedRenderStartSeconds;
-	UE_LOG(LogTemp, Log, TEXT("AdvanceChunkedRender: рендер разлитый по кадрам завершён (%d материалов) - живых клеток %d за %d кадр(ов)/%.2f мс"),
-		NumBuckets, Grid->Num(), ChunkedRenderFrameCount, TotalSeconds * 1000.0);
+	UE_LOG(LogTemp, Log, TEXT("AdvanceChunkedRender: рендер разлитый по кадрам завершён - живых клеток %d за %d кадр(ов)/%.2f мс"),
+		Grid ? Grid->Num() : 0, ChunkedRenderFrameCount, TotalSeconds * 1000.0);
 }
 
 void AAutomataOrchestrator::FinishChunkedRenderImmediately()
@@ -2854,17 +2857,14 @@ void AAutomataOrchestrator::FinishChunkedRenderImmediately()
 		return;
 	}
 
-	for (const TUniquePtr<FInstancedMeshCellGridRenderer>& BucketRenderer : AgeRenderers)
+	while (CellsRenderer && CellsRenderer->AdvanceRenderChunk(TNumericLimits<int32>::Max()))
 	{
-		while (BucketRenderer->AdvanceRenderChunk(TNumericLimits<int32>::Max()))
-		{
-		}
 	}
 
 	bChunkedRenderInProgress = false;
 
-	UE_LOG(LogTemp, Log, TEXT("FinishChunkedRenderImmediately: чанковый рендер довершён одним разом (остановлен через Stop, %d материалов) - живых клеток %d"),
-		AgeRenderers.Num(), Grid->Num());
+	UE_LOG(LogTemp, Log, TEXT("FinishChunkedRenderImmediately: чанковый рендер довершён одним разом (остановлен через Stop) - живых клеток %d"),
+		Grid ? Grid->Num() : 0);
 }
 
 void AAutomataOrchestrator::StartFastStep()

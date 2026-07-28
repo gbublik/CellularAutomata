@@ -4,29 +4,28 @@
 #include "Automata/Grid/CellGrid.h"
 
 /** Тонкая read-only обёртка над реальной FCellGrid, отдающая через
- *  GetAliveCells() заранее отфильтрованное/забакетированное подмножество
- *  клеток (например, только клетки одного возрастного бакета материалов -
- *  см. AAutomataOrchestrator::AgeMaterials, или только клетки внутри
- *  ARenderCullVolume - см. AAutomataOrchestrator::SelectCellsInScreenRect()/
+ *  GetAliveCells() заранее отфильтрованное подмножество клеток (только клетки
+ *  внутри ARenderCullVolume - см. AAutomataOrchestrator::SelectCellsInScreenRect()/
  *  SelectCellUnderCursor()), вместо полного списка живых клеток исходной
  *  сетки.
  *
- *  Изначально существовала только для того, чтобы FInstancedMeshCellGridRenderer::
- *  BeginRender()/AdvanceRenderChunk() можно было использовать без единой
- *  правки - тот код обращается к FCellGrid исключительно через
- *  GetAliveCells()/GetCellSize()/GridToWorld(), IsAlive() ему не нужен вовсе.
- *  IsAlive() поэтому СОГЛАСОВАН с отфильтрованным подмножеством (клетка
+ *  ИСТОРИЯ: изначально существовала ради рендера - чтобы
+ *  FInstancedMeshCellGridRenderer::BeginRender()/AdvanceRenderChunk() можно
+ *  было скармливать один возрастной бакет материалов без единой правки в них
+ *  самих. Рендер-путь этот класс больше не использует: цвет клетки уехал в
+ *  per-instance custom data, бакеты исчезли, а рендерер теперь принимает явный
+ *  список FCellRenderInstance. Остался единственный потребитель - DDA-обход
+ *  луча при выделении (ниже), и именно под него класс и стоит читать.
+ *  IsAlive() СОГЛАСОВАН с отфильтрованным подмножеством (клетка
  *  считается живой С ТОЧКИ ЗРЕНИЯ ЭТОГО ВЬЮ, только если она есть в
  *  FilteredCells), а не форвардится на исходную сетку целиком - иначе
  *  Automata/Selection/CellSelection::PickCellAlongRay() (единственный
  *  потребитель IsAlive() через этот класс - DDA-обход луча) видел бы клетки
  *  снаружи отфильтрованной области как живые, хотя вью специально построен,
  *  чтобы их скрыть (см. doc-comment SelectCellUnderCursor()). Множество для
- *  поиска строится ЛЕНИВО, при первом вызове IsAlive() - рендер-путь его
- *  вообще не вызывает, так что цена хэширования не ложится на самый горячий
- *  путь (BuildAgeBuckets()+AddInstances каждое поколение), только на
- *  разовые действия выделения. Мутирующие методы (SetAlive/SetAge/Clear)
- *  по-прежнему no-op - вью read-only. */
+ *  поиска строится ЛЕНИВО, при первом вызове IsAlive() - так цена хэширования
+ *  платится только по факту, на разовых действиях выделения.
+ *  Мутирующие методы (SetAlive/SetAge/Clear) - no-op, вью read-only. */
 class CELLULARAUTOMATA_API FFilteredCellGridView : public FCellGrid
 {
 public:

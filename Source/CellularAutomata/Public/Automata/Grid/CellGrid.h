@@ -26,8 +26,8 @@ public:
 
 	/** Возраст клетки - сколько поколений подряд она прожила (0 у только
 	 *  что родившейся). Насыщающийся (не переполняется) - для клеток,
-	 *  которых сейчас нет в сетке, возвращает 0. Используется отображением
-	 *  клеток на материалы по возрасту (см. AAutomataOrchestrator::AgeMaterials). */
+	 *  которых сейчас нет в сетке, возвращает 0. Используется окрашиванием
+	 *  клеток по возрасту (см. AAutomataOrchestrator::AgeColors). */
 	virtual uint8 GetAge(const FIntVector& Cell) const = 0;
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) = 0;
 
@@ -51,7 +51,7 @@ public:
 
 	/** Как GetAliveCells(), но угасающие клетки (см. IsDecaying() выше) -
 	 *  OutStates[i] - угасающее состояние (2..States-1) для OutCells[i],
-	 *  тот же индекс. Нужен рендеру (AAutomataOrchestrator::BuildAgeBuckets())
+	 *  тот же индекс. Нужен рендеру (AAutomataOrchestrator::BuildCellRenderData())
 	 *  для покраски угасающих клеток по стадии - GetAliveCells() их
 	 *  сознательно не включает (означает строго "живая", см. её doc-comment
 	 *  и IsAlive()), чтобы не задеть существующие потребители (выделение,
@@ -102,7 +102,7 @@ public:
 	/** Как GetAliveCells(), но только клетки, чей мировой GridToWorld()
 	 *  попадает внутрь WorldBounds - используется рендером для отсечения
 	 *  клеток вне ARenderCullVolume ДО построения FTransform/AddInstances
-	 *  (см. AAutomataOrchestrator::BuildAgeBuckets()), а не после, как
+	 *  (см. AAutomataOrchestrator::BuildCellRenderData()), а не после, как
 	 *  CellCullStartDistance/CellCullEndDistance. Виртуальный с наивной
 	 *  реализацией по умолчанию (полный GetAliveCells() + фильтр по
 	 *  каждой клетке) - конкретные реализации со spatial-структурой (см.

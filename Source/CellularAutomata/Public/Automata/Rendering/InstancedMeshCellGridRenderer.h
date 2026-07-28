@@ -18,10 +18,17 @@ struct FRenderTimings
 	double SetMeshSeconds = 0.0;
 	double ClearSeconds = 0.0;
 	double ScaleSeconds = 0.0;
-	double GetAliveSeconds = 0.0;
 	double ReorderSeconds = 0.0;
+	/** Построение FTransform'ов. Раньше это был один всплеск в BeginRender()
+	 *  на всю сетку разом; теперь копится по чанкам вместе с
+	 *  AddInstanceSeconds - трансформы строятся в AdvanceRenderChunk(). */
 	double BuildTransformsSeconds = 0.0;
 	double AddInstanceSeconds = 0.0;
+	/** Запись per-instance цветов (SetCustomData) - копится по чанкам.
+	 *  Отдельным полем, а не внутри AddInstanceSeconds: цена там своя
+	 *  (цикл CustomDataChanged() по инстансам внутри движка), и мерить её
+	 *  надо до того, как оптимизировать - см. историю с CandidateBuild. */
+	double CustomDataSeconds = 0.0;
 };
 
 /** Рендерит через UInstancedStaticMeshComponent: один инстанс меша на
@@ -45,26 +52,30 @@ public:
 	 *  чуть больше 1 обволакивает обычный кубик и виден с любого угла. */
 	void SetScaleMultiplier(float InScaleMultiplier);
 
-	virtual void Render(const FCellGrid& Grid) override;
+	virtual void Render(const FCellGrid& Grid, TArray<FCellRenderInstance>&& Instances) override;
 
-	/** Готовит трансформы для Grid и один раз чистит компонент, но не
+	/** Принимает список инстансов и один раз чистит компонент, но не
 	 *  добавляет ни одного инстанса - используется вместе с
 	 *  AdvanceRenderChunk(), чтобы "разлить" AddInstances (самую дорогую
 	 *  часть Render() при больших сетках) по нескольким кадрам вместо
 	 *  одного. Render() сам реализован через BeginRender() + один вызов
 	 *  AdvanceRenderChunk() без ограничения - так оба пути не дублируют
-	 *  логику построения трансформов (Order/CameraLocation значения не
-	 *  важны в этом случае - весь массив всё равно уходит одним кадром).
-	 *  Order выбирает, в каком порядке AliveCells раскладываются в
-	 *  PendingTransforms до нарезки на чанки (см. EChunkedRenderOrder);
-	 *  CameraLocation используется только для DistanceFromCamera*-режимов. */
-	void BeginRender(const FCellGrid& Grid, EChunkedRenderOrder Order, const FVector& CameraLocation);
+	 *  логику (Order/CameraLocation значения не важны в этом случае - весь
+	 *  массив всё равно уходит одним кадром).
+	 *  Order выбирает, в каком порядке инстансы раскладываются до нарезки на
+	 *  чанки (см. EChunkedRenderOrder); CameraLocation используется только
+	 *  для DistanceFromCamera*-режимов. Grid нужен только ради GetCellSize()
+	 *  и НЕ запоминается: позиции в Instances уже мировые, поэтому
+	 *  AdvanceRenderChunk() переживает подмену Grid следующим поколением. */
+	void BeginRender(const FCellGrid& Grid, TArray<FCellRenderInstance>&& Instances, EChunkedRenderOrder Order, const FVector& CameraLocation);
 
-	/** Добавляет очередную порцию (до MaxCellsThisChunk) трансформов,
-	 *  построенных предыдущим BeginRender(). Возвращает true, если после
-	 *  этого вызова ещё остались недобавленные инстансы. AddInstanceSeconds
-	 *  в LastTimings накапливается по всем чанкам одного цикла BeginRender(),
-	 *  а не перезаписывается, чтобы суммарное время было видно целиком. */
+	/** Добавляет очередную порцию (до MaxCellsThisChunk) инстансов,
+	 *  переданных предыдущему BeginRender(): строит их трансформы, добавляет
+	 *  через AddInstances() и записывает их цвета через SetCustomData().
+	 *  Возвращает true, если после этого вызова ещё остались недобавленные
+	 *  инстансы. BuildTransforms/AddInstance/CustomData-Seconds в LastTimings
+	 *  накапливаются по всем чанкам одного цикла BeginRender(), а не
+	 *  перезаписываются, чтобы суммарное время было видно целиком. */
 	bool AdvanceRenderChunk(int32 MaxCellsThisChunk);
 
 	const FRenderTimings& GetLastRenderTimings() const { return LastTimings; }
@@ -82,8 +93,20 @@ private:
 	float ScaleMultiplier = 1.0f;
 	FRenderTimings LastTimings;
 
-	/** Трансформы, построенные последним BeginRender() - AdvanceRenderChunk()
-	 *  добавляет их порциями начиная с PendingCursor. */
-	TArray<FTransform> PendingTransforms;
+	/** Инстансы, принятые последним BeginRender() - AdvanceRenderChunk()
+	 *  добавляет их порциями начиная с PendingCursor. Трансформы из них
+	 *  строятся почанково, а не заранее: FTransform под LWC весит 80 байт
+	 *  против 16 у FCellRenderInstance. */
+	TArray<FCellRenderInstance> PendingInstances;
 	int32 PendingCursor = 0;
+
+	/** Масштаб инстанса ("подогнать меш под CellSize" * ScaleMultiplier),
+	 *  посчитанный один раз в BeginRender() - иначе его пришлось бы считать
+	 *  в каждом чанке заново или держать ссылку на Grid между кадрами. */
+	FVector PendingInstanceScale = FVector::OneVector;
+
+	/** Буферы одного чанка, переиспользуемые между кадрами разлива -
+	 *  чтобы не реаллоцировать их каждый кадр. */
+	TArray<FTransform> ChunkTransformScratch;
+	TArray<float> ChunkCustomDataScratch;
 };

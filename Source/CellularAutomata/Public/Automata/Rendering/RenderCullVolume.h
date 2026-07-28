@@ -26,7 +26,7 @@ enum class EVolumeGizmoHandle : uint8
 
 /**
  * Плейсируемый в уровне куб, отсекающий клетки вне себя ДО построения
- * FTransform/AddInstances (см. AAutomataOrchestrator::BuildAgeBuckets() ->
+ * FTransform/AddInstances (см. AAutomataOrchestrator::BuildCellRenderData() ->
  * FCellGrid::GetAliveCellsInBounds()) - в отличие от CellCullStartDistance/
  * CellCullEndDistance, которые прячут уже построенные инстансы post-hoc и
  * не снижают стоимость самого построения. AAutomataOrchestrator находит

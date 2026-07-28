@@ -28,13 +28,13 @@ void FInstancedMeshCellGridRenderer::SetScaleMultiplier(float InScaleMultiplier)
 	ScaleMultiplier = InScaleMultiplier;
 }
 
-void FInstancedMeshCellGridRenderer::Render(const FCellGrid& Grid)
+void FInstancedMeshCellGridRenderer::Render(const FCellGrid& Grid, TArray<FCellRenderInstance>&& Instances)
 {
 	// Order/CameraLocation не влияют на однократный Render() - весь массив
 	// всё равно уходит одним AddInstances() внутри одного и того же кадра,
 	// порядок элементов внутри него не наблюдаем.
-	BeginRender(Grid, EChunkedRenderOrder::Sequential, FVector::ZeroVector);
-	// Без ограничения на размер чанка - весь PendingTransforms уходит одним
+	BeginRender(Grid, MoveTemp(Instances), EChunkedRenderOrder::Sequential, FVector::ZeroVector);
+	// Без ограничения на размер чанка - весь PendingInstances уходит одним
 	// вызовом AddInstances(), как и раньше до появления чанкинга; цикл
 	// формален (тела достаточно ровно одной итерации), но так BeginRender()/
 	// AdvanceRenderChunk() остаются единственным местом с этой логикой.
@@ -43,15 +43,16 @@ void FInstancedMeshCellGridRenderer::Render(const FCellGrid& Grid)
 	}
 }
 
-void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid, EChunkedRenderOrder Order, const FVector& CameraLocation)
+void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid, TArray<FCellRenderInstance>&& Instances, EChunkedRenderOrder Order, const FVector& CameraLocation)
 {
-	PendingTransforms.Reset();
+	PendingInstances = MoveTemp(Instances);
 	PendingCursor = 0;
 	LastTimings = FRenderTimings();
 
 	UInstancedStaticMeshComponent* Comp = Component.Get();
 	if (!Comp)
 	{
+		PendingInstances.Reset();
 		UE_LOG(LogTemp, Warning, TEXT("FInstancedMeshCellGridRenderer: component is invalid"));
 		return;
 	}
@@ -69,6 +70,12 @@ void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid, EChunked
 
 	const double ClearStartSeconds = FPlatformTime::Seconds();
 	Comp->ClearInstances();
+	// Строго ПОСЛЕ ClearInstances(): SetNumCustomDataFloats() пересоздаёт
+	// PerInstanceSMCustomData размером под ТЕКУЩЕЕ число инстансов и зануляет
+	// его - вызов на ещё полном компоненте аллоцировал бы большой массив,
+	// который ClearInstances() тут же выбросит. Сама она early-out'ит, если
+	// значение не изменилось, так что после первого раза бесплатна.
+	Comp->SetNumCustomDataFloats(CellCustomDataFloats);
 	LastTimings.ClearSeconds = FPlatformTime::Seconds() - ClearStartSeconds;
 
 	// Масштабируем меш так, чтобы его bounding box совпадал с размером клетки -
@@ -87,18 +94,18 @@ void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid, EChunked
 	// Поверх точной подгонки под CellSize - см. SetScaleMultiplier() (1.0
 	// для обычных клеток, чуть больше для подсветки выделения).
 	InstanceScale *= ScaleMultiplier;
+	// Запоминаем: трансформы строятся почанково в AdvanceRenderChunk(), а
+	// пересчитывать масштаб там нельзя - он зависит от Grid, ссылку на
+	// который между кадрами держать нельзя (Grid подменяется поколением).
+	PendingInstanceScale = InstanceScale;
 	LastTimings.ScaleSeconds = FPlatformTime::Seconds() - ScaleStartSeconds;
 
-	const double GetAliveStartSeconds = FPlatformTime::Seconds();
-	TArray<FIntVector> AliveCells;
-	Grid.GetAliveCells(AliveCells);
-	LastTimings.GetAliveSeconds = FPlatformTime::Seconds() - GetAliveStartSeconds;
-
-	// Переупорядочиваем AliveCells (а не готовые FTransform - FIntVector
-	// втрое меньше по размеру) до нарезки на чанки: результат определяет, в
+	// Переупорядочиваем инстансы до нарезки на чанки: результат определяет, в
 	// каком порядке клетки появляются по кадрам "разлитого" реавила (см.
 	// EChunkedRenderOrder). Для одноразового Render() (Order всегда
-	// Sequential) это no-op с нулевой стоимостью.
+	// Sequential) это no-op с нулевой стоимостью. Позиции уже мировые, так
+	// что компараторы расстояний не зовут виртуальный Grid.GridToWorld()
+	// дважды на сравнение, как раньше (~2*N*logN виртуальных вызовов).
 	const double ReorderStartSeconds = FPlatformTime::Seconds();
 	switch (Order)
 	{
@@ -106,62 +113,57 @@ void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid, EChunked
 		break;
 
 	case EChunkedRenderOrder::SequentialReversed:
-		Algo::Reverse(AliveCells);
+		Algo::Reverse(PendingInstances);
 		break;
 
 	case EChunkedRenderOrder::Shuffled:
-		Algo::RandomShuffle(AliveCells);
+		Algo::RandomShuffle(PendingInstances);
 		break;
 
 	case EChunkedRenderOrder::DistanceFromCameraNearFirst:
-		Algo::Sort(AliveCells, [&Grid, &CameraLocation](const FIntVector& A, const FIntVector& B)
+	{
+		const FVector3f CameraPos(CameraLocation);
+		Algo::Sort(PendingInstances, [&CameraPos](const FCellRenderInstance& A, const FCellRenderInstance& B)
 		{
-			return FVector::DistSquared(Grid.GridToWorld(A), CameraLocation) < FVector::DistSquared(Grid.GridToWorld(B), CameraLocation);
+			return FVector3f::DistSquared(A.Position, CameraPos) < FVector3f::DistSquared(B.Position, CameraPos);
 		});
 		break;
+	}
 
 	case EChunkedRenderOrder::DistanceFromCameraFarFirst:
-		Algo::Sort(AliveCells, [&Grid, &CameraLocation](const FIntVector& A, const FIntVector& B)
+	{
+		const FVector3f CameraPos(CameraLocation);
+		Algo::Sort(PendingInstances, [&CameraPos](const FCellRenderInstance& A, const FCellRenderInstance& B)
 		{
-			return FVector::DistSquared(Grid.GridToWorld(A), CameraLocation) > FVector::DistSquared(Grid.GridToWorld(B), CameraLocation);
+			return FVector3f::DistSquared(A.Position, CameraPos) > FVector3f::DistSquared(B.Position, CameraPos);
 		});
 		break;
+	}
 
 	case EChunkedRenderOrder::FromCenterOutward:
-		if (AliveCells.Num() > 0)
+		if (PendingInstances.Num() > 0)
 		{
-			FIntVector MinCell = AliveCells[0];
-			FIntVector MaxCell = AliveCells[0];
-			for (const FIntVector& Cell : AliveCells)
+			FVector3f MinPos = PendingInstances[0].Position;
+			FVector3f MaxPos = PendingInstances[0].Position;
+			for (const FCellRenderInstance& Instance : PendingInstances)
 			{
-				MinCell.X = FMath::Min(MinCell.X, Cell.X);
-				MinCell.Y = FMath::Min(MinCell.Y, Cell.Y);
-				MinCell.Z = FMath::Min(MinCell.Z, Cell.Z);
-				MaxCell.X = FMath::Max(MaxCell.X, Cell.X);
-				MaxCell.Y = FMath::Max(MaxCell.Y, Cell.Y);
-				MaxCell.Z = FMath::Max(MaxCell.Z, Cell.Z);
+				MinPos = MinPos.ComponentMin(Instance.Position);
+				MaxPos = MaxPos.ComponentMax(Instance.Position);
 			}
-			const FVector Center = (Grid.GridToWorld(MinCell) + Grid.GridToWorld(MaxCell)) * 0.5;
-			Algo::Sort(AliveCells, [&Grid, &Center](const FIntVector& A, const FIntVector& B)
+			const FVector3f Center = (MinPos + MaxPos) * 0.5f;
+			Algo::Sort(PendingInstances, [&Center](const FCellRenderInstance& A, const FCellRenderInstance& B)
 			{
-				return FVector::DistSquared(Grid.GridToWorld(A), Center) < FVector::DistSquared(Grid.GridToWorld(B), Center);
+				return FVector3f::DistSquared(A.Position, Center) < FVector3f::DistSquared(B.Position, Center);
 			});
 		}
 		break;
 	}
 	LastTimings.ReorderSeconds = FPlatformTime::Seconds() - ReorderStartSeconds;
 
-	// AddInstance() по одному элементу пересобирает внутренний буфер инстансов
-	// на каждый вызов (супралинейный рост при большом числе клеток) - строим
-	// все трансформы разом, а добавляем их через AddInstances() в
-	// AdvanceRenderChunk() (одним батчем целиком или по частям).
-	const double BuildTransformsStartSeconds = FPlatformTime::Seconds();
-	PendingTransforms.Reserve(AliveCells.Num());
-	for (const FIntVector& Cell : AliveCells)
-	{
-		PendingTransforms.Add(FTransform(FQuat::Identity, Grid.GridToWorld(Cell), InstanceScale));
-	}
-	LastTimings.BuildTransformsSeconds = FPlatformTime::Seconds() - BuildTransformsStartSeconds;
+	// Трансформы здесь БОЛЬШЕ НЕ строятся: FTransform под LWC весит 80 байт
+	// против 16 у FCellRenderInstance, и держать их все на весь реавил - это
+	// 560 МБ против 112 МБ при 7 млн клеток, плюс всплеск на одном кадре.
+	// Они строятся почанково в AdvanceRenderChunk(), размазанно по кадрам.
 
 	// Логирование намеренно НЕ здесь: UE_LOG сам по себе (форматирование +
 	// запись в файл) стоит времени, и если логировать внутри BeginRender(),
@@ -176,12 +178,12 @@ bool FInstancedMeshCellGridRenderer::AdvanceRenderChunk(int32 MaxCellsThisChunk)
 	UInstancedStaticMeshComponent* Comp = Component.Get();
 	if (!Comp)
 	{
-		PendingTransforms.Reset();
+		PendingInstances.Reset();
 		PendingCursor = 0;
 		return false;
 	}
 
-	const int32 Remaining = PendingTransforms.Num() - PendingCursor;
+	const int32 Remaining = PendingInstances.Num() - PendingCursor;
 	if (Remaining <= 0)
 	{
 		return false;
@@ -189,14 +191,47 @@ bool FInstancedMeshCellGridRenderer::AdvanceRenderChunk(int32 MaxCellsThisChunk)
 
 	const int32 CountThisChunk = FMath::Min(MaxCellsThisChunk, Remaining);
 
-	TArray<FTransform> ChunkTransforms;
-	ChunkTransforms.Append(PendingTransforms.GetData() + PendingCursor, CountThisChunk);
+	// Индекс первого инстанса этого чанка - берём ДО AddInstances(), он же
+	// станет началом диапазона для SetCustomData() ниже.
+	const int32 FirstInstanceIndex = Comp->GetInstanceCount();
 
-	// bUpdateNavigation=false: навмеш клеткам автомата не нужен.
+	const double BuildTransformsStartSeconds = FPlatformTime::Seconds();
+	ChunkTransformScratch.Reset(CountThisChunk);
+	ChunkCustomDataScratch.Reset(CountThisChunk * CellCustomDataFloats);
+	for (int32 Index = PendingCursor; Index < PendingCursor + CountThisChunk; ++Index)
+	{
+		const FCellRenderInstance& Instance = PendingInstances[Index];
+		ChunkTransformScratch.Emplace(FQuat::Identity, FVector(Instance.Position), PendingInstanceScale);
+		// Обратно в линейный float: цвет клали через ToFColor(bSRGB=false),
+		// значит и распаковка линейная, без гамма-коррекции.
+		ChunkCustomDataScratch.Add(Instance.Color.R / 255.0f);
+		ChunkCustomDataScratch.Add(Instance.Color.G / 255.0f);
+		ChunkCustomDataScratch.Add(Instance.Color.B / 255.0f);
+	}
+	LastTimings.BuildTransformsSeconds += FPlatformTime::Seconds() - BuildTransformsStartSeconds;
+
+	// AddInstance() по одному элементу пересобирает внутренний буфер инстансов
+	// на каждый вызов (супралинейный рост при большом числе клеток) - весь
+	// чанк уходит одним AddInstances(). bUpdateNavigation=false: навмеш
+	// клеткам автомата не нужен.
 	const double AddInstanceStartSeconds = FPlatformTime::Seconds();
-	Comp->AddInstances(ChunkTransforms, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/false, /*bUpdateNavigation=*/false);
+	Comp->AddInstances(ChunkTransformScratch, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/false, /*bUpdateNavigation=*/false);
 	LastTimings.AddInstanceSeconds += FPlatformTime::Seconds() - AddInstanceStartSeconds;
 
+	// Конец диапазона ИНКЛЮЗИВНЫЙ - именно это проверяет ensureMsgf внутри
+	// SetCustomData(), так что промах на единицу упадёт громко, а не тихо.
+	// bMarkRenderStateDirty=false намеренно и MarkRenderStateDirty() тут НЕ
+	// зовётся: SetCustomData() сама помечает изменившиеся инстансы через
+	// PrimitiveInstanceDataManager (инкрементальный путь под защёлкой), а
+	// MarkRenderStateDirty() пересоздал бы SceneProxy целиком - по вызову на
+	// чанк это катастрофа. Кадра "инстансы есть, цвет ещё нулевой" не будет:
+	// AddInstances() и SetCustomData() происходят в одном вызове с игрового
+	// потока, а сбор изменений отложен до конца кадра. При true движок вдобавок
+	// зовёт Modify() - запись в транзакцию undo на миллионах инстансов.
+	const double CustomDataStartSeconds = FPlatformTime::Seconds();
+	Comp->SetCustomData(FirstInstanceIndex, FirstInstanceIndex + CountThisChunk - 1, ChunkCustomDataScratch, /*bMarkRenderStateDirty=*/false);
+	LastTimings.CustomDataSeconds += FPlatformTime::Seconds() - CustomDataStartSeconds;
+
 	PendingCursor += CountThisChunk;
-	return PendingCursor < PendingTransforms.Num();
+	return PendingCursor < PendingInstances.Num();
 }

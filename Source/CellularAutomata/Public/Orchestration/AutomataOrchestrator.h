@@ -52,16 +52,19 @@ enum class ECellMeshComponentType : uint8
 	HierarchicalInstanced
 };
 
-/** Метрики последнего BuildAgeBuckets() (см. doc-comment внутри неё).
+/** Метрики последнего BuildCellRenderData() (см. doc-comment внутри неё).
  *  Два разных вида числа с разным смыслом: RenderedCellCount/TotalCellCount -
- *  ПАРА (живых отрисовано/живых всего в сетке, после отсечения
+ *  ПАРА (клеток отрисовано/живых всего в сетке, после отсечения
  *  ARenderCullVolume вс. без него) - показывает масштаб расчётов, сколько
- *  из всей симуляции реально видно на экране. EstimatedUploadMB - ОДНО
+ *  из всей симуляции реально видно на экране. ВНИМАНИЕ: при правилах
+ *  Generations (States > 2) RenderedCellCount может ЗАКОННО превышать
+ *  TotalCellCount - угасающие клетки рисуются, но живыми не считаются, а
+ *  Grid->Num() считает только живых. EstimatedUploadMB - ОДНО
  *  общее число, не пара - это оценка размера данных, которые реально
  *  уходят в AddInstances() (т.е. посчитана от RenderedCellCount, не от
  *  TotalCellCount) - как размер файла: единая величина, а не "до/после".
  *  Считается один раз и хранится здесь, а не пересчитывается заново на
- *  каждого потребителя - читают её и UE_LOG в BuildAgeBuckets(), и HUD
+ *  каждого потребителя - читают её и UE_LOG в BuildCellRenderData(), и HUD
  *  (UMainHudWidget) через GetLastRenderStats(), без дублирования подсчёта
  *  и риска разъехаться в цифрах между логом и экраном - тот же идиом, что
  *  FRenderTimings у FInstancedMeshCellGridRenderer. USTRUCT(BlueprintType) -
@@ -254,9 +257,11 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 #if WITH_EDITOR
-	/** Правки AgeMaterials в Details panel (добавили/убрали элемент) должны
-	 *  сразу же создать/удалить соответствующие AgeMeshComponents - не
-	 *  дожидаясь следующего рендера. */
+	/** Правки CellMeshComponentType должны сразу перепривязать CellsRenderer, а
+	 *  правки цветовой рампы (CellMaterial/AgeColors/AgeColorMaxAge/
+	 *  DecayColors) - сразу перерисовать текущее поколение: цвет это чистая
+	 *  функция уже посчитанного состояния, ждать следующего шага симуляции
+	 *  (а на паузе - вообще неизвестно чего) незачем. */
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
@@ -367,8 +372,8 @@ public:
 	 *  операцию, не на клетку. Если активен куб отсечения (bEnableRenderCullVolume
 	 *  и есть ARenderCullVolume на уровне) - кандидатов на выделение сначала
 	 *  сужаем до клеток ВНУТРИ его границ (Grid->GetAliveCellsInBounds() +
-	 *  FFilteredCellGridView, тот же приём, что BuildAgeBuckets() использует
-	 *  для рендера), иначе марки могли выделить клетки, которые физически не
+	 *  FFilteredCellGridView, тот же приём отсечения, что BuildCellRenderData()
+	 *  использует для рендера), иначе марки могли выделить клетки, которые физически не
 	 *  видны на экране (спрятаны кубом) - выделение обязано ловить ровно то
 	 *  подмножество, которое реально нарисовано, не всю сетку целиком. */
 	UFUNCTION(BlueprintCallable, Category = "Automata|Selection")
@@ -427,13 +432,16 @@ public:
 	 *  это снимок-"скульптура" для осмотра больших областей, продолжить
 	 *  симуляцию с него нельзя; R (ResetToInitialState()) убирает меш и
 	 *  начинает новый прогон. Play/автошаг останавливаются принудительно.
-	 *  Материал - BakedMeshMaterial, при неназначенном - фолбэк на
-	 *  AgeMaterials[0]. */
+	 *  Материал - BakedMeshMaterial. */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Baking")
 	void BakeCellsToMesh();
 
-	/** Материал запечённого меша (см. BakeCellsToMesh()). Не обязателен -
-	 *  если не назначен, берётся AgeMaterials[0] (старейший), с логом. */
+	/** Материал запечённого меша (см. BakeCellsToMesh()). Не обязателен, но
+	 *  фолбэка больше нет: при неназначенном будет warning в лог и дефолтный
+	 *  материал движка. Раньше подставлялся AgeMaterials[0], но подставить
+	 *  сюда CellMaterial нельзя - он красит клетки через per-instance custom
+	 *  data, которых у UProceduralMeshComponent нет, и меш вышел бы ЧЁРНЫМ,
+	 *  молча. Серый дефолт движка плюс строчка в логе честнее. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Baking")
 	UMaterialInterface* BakedMeshMaterial = nullptr;
 
@@ -446,8 +454,9 @@ public:
 	 *
 	 *  Два режима, в зависимости от bEnableRenderCullVolume и наличия
 	 *  ARenderCullVolume на уровне: (1) куб активен - силуэт строится ТОЛЬКО
-	 *  по чанкам СНАРУЖИ куба, детальный поклеточный рендер (BuildAgeBuckets())
-	 *  по-прежнему рисует всё, что внутри - силуэт здесь чистое дополнение;
+	 *  по чанкам СНАРУЖИ куба, детальный поклеточный рендер
+	 *  (BuildCellRenderData()) по-прежнему рисует всё, что внутри - силуэт
+	 *  здесь чистое дополнение;
 	 *  (2) куба нет или он выключен - "снаружи" значит "везде": силуэт
 	 *  покрывает всю сетку целиком и в этом случае ПОЛНОСТЬЮ ЗАМЕНЯЕТ
 	 *  детальный рендер (см. ShouldGhostShapeReplaceDetailedRender()) -
@@ -469,8 +478,8 @@ public:
 	int32 GhostShapeRefreshInterval = 10;
 
 	/** Материал ghost-меша (полупрозрачный "призрак" - см. bEnableGhostShape).
-	 *  Не обязателен - если не назначен, берётся AgeMaterials[0] с логом,
-	 *  как и у BakedMeshMaterial. */
+	 *  Не обязателен, но фолбэка больше нет - warning в лог и дефолтный
+	 *  материал движка, ровно как у BakedMeshMaterial (там же причина). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GhostShape",
 			  meta = (EditCondition = "bEnableGhostShape"))
 	UMaterialInterface* GhostShapeMaterial = nullptr;
@@ -570,11 +579,14 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Selection")
 	void ResetToInitialState();
 
-	/** Материал подсветки выделенных клеток - отдельный рендер-проход поверх
-	 *  обычного возрастного рендера (см. SelectionMeshComponent/
-	 *  SelectionRenderer), рисуется тем же CellMesh, что и обычные клетки. */
+	/** Цвет подсветки выделенных клеток - отдельный рендер-проход поверх
+	 *  обычного рендера (см. SelectionMeshComponent/SelectionRenderer),
+	 *  рисуется тем же CellMesh и тем же CellMaterial, что и обычные клетки,
+	 *  отличаясь только цветом в per-instance custom data (раньше это был
+	 *  отдельный SelectionMaterial - убран вместе с AgeMaterials, чтобы во
+	 *  всём проекте остался ровно один материал клеток). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Selection")
-	UMaterialInterface* SelectionMaterial = nullptr;
+	FLinearColor SelectionColor = FLinearColor(0.0f, 1.0f, 0.2f, 1.0f);
 
 	/** Во сколько раз кубик подсветки выделения крупнее обычного кубика
 	 *  клетки. Ровно 1.0 нельзя: кубик подсветки тогда совпадает с обычным
@@ -632,29 +644,63 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	UStaticMesh* CellMesh = nullptr;
 
-	/** Материалы клеток по возрасту (сколько поколений подряд клетка прожила) -
-	 *  от самых старых (первый элемент) к самым молодым (последний) - ЕДИНСТВЕННЫЙ
-	 *  источник материала для клеток в этом проекте (раньше был отдельный
-	 *  CellMaterial "по умолчанию, без возраста" - убран: раз рендер всё равно
-	 *  всегда идёт через возрастные бакеты, отдельный материал-заглушка только
-	 *  усложнял бы конфигурацию и провоцировал именно ту путаницу, из-за которой
-	 *  его убрали - "почему показывается не то" при пустом/неполном массиве).
-	 *  ОБЯЗАТЕЛЕН - должен содержать хотя бы 1 элемент, иначе GenerateRandom()/
-	 *  Next()/StepAsync() откажутся выполняться (с warning в лог), как и при
-	 *  отсутствии CellMesh. Клетка возраста 0 (только родилась) красится
-	 *  ПОСЛЕДНИМ материалом массива, клетка возраста (N-1) и старше - ПЕРВЫМ;
-	 *  формула MaterialIndex = N-1-min(Age, N-1) (см. BuildAgeBuckets()). При
-	 *  N==1 все клетки красятся этим единственным материалом независимо от
-	 *  возраста - эквивалент старого поведения с одним CellMaterial. Материал в
-	 *  UInstancedStaticMeshComponent/HISM задаётся на весь компонент целиком, не
-	 *  на инстанс - поэтому N разных материалов реализованы N отдельными,
-	 *  создаваемыми в рантайме компонентами (см. AgeMeshComponents/
-	 *  RebuildAgeMeshComponents()), а не одним. Учитывается во всех путях
-	 *  рендера одинаково - и в непрерывной симуляции (Play/StepAsync ->
-	 *  RenderCurrentGrid(), чанково), и в ручном шаге/спавне (Next()/
-	 *  GenerateRandom() -> RenderGridImmediate(), одним снимком). */
+	/** Базовый материал клеток - ЕДИНСТВЕННЫЙ, один на все клетки любого
+	 *  возраста. Цвет задаётся НЕ материалом, а per-instance custom data
+	 *  (см. AgeColors/DecayColors ниже): рендерер пишет RGB в 3 float'а на
+	 *  инстанс, а материал ОБЯЗАН читать их узлом PerInstanceCustomData3Vector
+	 *  (DataIndex=0) и вести в Base Color / Emissive.
+	 *  ВНИМАНИЕ: без такого узла движок вообще не создаёт буфер custom data
+	 *  (флаг выводится из самого материала) - все клетки выйдут одного цвета,
+	 *  БЕЗ единой ошибки в логе. Полезно задать узлу заметный ConstDefaultValue
+	 *  (например пурпурный), чтобы "custom data не доехали" отличалось от
+	 *  "цвет действительно чёрный".
+	 *  ОБЯЗАТЕЛЕН - без него GenerateRandom()/Next()/StepAsync() откажутся
+	 *  выполняться с warning в лог, ровно как и без CellMesh.
+	 *  Пришёл на смену массиву AgeMaterials: материал в
+	 *  UInstancedStaticMeshComponent/HISM задаётся на компонент целиком, а не
+	 *  на инстанс, поэтому N материалов требовали N отдельных компонентов с
+	 *  бакетизацией клеток по возрасту; per-instance цвет схлопывает всё это в
+	 *  один компонент и один AddInstances() на поколение. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
-	TArray<UMaterialInterface*> AgeMaterials;
+	UMaterialInterface* CellMaterial = nullptr;
+
+	/** Ключевые кадры цвета по возрасту клетки, с ПЛАВНОЙ интерполяцией между
+	 *  соседними ключами (а не ступенями, как было с AgeMaterials).
+	 *  Порядок: [0] - только что родившаяся клетка (возраст 0), последний -
+	 *  самая старая (возраст >= AgeColorMaxAge).
+	 *  ВНИМАНИЕ: это ОБРАТНЫЙ порядок относительно прежнего AgeMaterials, где
+	 *  первым шёл самый СТАРЫЙ материал. Пустой массив - все клетки белые (т.е.
+	 *  "как выглядит сам материал"), с предупреждением в лог; один элемент -
+	 *  плоский цвет независимо от возраста.
+	 *  Пустота намеренно НЕ считается ошибкой, в отличие от отсутствующего
+	 *  CellMaterial: это нормальное промежуточное состояние настройки (материал
+	 *  уже назначен, рампа ещё не нарисована), и отказ рисовать в этот момент
+	 *  выглядел бы как "ничего не работает". */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	TArray<FLinearColor> AgeColors;
+
+	/** Возраст, на котором достигается ПОСЛЕДНИЙ ключевой кадр AgeColors, то
+	 *  есть сама шкала интерполяции: t = clamp(Age / AgeColorMaxAge, 0, 1).
+	 *  Клетки старше красятся последним цветом.
+	 *  Отвязано от AgeColors.Num() специально: число ключей - это разрешение
+	 *  градиента, а этот параметр - его длина по времени. У AgeMaterials это
+	 *  было одним и тем же числом (N материалов = N возрастов), и настроить
+	 *  "мягкий градиент, но за 4 поколения" было нельзя.
+	 *  Возраст в FCellGrid насыщающийся uint8, так что 255 - потолок при любом
+	 *  значении здесь. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "1", UIMin = "1", UIMax = "255"))
+	int32 AgeColorMaxAge = 32;
+
+	/** Отдельная шкала цвета для УГАСАЮЩИХ клеток Generations (States > 2,
+	 *  см. FCellGrid::IsDecaying()): [0] - только начала угасать (DecayState 2),
+	 *  последний - последняя стадия перед смертью (DecayState States-1).
+	 *  ПУСТОЙ (по умолчанию) - угасающие красятся по AgeColors. Раньше выбора
+	 *  не было вообще: угасающие клетки шли в те же возрастные бакеты, что и
+	 *  живые, и были от них визуально неотличимы - хотя именно угасающая
+	 *  оболочка и есть самое интересное в правилах Generations. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	TArray<FLinearColor> DecayColors;
 
 	/** Размер одной клетки в мировых единицах */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
@@ -662,12 +708,14 @@ public:
 	float CellSize = 100.0f;
 
 	/** Какая реализация инстансированного компонента используется для
-	 *  отрисовки клеток - выбирает класс (ISM/HISM) как для каждого
-	 *  компонента в AgeMeshComponents (см. RebuildAgeMeshComponents()), так и
-	 *  для CellsMeshFlat/CellsMeshHierarchical (GetActiveCellsMeshComponent(),
-	 *  оставлены как постоянный root/attach-parent - см. их doc-comment).
-	 *  Правка пересоздаёт пул AgeMeshComponents под новый класс (см.
-	 *  RebuildAgeMeshComponents()), а не переключает существующие компоненты. */
+	 *  отрисовки клеток - выбирает, какой из двух постоянно существующих
+	 *  компонентов (CellsMeshFlat/CellsMeshHierarchical) реально получает
+	 *  инстансы, см. GetActiveCellsMeshComponent(). Класс компонента при этом
+	 *  не подменяется - оба созданы через CreateDefaultSubobject и живут всю
+	 *  жизнь актора (менять класс default subobject'а в рантайме Live Coding
+	 *  безопасно не умеет, проект на этом уже обжигался - см. CLAUDE.md).
+	 *  Правка перепривязывает CellsRenderer на другой компонент и чистит
+	 *  инстансы у прежнего (см. EnsureCellsRenderer()). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	ECellMeshComponentType CellMeshComponentType = ECellMeshComponentType::HierarchicalInstanced;
 
@@ -688,8 +736,8 @@ public:
 	 *  HLODs" в редакторе) и не годится для сетки клеток, которая
 	 *  перестраивается целиком каждое посчитанное поколение - у HLOD просто
 	 *  нет статичного состояния, которое можно было бы запечь. SetCullDistances()
-	 *  применяется к CellsMeshFlat/CellsMeshHierarchical и ко всем
-	 *  AgeMeshComponents в ApplyCellCullDistances() на каждый рендер (сама
+	 *  применяется к CellsMeshFlat/CellsMeshHierarchical и к
+	 *  SelectionMeshComponent в ApplyCellCullDistances() на каждый рендер (сама
 	 *  no-op, если значения не изменились - см. её реализацию в движке), так
 	 *  что правки в Details panel подхватываются немедленно, как и остальные
 	 *  параметры рендера. */
@@ -719,12 +767,12 @@ public:
 	void SetCellCullingEnabled(bool bEnabled);
 
 	/** Мастер-переключатель отсечения клеток по ARenderCullVolume - если
-	 *  выключено или актёра нет в уровне, BuildAgeBuckets() рендерит все
+	 *  выключено или актёра нет в уровне, BuildCellRenderData() рендерит все
 	 *  живые клетки как раньше (никогда не "рендерит тихо ничего"). В
 	 *  отличие от CellCullStartDistance/CellCullEndDistance (пост-хок,
 	 *  на уже построенных инстансах), этот фильтр применяется ДО
 	 *  построения FTransform/AddInstances - см. FCellGrid::
-	 *  GetAliveCellsInBounds() и BuildAgeBuckets(). Переключается на лету
+	 *  GetAliveCellsInBounds() и BuildCellRenderData(). Переключается на лету
 	 *  через хоткей C (см. AGamePlayerController::OnToggleRenderCullVolume())
 	 *  или Details panel. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rendering")
@@ -790,9 +838,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata|GhostShape")
 	void SetGhostShapeEnabled(bool bEnabled);
 
-	/** Метрики последнего BuildAgeBuckets() (клетки/МБ, "отрисовано/всего") -
+	/** Метрики последнего BuildCellRenderData() (клетки/МБ, "отрисовано/всего") -
 	 *  см. doc-comment FCellRenderStats. Читает уже посчитанное, ничего не
-	 *  пересчитывает - используется и UE_LOG внутри BuildAgeBuckets(), и
+	 *  пересчитывает - используется и UE_LOG внутри BuildCellRenderData(), и
 	 *  HUD (UMainHudWidget) через этот геттер. */
 	UFUNCTION(BlueprintPure, Category = "Automata|Rendering")
 	const FCellRenderStats& GetLastRenderStats() const { return LastRenderStats; }
@@ -1003,7 +1051,7 @@ public:
 	 *  здесь, слепое присваивание по позиции тихо перепутало бы их). При
 	 *  ошибке разбора ничего не меняет и пишет warning с описанием проблемы -
 	 *  тот же принцип "никогда не делать тихо ничего/наполовину", что у
-	 *  проверок AgeMaterials/CellMesh в GenerateRandom(). */
+	 *  проверок CellMaterial/CellMesh в GenerateRandom(). */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Rules")
 	void ApplyRuleString();
 
@@ -1094,25 +1142,16 @@ private:
 	UPROPERTY()
 	UHierarchicalInstancedStaticMeshComponent* CellsMeshHierarchical;
 
-	/** Пул компонентов для рендера по возрасту (см. AgeMaterials) - ровно один
-	 *  компонент на элемент AgeMaterials, в отличие от CellsMeshFlat/
-	 *  CellsMeshHierarchical создаются/уничтожаются в рантайме через
-	 *  NewObject()+RegisterComponent()/DestroyComponent() по мере правки
-	 *  размера AgeMaterials (см. RebuildAgeMeshComponents()) - это не тот же
-	 *  случай, что уже кусал проект со сменой класса CreateDefaultSubobject-
-	 *  компонента (см. CLAUDE.md): тут компоненты не default subobject'ы, и
-	 *  уничтожать/пересоздавать их в рантайме - штатная операция. UPROPERTY
-	 *  (не голый массив) по той же причине, что и GamePC - иначе после
-	 *  реинстансинга Live Coding'ом массив останется валиден, а вот
-	 *  параллельный AgeRenderers (не UPROPERTY, см. ниже) обнулится, и их
-	 *  придётся пересинхронизировать (см. RebuildAgeMeshComponents()). */
-	UPROPERTY(Transient)
-	TArray<UInstancedStaticMeshComponent*> AgeMeshComponents;
-
-	/** Один FInstancedMeshCellGridRenderer на элемент AgeMeshComponents/
-	 *  AgeMaterials, тем же индексом. Обычный (не UPROPERTY) член - см.
-	 *  AgeMeshComponents выше про рассинхронизацию после Live Coding. */
-	TArray<TUniquePtr<FInstancedMeshCellGridRenderer>> AgeRenderers;
+	/** ЕДИНСТВЕННЫЙ рендерер клеток, обёрнутый вокруг
+	 *  GetActiveCellsMeshComponent(). Пришёл на смену пулу AgeMeshComponents/
+	 *  AgeRenderers (по компоненту на возрастной материал): цвет теперь
+	 *  per-instance, поэтому один компонент красит клетки всех возрастов
+	 *  сразу - одна бакетизация, один AddInstances(), одно перестроение
+	 *  LOD-дерева HISM на поколение вместо N.
+	 *  Обычный (не UPROPERTY) член, как SelectionRenderer: переживать
+	 *  реинстансинг Live Coding'ом ему не нужно - EnsureCellsRenderer()
+	 *  пересоздаёт его по факту рассинхрона с компонентом. */
+	TUniquePtr<FInstancedMeshCellGridRenderer> CellsRenderer;
 
 	/** Выделенные мышкой клетки (см. SelectCellsInScreenRect()) - чисто
 	 *  рантайм-состояние, не UPROPERTY. Сбрасывается в GenerateRandom()/
@@ -1143,12 +1182,12 @@ private:
 	 *  выделение всегда маленькое подмножество, LOD-дерево кластеров HISM тут
 	 *  не даёт выигрыша. Создаётся лениво (EnsureSelectionMeshComponent()),
 	 *  один раз, без пересоздания. UPROPERTY - та же причина, что и у
-	 *  GamePC/AgeMeshComponents (переживает реинстансинг Live Coding). */
+	 *  GamePC (переживает реинстансинг Live Coding). */
 	UPROPERTY(Transient)
 	UInstancedStaticMeshComponent* SelectionMeshComponent = nullptr;
 
 	/** Рендерер подсветки поверх SelectionMeshComponent - обычный член (не
-	 *  UPROPERTY), как и AgeRenderers. */
+	 *  UPROPERTY), как и CellsRenderer. */
 	TUniquePtr<FInstancedMeshCellGridRenderer> SelectionRenderer;
 
 	/** Создаёт SelectionMeshComponent/SelectionRenderer при первом
@@ -1169,9 +1208,9 @@ private:
 
 	/** Безусловно обходит ВСЕ реально прикреплённые к актору
 	 *  UInstancedStaticMeshComponent (через GetComponents<>(), а не только
-	 *  те, что перечислены в AgeMeshComponents/CellsMeshFlat/
-	 *  CellsMeshHierarchical/SelectionMeshComponent) - вызывается один раз в
-	 *  самом начале BeginPlay(), до RebuildAgeMeshComponents()/
+	 *  те, что перечислены в CellsMeshFlat/CellsMeshHierarchical/
+	 *  SelectionMeshComponent) - вызывается один раз в
+	 *  самом начале BeginPlay(), до EnsureCellsRenderer()/
 	 *  GenerateRandom(). Компоненты из легитимного набора (объединение
 	 *  перечисленных выше) получают ClearInstances(); всё остальное
 	 *  уничтожается через DestroyComponent().
@@ -1186,9 +1225,12 @@ private:
 	 *  Coding). Такие сироты ClearInstances() по легитимному набору не
 	 *  затрагивает - они остаются прикреплены и видимы, накладываясь на
 	 *  честно посчитанную симуляцию (мерцание/двоение, которое статичный
-	 *  скриншот не всегда ловит). Обнаруженный на практике случай:
-	 *  AgeMaterials.Num()==3, но на PIE-акторе висело 8
-	 *  InstancedStaticMeshComponent - 5 лишних. */
+	 *  скриншот не всегда ловит). Обнаруженный на практике случай (ещё во
+	 *  времена пула AgeMeshComponents): материалов было 3, а на PIE-акторе
+	 *  висело 8 InstancedStaticMeshComponent - 5 лишних. Теперь этот же
+	 *  механизм заодно подчищает остатки самого пула - после перехода на
+	 *  per-instance цвет легитимный набор сократился до трёх компонентов, и
+	 *  все рантайм-созданные возрастные компоненты стали сиротами. */
 	void ClearAllCellInstances();
 
 	/** Убирает запечённый меш-снимок, если он есть - вызывается в начале
@@ -1235,7 +1277,7 @@ private:
 	 *  на уровне вообще нет ARenderCullVolume) - иначе (куб активен) силуэт
 	 *  остаётся чистым дополнением снаружи куба, детальный путь работает как
 	 *  обычно. Пересчитывается заново на каждый вызов (та же конвенция, что
-	 *  у CreateComputeStrategy()/BuildAgeBuckets() - никакого кэширования
+	 *  у CreateComputeStrategy()/BuildCellRenderData() - никакого кэширования
 	 *  между вызовами), используется из RenderGridImmediate()/RenderCurrentGrid(). */
 	bool ShouldGhostShapeReplaceDetailedRender();
 
@@ -1312,9 +1354,10 @@ private:
 	bool CaptureThumbnailPng(TArray64<uint8>& OutPngBytes) const;
 
 	/** Рендерит SelectedCells (отфильтрованные до реально живых - на случай
-	 *  рассинхрона) через SelectionRenderer с материалом SelectionMaterial,
-	 *  одним снимком (без чанкинга - выделение всегда маленькое). Не-op, если
-	 *  SelectedCells пуст или SelectionMaterial не назначен. */
+	 *  рассинхрона) через SelectionRenderer тем же CellMaterial, что и обычные
+	 *  клетки, но с цветом SelectionColor в per-instance custom data, одним
+	 *  снимком (без чанкинга - выделение всегда маленькое). Не-op, если
+	 *  SelectedCells пуст или CellMaterial не назначен. */
 	void RenderSelectionOverlay();
 
 	/** Комбинирует NewCells с текущим SelectedCells по CombineMode
@@ -1328,32 +1371,43 @@ private:
 	void InitializePlayerController();
 	/** Пересчитывает и применяет CellCullStartDistance/CellCullEndDistance
 	 *  (или (0, 0), если bEnableCellCulling == false) к CellsMeshFlat/
-	 *  CellsMeshHierarchical и ко всем AgeMeshComponents через
+	 *  CellsMeshHierarchical и SelectionMeshComponent через
 	 *  SetCullDistances() - отдельная функция (не встроена в рендер), чтобы
 	 *  SetCellCullingEnabled() (хоткей B) могло применить изменение
 	 *  немедленно, не дожидаясь следующего рендера нового поколения. */
 	void ApplyCellCullDistances();
-	/** Пересоздаёт AgeMeshComponents/AgeRenderers так, чтобы их было ровно
-	 *  AgeMaterials.Num() штук нужного (текущий CellMeshComponentType, ISM
-	 *  или HISM) класса - вызывается из RenderCurrentGrid()/RenderGridImmediate(),
-	 *  BeginPlay()/OnConstruction() и PostEditChangeProperty(). Дёшево звать
-	 *  повторно без изменений (оба while-цикла роста/сокращения сразу
-	 *  становятся no-op, если размер уже совпадает); также пересинхронизирует
-	 *  AgeRenderers с AgeMeshComponents, если они разошлись по количеству
-	 *  (см. doc-comment AgeMeshComponents про реинстансинг Live Coding). */
-	void RebuildAgeMeshComponents();
-	/** Раскладывает Grid->GetAliveCells()/GetAliveCellsInBounds() на
-	 *  AgeMaterials.Num() бакетов по MaterialIndex = N-1-min(Age, N-1) (см.
-	 *  doc-comment AgeMaterials) - общий код для RenderCurrentGrid() (Play)
-	 *  и RenderGridImmediate() (Next()/GenerateRandom()), чтобы не
-	 *  дублировать сам цикл бакетирования. Если bEnableRenderCullVolume и в
-	 *  уровне есть ARenderCullVolume (см. EnsureRenderCullVolume()) - список
-	 *  живых клеток сперва отсекается по его границам (GetAliveCellsInBounds()),
-	 *  до какого-либо бакетирования/построения трансформов. Не const (в
-	 *  отличие от прежней версии) - EnsureRenderCullVolume() лениво кэширует
-	 *  найденный актёр, тот же idiom, что EnsureSelectionMeshComponent(); оба
-	 *  вызывающих (RenderCurrentGrid()/RenderGridImmediate()) и так не const. */
-	TArray<TArray<FIntVector>> BuildAgeBuckets();
+	/** Создаёт/перепривязывает CellsRenderer на актуальный
+	 *  GetActiveCellsMeshComponent(). Одно условие покрывает три случая:
+	 *  первый вызов; смена CellMeshComponentType (рендерер обёрнут вокруг
+	 *  прошлого компонента - это и показывает GetComponent()); обнуление
+	 *  TUniquePtr после реинстансинга Live Coding (сами компоненты - default
+	 *  subobject'ы, они выживают, а рендерер нет).
+	 *  При перепривязке чистит инстансы у ПРЕДЫДУЩЕГО компонента - иначе
+	 *  переключение ISM<->HISM оставило бы старый набор кубиков висеть
+	 *  внахлёст с новым. */
+	void EnsureCellsRenderer();
+	/** Собирает единый список инстансов на отрисовку: живые клетки (цвет по
+	 *  AgeColors от Grid->GetAge()) плюс, при States > 2, угасающие (цвет по
+	 *  DecayColors/AgeColors от их DecayState) - общий код для
+	 *  RenderCurrentGrid() (Play) и RenderGridImmediate() (Next()/
+	 *  GenerateRandom()). Пришёл на смену BuildAgeBuckets(): бакетов больше
+	 *  нет, цвет уезжает в сам инстанс. Если отсечение активно (см.
+	 *  GetActiveCullVolume()) - клетки сперва отсекаются по границам куба
+	 *  (GetAliveCellsInBounds()/GetDecayingCellsInBounds()), до построения
+	 *  чего бы то ни было. Заполняет LastRenderStats. Не const -
+	 *  EnsureRenderCullVolume() лениво кэширует найденный актёр, тот же idiom,
+	 *  что EnsureSelectionMeshComponent(). */
+	void BuildCellRenderData(TArray<FCellRenderInstance>& OutInstances);
+	/** Таблицы цвета на 256 записей: LUT[Age] и LUT[DecayState]. Считаются
+	 *  один раз на BuildCellRenderData(), а не на клетку - при миллионах
+	 *  клеток интерполяция в цикле это миллионы лишних лерпов, а сама таблица
+	 *  занимает 1 КБ. Заодно единственная конверсия в FColor (обязательно
+	 *  ToFColor(bSRGB=false), см. FCellRenderInstance) живёт в одном месте. */
+	void BuildAgeColorLut(TArray<FColor>& OutLut) const;
+	void BuildDecayColorLut(TArray<FColor>& OutLut) const;
+	/** Ядро интерполяции: T в [0,1] -> точка на ломаной по ключам Keys.
+	 *  Пустой массив -> белый, один ключ -> он же. */
+	static FLinearColor SampleColorRamp(const TArray<FLinearColor>& Keys, float T);
 	/** Лениво находит и кэширует ARenderCullVolume в мире через
 	 *  UGameplayStatics::GetActorOfClass() (тот же идиом, что
 	 *  AGamePlayerController использует для поиска САМОГО оркестратора) -
@@ -1379,16 +1433,15 @@ private:
 	 *  на K), сознательно продолжают звать EnsureRenderCullVolume() напрямую -
 	 *  область существует независимо от того, режет она сейчас или нет. */
 	ARenderCullVolume* GetActiveCullVolume();
-	/** Раскладывает живые клетки по AgeMaterials.Num() бакетам по возрасту
-	 *  (см. AgeMaterials/BuildAgeBuckets()) и рендерит каждый бакет через свой
-	 *  AgeRenderers[i] на AgeMeshComponents[i] - разлитый по кадрам рендер
+	/** Собирает инстансы через BuildCellRenderData() и рендерит их одним
+	 *  CellsRenderer - разлитый по кадрам рендер
 	 *  (bEnableChunkedRender), если включён. Общий код, вызываемый из
 	 *  ApplyStepResult() каждый раз, когда готово новое поколение (в т.ч.
 	 *  когда предыдущий чанковый разлив ещё не закончился - см.
 	 *  bChunkedRenderInProgress: BeginRender() сам всё сбрасывает и
 	 *  перестраивает). */
 	void RenderCurrentGrid();
-	/** То же бакетирование, что и RenderCurrentGrid(), но всегда одним
+	/** Тот же сбор инстансов, что и в RenderCurrentGrid(), но всегда одним
 	 *  снимком (Renderer::Render(), без BeginRender()/чанкинга) - используется
 	 *  Next()/GenerateRandom(), которые (как и bEnableChunkedRender/
 	 *  StepsPerRender для основного пути) всегда рендерят немедленно и
@@ -1398,6 +1451,14 @@ private:
 	 *  CellMeshComponentType - единственное место, которое решает, какой
 	 *  компонент сейчас "активен". */
 	UInstancedStaticMeshComponent* GetActiveCellsMeshComponent() const;
+	/** Чистит инстансы у ТОГО из двух компонентов, который сейчас НЕ выбран
+	 *  CellMeshComponentType. Защита от протухшего снимка: активный компонент
+	 *  чистит сам BeginRender() каждым рендером, а вот на неактивном инстансы
+	 *  могут остаться после переключения типа или прийти из уровня,
+	 *  сохранённого до перехода на per-instance цвет - и тогда две сетки
+	 *  видны внахлёст. Чистить здесь активный (как делала прежняя версия)
+	 *  нельзя: теперь рисуем именно в него, и рендер обнулял бы сам себя. */
+	void ClearInactiveCellsMeshComponent();
 	/** Строит новую пустую сетку по текущим CellSize/ChunkSize из Details
 	 *  panel. Используется и GenerateRandom() (сетка с нуля), и Next()
 	 *  (буфер для следующего поколения). */
@@ -1423,7 +1484,7 @@ private:
 	ARenderCullVolume* CachedRenderCullVolume = nullptr;
 
 	/** См. GetLastRenderStats()/FCellRenderStats - плайн член (не
-	 *  UPROPERTY), заполняется заново в каждом BuildAgeBuckets(), не нужно
+	 *  UPROPERTY), заполняется заново в каждом BuildCellRenderData(), не нужно
 	 *  переживать реинстансинг Live Coding (просто пересчитается на
 	 *  следующем рендере). */
 	FCellRenderStats LastRenderStats;
@@ -1588,15 +1649,17 @@ private:
 	double ChunkedRenderStartSeconds = 0.0;
 	int32 ChunkedRenderFrameCount = 0;
 
-	/** Добавляет очередную порцию инстансов на каждый AgeRenderers[i]
-	 *  (AdvanceRenderChunk(), бюджет ChunkedRenderCellsPerFrame поровну между
-	 *  бакетами - см. doc-comment реализации) и, когда ни один из них не
-	 *  вернул "ещё есть, что дорисовать", сбрасывает bChunkedRenderInProgress
-	 *  и логирует итог (сколько кадров/времени заняло). */
+	/** Добавляет очередную порцию инстансов в CellsRenderer
+	 *  (AdvanceRenderChunk() с полным бюджетом ChunkedRenderCellsPerFrame -
+	 *  прежнее деление бюджета между возрастными бакетами исчезло вместе с
+	 *  ними, так что при N материалах кадр стал в ~N раз тяжелее и разлив во
+	 *  столько же раз короче; подобранное раньше значение стоит перепроверить)
+	 *  и, когда рендерер не вернул "ещё есть, что дорисовать", сбрасывает
+	 *  bChunkedRenderInProgress и логирует итог (сколько кадров/времени заняло). */
 	void AdvanceChunkedRender();
 
-	/** Досыпает все оставшиеся инстансы чанкового рендера у каждого
-	 *  AgeRenderers[i] одним вызовом (AdvanceRenderChunk(TNumericLimits<int32>::Max()))
+	/** Досыпает все оставшиеся инстансы чанкового рендера одним вызовом
+	 *  (AdvanceRenderChunk(TNumericLimits<int32>::Max()))
 	 *  вместо того, чтобы ждать, пока AdvanceChunkedRender() доедет по кадрам -
 	 *  вызывается из Stop() (P), чтобы остановка не оставляла сетку висеть
 	 *  недорисованной. Не-op, если чанковый рендер сейчас не идёт. */
