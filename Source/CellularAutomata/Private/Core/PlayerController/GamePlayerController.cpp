@@ -408,6 +408,15 @@ void AGamePlayerController::OnToggleCellCulling()
 
 void AGamePlayerController::OnToggleRenderCullVolume()
 {
+	// Ctrl+C - не отсечение, а видимость самого куба. Enhanced Input не даёт
+	// потребовать Ctrl прямо в маппинге ключа, поэтому модификатор проверяется
+	// здесь - та же идиома, что у Ctrl+S/Ctrl+Shift+S в OnSaveOrSaveAs().
+	if (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))
+	{
+		OnToggleRenderCullVolumeVisibility();
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -416,6 +425,34 @@ void AGamePlayerController::OnToggleRenderCullVolume()
 	}
 
 	Orchestrator->SetRenderCullVolumeEnabled(!Orchestrator->IsRenderCullVolumeEnabled());
+}
+
+void AGamePlayerController::OnToggleRenderCullVolumeVisibility()
+{
+	ARenderCullVolume* CullVolume = FindCullVolume();
+	if (!CullVolume)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleRenderCullVolumeVisibility: ARenderCullVolume не найден в мире"));
+		return;
+	}
+
+	const bool bNewVisible = !CullVolume->IsVolumeVisible();
+
+	// Незавершённый драг закрываем перед скрытием - иначе куб продолжил бы
+	// невидимо ездить за курсором (та же причина, что в SetSelectionModeActive()).
+	if (!bNewVisible && DraggedCullVolume == CullVolume)
+	{
+		DraggedCullVolume->EndGizmoDrag();
+		DraggedCullVolume = nullptr;
+	}
+
+	CullVolume->SetVolumeVisible(bNewVisible);
+	// Ручки видны, только когда виден и сам куб, И включён режим мыши: тянуть
+	// за ручки невидимую коробку означало бы менять отсечение, не видя, что
+	// именно меняешь.
+	CullVolume->SetGizmoVisible(bNewVisible && bSelectionModeActive);
+
+	UE_LOG(LogTemp, Log, TEXT("Куб отсечения: %s (отсечение при этом не менялось)"), bNewVisible ? TEXT("показан") : TEXT("скрыт"));
 }
 
 void AGamePlayerController::OnToggleGhostShape()
@@ -553,7 +590,9 @@ void AGamePlayerController::SetSelectionModeActive(bool bActive)
 			DraggedCullVolume->EndGizmoDrag();
 			DraggedCullVolume = nullptr;
 		}
-		CullVolume->SetGizmoVisible(bActive);
+		// И режим мыши, и видимость куба - см. OnToggleRenderCullVolumeVisibility():
+		// Tab не должен вытаскивать ручки у спрятанной (Ctrl+C) коробки.
+		CullVolume->SetGizmoVisible(bActive && CullVolume->IsVolumeVisible());
 	}
 
 	// Единый режим взаимодействия мышкой - и клетки, и HUD (см. doc-comment

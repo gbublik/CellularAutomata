@@ -195,6 +195,15 @@ protected:
 	 *  построенных инстансах). */
 	void OnToggleRenderCullVolume();
 
+	/** Ctrl+C - показать/спрятать сам куб отсечения (ARenderCullVolume::
+	 *  SetVolumeVisible()), НЕ выключая отсечение: коробка продолжает резать
+	 *  клетки, просто не заслоняет то, что от них осталось. Голый C (см.
+	 *  OnToggleRenderCullVolume() выше) - наоборот, выключает отсечение,
+	 *  ничего не говоря о видимости. Вызывается из того же обработчика, что и
+	 *  C: Enhanced Input не умеет требовать Ctrl в маппинге ключа, поэтому
+	 *  модификатор проверяется в коде - та же идиома, что у Ctrl+S/Ctrl+O. */
+	void OnToggleRenderCullVolumeVisibility();
+
 	/** Хоткей (H, освободилась после слияния HUD-режима в Tab) - переключает
 	 *  AAutomataOrchestrator::bEnableGhostShape через SetGhostShapeEnabled()/
 	 *  IsGhostShapeEnabled() - показать/спрятать грубый chunk-силуэт вручную,

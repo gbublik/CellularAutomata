@@ -21,7 +21,79 @@ ARenderCullVolume::ARenderCullVolume()
 	// по живой картинке, не только по вьюпорту редактора.
 	BoundsBox->SetHiddenInGame(false);
 
+	// Залитый куб под VolumeMaterial - см. doc-comment VolumeMesh. Создаётся
+	// всегда, но остаётся скрытым, пока материал не назначен: непрозрачный
+	// дефолтный материал закрыл бы собой ровно те клетки, ради которых
+	// отсечение и включают.
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> VolumeCubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
+
+	VolumeMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("VolumeMesh"));
+	VolumeMesh->SetupAttachment(BoundsBox);
+	if (VolumeCubeMesh.Succeeded())
+	{
+		VolumeMesh->SetStaticMesh(VolumeCubeMesh.Object);
+	}
+	// Та же конвенция, что у клеток и у ручек манипулятора: чисто визуальная
+	// геометрия, без коллизии и без участия в освещении.
+	VolumeMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	VolumeMesh->SetGenerateOverlapEvents(false);
+	VolumeMesh->SetCastShadow(false);
+	VolumeMesh->SetVisibility(false);
+	VolumeMesh->SetHiddenInGame(true);
+
 	BuildGizmoComponents();
+}
+
+void ARenderCullVolume::BeginPlay()
+{
+	Super::BeginPlay();
+
+	ApplyVolumeVisuals();
+}
+
+void ARenderCullVolume::SetVolumeVisible(bool bVisible)
+{
+	if (bVolumeVisible == bVisible)
+	{
+		return;
+	}
+	bVolumeVisible = bVisible;
+
+	ApplyVolumeVisuals();
+}
+
+void ARenderCullVolume::ApplyVolumeVisuals()
+{
+	if (BoundsBox)
+	{
+		BoundsBox->SetHiddenInGame(!bVolumeVisible);
+	}
+
+	if (!VolumeMesh)
+	{
+		return;
+	}
+
+	// Материал переназначаем на каждом вызове, а не один раз в конструкторе -
+	// его могли поменять в Details panel, и правка должна подхватываться без
+	// перезапуска (та же конвенция, что у осей манипулятора в
+	// SetGizmoVisible() и у SetMesh/SetMaterial перед каждым Render()).
+	// Сравнение с уже назначенным - не микрооптимизация: этот метод зовётся и
+	// каждый кадр драга ручки масштаба (см. UpdateGizmoDrag()), а SetMaterial()
+	// помечает render state компонента грязным даже при том же материале.
+	if (VolumeMaterial && VolumeMesh->GetMaterial(0) != VolumeMaterial)
+	{
+		VolumeMesh->SetMaterial(0, VolumeMaterial);
+	}
+
+	// Меш - куб 100x100x100 с центром в нуле, BoxExtent - полуразмер без учёта
+	// масштаба актёра (его VolumeMesh наследует от BoundsBox сам), отсюда /50.
+	const FVector Extent = BoundsBox ? BoundsBox->GetUnscaledBoxExtent() : FVector(50.0f);
+	VolumeMesh->SetRelativeScale3D(Extent / 50.0f);
+
+	const bool bShowMesh = bVolumeVisible && VolumeMaterial != nullptr;
+	VolumeMesh->SetVisibility(bShowMesh);
+	VolumeMesh->SetHiddenInGame(!bShowMesh);
 }
 
 void ARenderCullVolume::BuildGizmoComponents()
@@ -270,6 +342,11 @@ void ARenderCullVolume::UpdateGizmoDrag(float AxisParam)
 		// куб отсекал бы вообще всё, и вернуть его мышью было бы уже нечем.
 		NewExtent[AxisIndex] = FMath::Max(DragStartBoxExtent[AxisIndex] + Delta / ScaleOnAxis, 1.0f);
 		BoundsBox->SetBoxExtent(NewExtent);
+		// Залитый куб тянется за проволочным кадр в кадр - иначе его масштаб
+		// остался бы от начала драга и разошёлся бы с границами, по которым
+		// реально режутся клетки (перерисовка клеток по-прежнему только на
+		// EndGizmoDrag(), это лишь масштаб одного компонента).
+		ApplyVolumeVisuals();
 		break;
 	}
 
@@ -328,6 +405,12 @@ void ARenderCullVolume::PostEditMove(bool bFinished)
 void ARenderCullVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// Ловит и правку BoxExtent числами (масштаб залитого меша надо пересчитать),
+	// и назначение самого VolumeMaterial - куб должен покраситься сразу в
+	// редакторе, не только после запуска PIE.
+	ApplyVolumeVisuals();
+
 	NotifyOrchestratorToRefresh();
 }
 #endif

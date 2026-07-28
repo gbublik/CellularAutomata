@@ -51,6 +51,13 @@ class CELLULARAUTOMATA_API ARenderCullVolume : public AActor
 public:
 	ARenderCullVolume();
 
+	/** Только приведение визуализации куба в актуальное состояние
+	 *  (ApplyVolumeVisuals()) - материал и масштаб залитого меша нельзя
+	 *  выставить в конструкторе: VolumeMaterial к тому моменту ещё не
+	 *  десериализован из уровня, а BoxExtent мог быть изменён в Details panel
+	 *  после того, как конструктор отработал. */
+	virtual void BeginPlay() override;
+
 	/** Axis-aligned мировые границы куба (Location +- масштабированный
 	 *  BoxExtent) - см. doc-comment класса за тем, почему без поворота. */
 	UFUNCTION(BlueprintCallable, Category = "Automata|Rendering")
@@ -65,6 +72,19 @@ public:
 	void SetGizmoVisible(bool bVisible);
 
 	bool IsGizmoVisible() const { return bGizmoVisible; }
+
+	/** Показать/спрятать сам куб (проволочные границы BoundsBox плюс залитый
+	 *  VolumeMesh, если ему назначен материал). Отсечение при этом НЕ
+	 *  выключается - куб продолжает резать клетки, просто его собственная
+	 *  визуализация не мешает смотреть на результат. Именно поэтому это
+	 *  отдельная от bEnableRenderCullVolume вещь и отдельный хоткей (Ctrl+C
+	 *  против C): "не хочу видеть коробку" и "не хочу отсечения" - разные
+	 *  желания, и раньше их приходилось путать. Ручки манипулятора этот метод
+	 *  не трогает - их видимость складывает контроллер из режима мыши (Tab) и
+	 *  этого флага, см. AGamePlayerController::OnToggleRenderCullVolumeVisibility(). */
+	void SetVolumeVisible(bool bVisible);
+
+	bool IsVolumeVisible() const { return bVolumeVisible; }
 
 	/** Подгоняет масштаб манипулятора так, чтобы на экране он оставался
 	 *  примерно одного размера независимо от расстояния до камеры - как в 3D-
@@ -134,6 +154,17 @@ public:
 	 *  то есть все три оси одинаковые на вид - о чём говорит лог, чтобы это
 	 *  не выглядело поломкой. Ожидаются простые unlit-цвета (красный/зелёный/
 	 *  синий по традиции 3D-редакторов). */
+	/** Материал залитого куба - назначается в Details panel, как
+	 *  SelectionMaterial/GhostShapeMaterial/BakedMeshMaterial у оркестратора.
+	 *  Не обязателен, и в этом вся суть: пока он не задан, VolumeMesh скрыт
+	 *  целиком и куб выглядит как раньше - только проволочные границы
+	 *  BoundsBox. Дефолтный материал меша здесь было бы хуже, чем ничего:
+	 *  непрозрачный куб закрыл бы ровно те клетки, ради которых отсечение и
+	 *  включают. Ожидается полупрозрачный (Translucent) материал - плотный
+	 *  Opaque технически работает, но смысла в нём мало. */
+	UPROPERTY(EditAnywhere, Category = "Automata|Rendering")
+	TObjectPtr<UMaterialInterface> VolumeMaterial;
+
 	UPROPERTY(EditAnywhere, Category = "Automata|Gizmo")
 	TObjectPtr<UMaterialInterface> AxisMaterialX;
 
@@ -180,6 +211,26 @@ private:
 	TArray<TObjectPtr<UStaticMeshComponent>> ScaleHandles;
 
 	bool bGizmoVisible = false;
+
+	/** См. SetVolumeVisible(). По умолчанию куб виден - подгонять границы по
+	 *  живой картинке удобнее, чем вслепую. */
+	bool bVolumeVisible = true;
+
+	/** Залитый куб под VolumeMaterial: UBoxComponent рисует только проволочные
+	 *  границы и материала не принимает вовсе, поэтому "покрасить куб" - это
+	 *  отдельный меш-компонент поверх него. Меш - /Engine/BasicShapes/Cube
+	 *  (100x100x100 с центром в нуле, как и остальная геометрия манипулятора),
+	 *  масштаб пересчитывается из BoxExtent в ApplyVolumeVisuals(). */
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> VolumeMesh;
+
+	/** Приводит VolumeMesh в соответствие текущим VolumeMaterial/BoxExtent/
+	 *  bVolumeVisible, и прячет/показывает проволочные границы BoundsBox.
+	 *  Зовётся из BeginPlay(), SetVolumeVisible(), по завершении драга ручки
+	 *  масштаба и из PostEditChangeProperty() - т.е. всюду, где размер куба
+	 *  или его материал могли измениться: масштаб меша иначе остался бы от
+	 *  прежнего BoxExtent, и залитый куб разошёлся бы с проволочным. */
+	void ApplyVolumeVisuals();
 
 	/** Состояние активного драга (см. BeginGizmoDrag()). None - драга нет. */
 	EVolumeGizmoHandle ActiveGizmoHandle = EVolumeGizmoHandle::None;
