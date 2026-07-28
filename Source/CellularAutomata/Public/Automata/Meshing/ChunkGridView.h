@@ -11,9 +11,18 @@
  *  использует Grid только для GetCellSize()/GridToWorld() - если
  *  подставить сюда ChunkWorldSize вместо обычного CellSize, а "клетками"
  *  считать координаты чанков, получается ровно та же геометрия, но в
- *  масштабе чанков. GridToWorld() даже переопределять не нужно - базовая
- *  реализация FCellGrid::GridToWorld() (Cell * CellSize) уже даёт нужный
- *  результат, раз CellSize здесь - это размер чанка, а не клетки.
+ *  масштабе чанков.
+ *
+ *  А вот GridToWorld() переопределить ПРИДЁТСЯ, и это не мелочь: базовая
+ *  реализация (Cell * CellSize) ставила бы куб чанка центром в
+ *  Чанк*РазмерЧанка, тогда как настоящий центр чанка лежит на полчанка
+ *  дальше - минус полклетки, потому что GridToWorld() у клеток даёт их
+ *  ЦЕНТРЫ, а не углы. Чанк C занимает клетки от C*ChunkSize до
+ *  C*ChunkSize+ChunkSize-1, то есть в мире тянется от
+ *  C*РазмерЧанка - CellSize/2 до C*РазмерЧанка + РазмерЧанка - CellSize/2.
+ *  Без этой поправки ghost-силуэт уезжает на (РазмерЧанка - CellSize)/2 по
+ *  каждой оси - при ChunkSize=16 и CellSize=100 это 750 юнитов, что и
+ *  наблюдалось живьём как зазор между силуэтом и детальными клетками.
  *
  *  Тот же идиом, что и у FFilteredCellGridView (Automata/Rendering/
  *  FilteredCellGridView.h) - мутирующие методы no-op, реальных данных
@@ -21,10 +30,19 @@
 class CELLULARAUTOMATA_API FChunkGridView : public FCellGrid
 {
 public:
-	FChunkGridView(float InChunkWorldSize, TArray<FIntVector> InOccupiedChunkCoords)
+	FChunkGridView(float InChunkWorldSize, float InCellSize, TArray<FIntVector> InOccupiedChunkCoords)
 		: FCellGrid(InChunkWorldSize)
+		, ChunkCenterOffset((InChunkWorldSize - InCellSize) * 0.5f)
 		, OccupiedChunkCoords(MoveTemp(InOccupiedChunkCoords))
 	{
+	}
+
+	/** См. doc-comment класса: центр куба чанка, а не его угол. CellSize
+	 *  базового класса здесь хранит РАЗМЕР ЧАНКА (так задумано), поэтому
+	 *  первое слагаемое и есть Чанк*РазмерЧанка. */
+	virtual FVector GridToWorld(const FIntVector& Chunk) const override
+	{
+		return FVector(Chunk.X, Chunk.Y, Chunk.Z) * CellSize + FVector(ChunkCenterOffset);
 	}
 
 	virtual bool IsAlive(const FIntVector& Cell) const override { return true; }
@@ -36,5 +54,8 @@ public:
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) override {}
 
 private:
+	/** (РазмерЧанка - CellSize)/2 - см. GridToWorld() выше. */
+	float ChunkCenterOffset;
+
 	TArray<FIntVector> OccupiedChunkCoords;
 };

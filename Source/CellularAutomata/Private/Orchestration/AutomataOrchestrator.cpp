@@ -1135,7 +1135,7 @@ void AAutomataOrchestrator::RefreshGhostShape()
 	}
 
 	const double BuildStartSeconds = FPlatformTime::Seconds();
-	FChunkGridView ChunkView(ChunkWorldSize, ChunksToGhost);
+	FChunkGridView ChunkView(ChunkWorldSize, Grid->GetCellSize(), ChunksToGhost);
 	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(ChunkView, ChunksToGhost);
 	const double BuildSeconds = FPlatformTime::Seconds() - BuildStartSeconds;
 
