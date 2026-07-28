@@ -76,6 +76,41 @@ namespace
 
 		return true;
 	}
+
+	/** Сжимает список счётчиков в поле строки правила: сортирует, убирает
+	 *  повторы и склеивает подряд идущие значения в диапазоны "x-y" - ровно
+	 *  та форма, которую понимает ParseCountListField() выше. Пустой список
+	 *  даёт пустое поле (сама по себе такая строка не разберётся обратно, но
+	 *  и правило с пустым Birth/Survival невалидно - показать его лучше как
+	 *  есть, чем подставить что-то несуществующее). */
+	FString FormatCountListField(const TArray<int32>& Counts)
+	{
+		TArray<int32> Sorted = Counts;
+		Sorted.Sort();
+
+		FString Result;
+		for (int32 Index = 0; Index < Sorted.Num(); )
+		{
+			// Хвост одного диапазона: пропускаем повторы (Next == Last) и
+			// шаг на единицу (Next == Last + 1).
+			const int32 RangeStart = Sorted[Index];
+			int32 RangeEnd = RangeStart;
+			while (++Index < Sorted.Num() && Sorted[Index] <= RangeEnd + 1)
+			{
+				RangeEnd = Sorted[Index];
+			}
+
+			if (!Result.IsEmpty())
+			{
+				Result += TEXT(",");
+			}
+			Result += (RangeStart == RangeEnd)
+				? FString::FromInt(RangeStart)
+				: FString::Printf(TEXT("%d-%d"), RangeStart, RangeEnd);
+		}
+
+		return Result;
+	}
 }
 
 namespace RuleStringParser
@@ -135,5 +170,19 @@ namespace RuleStringParser
 
 		OutResult = MoveTemp(Parsed);
 		return true;
+	}
+
+	FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood)
+	{
+		// Порядок полей - Survival, затем Birth: тот же, что читает
+		// ParseRuleString(), и обратный порядку объявления BirthCounts/
+		// SurvivalCounts в AAutomataOrchestrator (см. предупреждение в
+		// doc-comment'е ApplyRuleString() - здесь та же ловушка, поэтому
+		// параметры функции идут именно в порядке строки, а не полей актора).
+		return FString::Printf(TEXT("%s/%s/%d/%s"),
+			*FormatCountListField(SurvivalCounts),
+			*FormatCountListField(BirthCounts),
+			States,
+			Neighborhood == ENeighborhood::Moore ? TEXT("M") : TEXT("VN"));
 	}
 }

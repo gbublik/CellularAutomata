@@ -105,6 +105,10 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	LastHudStats.CurrentFPS = GAverageFPS;
 	LastHudStats.GenerationCount = GenerationCount;
 	LastHudStats.EstimatedGpuComputeUploadMB = LastGpuComputeUploadBytes / (1024.0 * 1024.0);
+	// Grid->Num() - готовый счётчик в чанках, не скан сетки (см. FDenseCellGrid),
+	// так что читать его каждый тик дёшево даже на миллионах клеток.
+	LastHudStats.AliveCellCount = Grid.IsValid() ? Grid->Num() : 0;
+	LastHudStats.SelectedCellCount = SelectedCells.Num();
 	UpdateGenerationsPerSecond();
 
 	// Разлитый по кадрам рендер (см. bEnableChunkedRender) продолжается
@@ -262,12 +266,21 @@ void AAutomataOrchestrator::NewSeed()
 
 void AAutomataOrchestrator::ApplyRuleString()
 {
-	RuleStringParser::FParsedRule Parsed;
+	// Целиком делегирует TryApplyRuleString() - единственный путь применения
+	// правила строкой (кнопка в Details panel, поле в HUD и пресеты приходят
+	// сюда же), чтобы семантика "что именно и в каком порядке присваивается"
+	// жила ровно в одном месте.
 	FString Error;
-	if (!RuleStringParser::ParseRuleString(RuleString, Parsed, Error))
+	TryApplyRuleString(RuleString, Error);
+}
+
+bool AAutomataOrchestrator::TryApplyRuleString(const FString& InRuleString, FString& OutError)
+{
+	RuleStringParser::FParsedRule Parsed;
+	if (!RuleStringParser::ParseRuleString(InRuleString, Parsed, OutError))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("ApplyRuleString: не удалось разобрать '%s' - %s"), *RuleString, *Error);
-		return;
+		UE_LOG(LogTemp, Warning, TEXT("TryApplyRuleString: не удалось разобрать '%s' - %s"), *InRuleString, *OutError);
+		return false;
 	}
 
 	// Присваиваем по имени поля, не позиционно - порядок полей в строке
@@ -278,9 +291,64 @@ void AAutomataOrchestrator::ApplyRuleString()
 	States = Parsed.States;
 	Neighborhood = Parsed.Neighborhood;
 
-	UE_LOG(LogTemp, Log, TEXT("ApplyRuleString: '%s' -> BirthCounts=%d знач., SurvivalCounts=%d знач., States=%d, Neighborhood=%s"),
-		*RuleString, BirthCounts.Num(), SurvivalCounts.Num(), States,
+	// Строку, пришедшую параметром (из HUD или из пресета), кладём в
+	// UPROPERTY - иначе Details panel показывал бы прежнее правило, хотя
+	// считается уже по новому. При вызове из ApplyRuleString() это
+	// самоприсваивание, безвредное.
+	RuleString = InRuleString;
+
+	OutError.Reset();
+
+	UE_LOG(LogTemp, Log, TEXT("TryApplyRuleString: '%s' -> BirthCounts=%d знач., SurvivalCounts=%d знач., States=%d, Neighborhood=%s"),
+		*InRuleString, BirthCounts.Num(), SurvivalCounts.Num(), States,
 		Neighborhood == ENeighborhood::Moore ? TEXT("Moore") : TEXT("VonNeumann"));
+
+	return true;
+}
+
+FString AAutomataOrchestrator::GetActiveRuleString() const
+{
+	return RuleStringParser::FormatRuleString(SurvivalCounts, BirthCounts, States, Neighborhood);
+}
+
+TArray<FRulePreset> AAutomataOrchestrator::GetRulePresets() const
+{
+	return RulePresets::GetAll();
+}
+
+void AAutomataOrchestrator::ApplyRulePreset(int32 PresetIndex, bool bApplySpawnSettings)
+{
+	const TArray<FRulePreset>& Presets = RulePresets::GetAll();
+	if (!Presets.IsValidIndex(PresetIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyRulePreset: индекс %d вне диапазона (пресетов: %d)"), PresetIndex, Presets.Num());
+		return;
+	}
+
+	const FRulePreset& Preset = Presets[PresetIndex];
+
+	FString Error;
+	if (!TryApplyRuleString(Preset.RuleString, Error))
+	{
+		// Строки в таблице пресетов константны, так что сюда можно попасть
+		// только если таблица разъехалась с парсером - это ошибка кода, а не
+		// пользовательский ввод, поэтому Error, а не Warning.
+		UE_LOG(LogTemp, Error, TEXT("ApplyRulePreset: пресет '%s' содержит неразбираемое правило '%s' - %s"),
+			*Preset.Name, *Preset.RuleString, *Error);
+		return;
+	}
+
+	if (bApplySpawnSettings)
+	{
+		SpawnRadius = Preset.SpawnRadius;
+		Amount = Preset.Amount;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ApplyRulePreset: '%s' (%s)%s"),
+		*Preset.Name, *Preset.RuleString,
+		bApplySpawnSettings
+			? *FString::Printf(TEXT(", SpawnRadius=%d, Amount=%d"), SpawnRadius, Amount)
+			: TEXT(""));
 }
 
 void AAutomataOrchestrator::SpawnRuleVerificationPattern()
@@ -359,10 +427,24 @@ void AAutomataOrchestrator::AdjustSpeed(float Delta)
 	UE_LOG(LogTemp, Log, TEXT("AdjustSpeed: Speed = %.2f"), Speed);
 }
 
+void AAutomataOrchestrator::SetSpeed(float NewSpeed)
+{
+	// Тот же кламп, что в AdjustSpeed() (см. комментарий там про то, почему
+	// верхняя граница шире UIMax свойства).
+	Speed = FMath::Clamp(NewSpeed, 0.1f, 100.0f);
+	UE_LOG(LogTemp, Log, TEXT("SetSpeed: Speed = %.2f"), Speed);
+}
+
 void AAutomataOrchestrator::AdjustStepsPerRender(int32 Delta)
 {
 	StepsPerRender = FMath::Max(StepsPerRender + Delta, 1);
 	UE_LOG(LogTemp, Log, TEXT("AdjustStepsPerRender: StepsPerRender = %d"), StepsPerRender);
+}
+
+void AAutomataOrchestrator::SetStepsPerRender(int32 NewStepsPerRender)
+{
+	StepsPerRender = FMath::Max(NewStepsPerRender, 1);
+	UE_LOG(LogTemp, Log, TEXT("SetStepsPerRender: StepsPerRender = %d"), StepsPerRender);
 }
 
 void AAutomataOrchestrator::InitializeHUD()

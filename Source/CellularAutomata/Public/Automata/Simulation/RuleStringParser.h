@@ -40,4 +40,17 @@ namespace RuleStringParser
 	 *  заполненный результат при false (см. AAutomataOrchestrator::
 	 *  ApplyRuleString() - "никогда не применять частично"). */
 	CELLULARAUTOMATA_API bool ParseRuleString(const FString& RuleString, FParsedRule& OutResult, FString& OutError);
+
+	/** Обратная операция к ParseRuleString(): собирает строку правила из
+	 *  текущих BirthCounts/SurvivalCounts/States/Neighborhood. Нужна HUD'у
+	 *  (AAutomataOrchestrator::GetActiveRuleString()), чтобы показывать
+	 *  ДЕЙСТВУЮЩЕЕ правило, а не поле RuleString - то могло быть не применено,
+	 *  пустое (правило собрали массивами в Details panel) или устареть после
+	 *  ручной правки массивов.
+	 *
+	 *  Списки счётчиков сортируются, дедуплицируются и сжимаются обратно в
+	 *  диапазоны ("1,2,3,7" -> "1-3,7"), так что для строки, полученной из
+	 *  ParseRuleString(), результат совпадает с исходной с точностью до
+	 *  нормализации порядка/формы диапазонов. */
+	CELLULARAUTOMATA_API FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood);
 }

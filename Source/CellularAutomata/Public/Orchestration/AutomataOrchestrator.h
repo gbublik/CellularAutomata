@@ -13,6 +13,7 @@
 #include "Automata/Persistence/AutomatonSaveHeader.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
+#include "Automata/Simulation/RulePresets.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
 
@@ -123,6 +124,20 @@ struct FHudStats
 	 *  без лишней нагрузки на многомиллионных сетках. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	double EstimatedGpuComputeUploadMB = 0.0;
+
+	/** Сколько клеток сейчас живо во всей сетке - Grid->Num(), О(1) (счётчик
+	 *  ведут сами чанки, полного скана нет). Отличается от
+	 *  FCellRenderStats::TotalCellCount тем, что обновляется каждый тик, а не
+	 *  только на рендере: после Delete/выделения число меняется сразу, ещё до
+	 *  следующего поколения. 0, если сетка не создана (в т.ч. после
+	 *  BakeCellsToMesh(), который её освобождает). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	int32 AliveCellCount = 0;
+
+	/** Сколько клеток сейчас в выделении (см. SelectedCells) - HUD'у, чтобы
+	 *  показывать, есть ли что извлекать/удалять, и сколько именно. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	int32 SelectedCellCount = 0;
 };
 
 UCLASS()
@@ -482,6 +497,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void AdjustSpeed(float Delta);
 
+	/** Абсолютная установка Speed с тем же клампом [0.1, 100.0], что и
+	 *  AdjustSpeed() - для слайдера в HUD, который задаёт значение целиком, а
+	 *  не дельтой. Через сеттер, а не прямой записью в BlueprintReadWrite
+	 *  UPROPERTY, именно ради кламп[а]: слайдер с чуть более широким
+	 *  диапазоном иначе смог бы выставить 0 и поделить на ноль в Tick()
+	 *  (там стоит защита через KINDA_SMALL_NUMBER, но полагаться на неё как
+	 *  на штатный путь не стоит). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetSpeed(float NewSpeed);
+
 	/** Множитель скорости полёта камеры при удержании Shift (см.
 	 *  AGamePlayerController::OnSpeedBoostStarted() - камера летает через
 	 *  ADefaultPawn/UFloatingPawnMovement, эта настройка живёт здесь, а не
@@ -786,6 +811,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void AdjustStepsPerRender(int32 Delta);
 
+	/** Абсолютная установка StepsPerRender с тем же клампом (>= 1), что и
+	 *  AdjustStepsPerRender() - для слайдера в HUD (см. SetSpeed() выше про
+	 *  то, зачем сеттер при BlueprintReadWrite-свойстве). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetStepsPerRender(int32 NewStepsPerRender);
+
 	/** Количество живых клеток при генерации */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",
 			  meta = (ClampMin = "1"))
@@ -859,8 +890,49 @@ public:
 	 *  ошибке разбора ничего не меняет и пишет warning с описанием проблемы -
 	 *  тот же принцип "никогда не делать тихо ничего/наполовину", что у
 	 *  проверок AgeMaterials/CellMesh в GenerateRandom(). */
-	UFUNCTION(CallInEditor, Category = "Automata|Rules")
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Rules")
 	void ApplyRuleString();
+
+	/** То же, что ApplyRuleString(), но для HUD: правило приходит параметром
+	 *  (из текстового поля виджета, а не из UPROPERTY RuleString), а текст
+	 *  ошибки возвращается наружу, чтобы виджет мог показать его пользователю -
+	 *  из Blueprint'а warning в логе никак не увидеть, а молча ничего не
+	 *  делать в ответ на нажатие кнопки хуже всего.
+	 *
+	 *  При успехе заодно записывает разобранную строку в RuleString, так что
+	 *  Details panel и HUD не расходятся в том, какое правило действует.
+	 *  При ошибке не меняет НИЧЕГО (в т.ч. RuleString) - тот же принцип
+	 *  "никогда не применять частично", что у ApplyRuleString(). */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Rules")
+	bool TryApplyRuleString(const FString& InRuleString, FString& OutError);
+
+	/** Действующее правило строкой - собирается из текущих BirthCounts/
+	 *  SurvivalCounts/States/Neighborhood (см. RuleStringParser::
+	 *  FormatRuleString()), а НЕ читается из UPROPERTY RuleString: то поле
+	 *  может быть пустым (правило собрали массивами в Details panel) или
+	 *  устаревшим (массивы поправили руками после ApplyRuleString()). HUD
+	 *  должен показывать то, по чему реально считается симуляция. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Rules")
+	FString GetActiveRuleString() const;
+
+	/** Таблица готовых правил для выпадашки в HUD (см. FRulePreset/
+	 *  RulePresets::GetAll()). Возвращает копию: 13 маленьких структур,
+	 *  вызывается на построение списка, не в горячем цикле. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Rules")
+	TArray<FRulePreset> GetRulePresets() const;
+
+	/** Применяет пресет по индексу в GetRulePresets(): правило - через тот же
+	 *  TryApplyRuleString(), что и ручной ввод (один путь применения правила,
+	 *  без второй, отдельно расходящейся ветки), и, если bApplySpawnSettings,
+	 *  ещё SpawnRadius/Amount из пресета.
+	 *
+	 *  Сетку НЕ перегенерирует специально: правило вступает в силу со
+	 *  следующего же шага и на текущем состоянии (иногда именно это и нужно -
+	 *  посмотреть, что новое правило сделает с уже выросшей структурой), а
+	 *  "начать с нуля по пресету" - это отдельное нажатие GenerateRandom()
+	 *  следом. Индекс вне диапазона - warning в лог, ничего не меняется. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Rules")
+	void ApplyRulePreset(int32 PresetIndex, bool bApplySpawnSettings = true);
 
 	/** Каким методом считается шаг симуляции - CPU (bucket-partitioned
 	 *  параллельный алгоритм) или GPU (RDG compute shader, см.
