@@ -166,6 +166,79 @@ struct FHudStats
 	 *  готовы (в т.ч. вне PIE). */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	float CameraSpeed = 0.0f;
+
+	// --- Режимы работы: зеркала живых переключателей, по одному на хоткей ---
+	// Все они зеркала, а не отдельное состояние: HUD показывает ровно то, что
+	// переключают хоткеи и Details panel. Держатся здесь, в FHudStats, а не в
+	// отдельной структуре, ровно потому, что виджету так нужен один Break-нод
+	// вместо двух, и потому же, что сюда уже переехали заданные Speed/
+	// StepsPerRender - "настройка" и "измерение" в этой сводке живут рядом
+	// осознанно (см. SimulationSpeed).
+
+	/** Идёт непрерывный прогон (P) - см. bSimulationRunning. Взаимоисключающ с
+	 *  bFastStepActive ниже. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bSimulationRunning = false;
+
+	/** Держат Shift+F - автошаг, см. bFastStepActive/StartFastStep(). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bFastStepActive = false;
+
+	/** Режим взаимодействия мышью (Tab): камера стоит, курсор виден, работают
+	 *  рамка выделения и клики по HUD. Читается с контроллера
+	 *  (AGamePlayerController::IsSelectionModeActive()), а не хранится тут -
+	 *  false, если контроллер ещё не готов. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bSelectionModeActive = false;
+
+	/** CPU или GPU - см. ComputeMethod. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	EComputeMethod ComputeMethod = EComputeMethod::Cpu;
+
+	/** Разлитый по кадрам рендер (Z) - см. bEnableChunkedRender. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bChunkedRenderEnabled = false;
+
+	/** Порядок появления клеток при разливе (X) - см. EChunkedRenderOrder. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	EChunkedRenderOrder ChunkedRenderOrder = EChunkedRenderOrder::Sequential;
+
+	/** Ждать дорисовки разлива перед следующим шагом (V) - см.
+	 *  bWaitForChunkedRenderToFinish. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bWaitForChunkedRenderToFinish = false;
+
+	/** Отсечение клеток по расстоянию (B) - см. bEnableCellCulling. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bCellCullingEnabled = false;
+
+	/** Отсечение кубом включено (C) - см. bEnableRenderCullVolume. Само по себе
+	 *  НЕ означает, что клетки сейчас режутся: см. bCullVolumeActive ниже. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bRenderCullVolumeEnabled = false;
+
+	/** Куб виден (Ctrl+C) - ARenderCullVolume::IsVolumeVisible(). false и в
+	 *  случае, когда ARenderCullVolume на уровне просто нет. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bRenderCullVolumeVisible = false;
+
+	/** Итог: клетки СЕЙЧАС реально режутся кубом - конъюнкция "актёр есть на
+	 *  уровне И включено (C) И видно (Ctrl+C)", т.е. ровно то, что отвечает
+	 *  GetActiveCullVolume(). Отдельное поле, а не "И" двух предыдущих в
+	 *  виджете: наличие актёра на уровне из них не выводится, а именно оно и
+	 *  делает разницу между "включено" и "работает". */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bCullVolumeActive = false;
+
+	/** Chunk-силуэт (H) - см. bEnableGhostShape. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bGhostShapeEnabled = false;
+
+	/** Силуэт сейчас ЗАМЕНЯЕТ поклеточный рендер, а не дополняет его - см.
+	 *  ShouldGhostShapeReplaceDetailedRender(). Именно этот режим и даёт
+	 *  выигрыш в скорости, поэтому его видно отдельно от bGhostShapeEnabled. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bGhostShapeReplacesDetailedRender = false;
 };
 
 UCLASS()

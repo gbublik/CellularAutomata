@@ -210,6 +210,28 @@ void AAutomataOrchestrator::UpdateHudStats()
 		}
 	}
 
+	// Режимы работы - зеркала живых переключателей (см. блок режимов в
+	// FHudStats). Все дёшевы: голые чтения полей, никаких сканов сетки.
+	LastHudStats.bSimulationRunning = bSimulationRunning;
+	LastHudStats.bFastStepActive = bFastStepActive;
+	LastHudStats.bSelectionModeActive = GamePC ? GamePC->IsSelectionModeActive() : false;
+	LastHudStats.ComputeMethod = ComputeMethod;
+	LastHudStats.bChunkedRenderEnabled = bEnableChunkedRender;
+	LastHudStats.ChunkedRenderOrder = ChunkedRenderOrder;
+	LastHudStats.bWaitForChunkedRenderToFinish = bWaitForChunkedRenderToFinish;
+	LastHudStats.bCellCullingEnabled = bEnableCellCulling;
+	LastHudStats.bRenderCullVolumeEnabled = bEnableRenderCullVolume;
+	LastHudStats.bGhostShapeEnabled = bEnableGhostShape;
+
+	// Куб: "включено" и "работает" - разные вещи (актёра может не быть на
+	// уровне, куб может быть спрятан), поэтому три отдельных поля, и итоговое
+	// берётся из того же GetActiveCullVolume(), что и весь рендер - HUD не
+	// повторяет условие своей копией, иначе они могли бы разойтись.
+	const ARenderCullVolume* AnyCullVolume = EnsureRenderCullVolume();
+	LastHudStats.bRenderCullVolumeVisible = AnyCullVolume && AnyCullVolume->IsVolumeVisible();
+	LastHudStats.bCullVolumeActive = GetActiveCullVolume() != nullptr;
+	LastHudStats.bGhostShapeReplacesDetailedRender = ShouldGhostShapeReplaceDetailedRender();
+
 	UpdateGenerationsPerSecond();
 }
 
