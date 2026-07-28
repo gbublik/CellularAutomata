@@ -37,10 +37,16 @@ __pycache__/
 *.target
 *.local
 
-# Test level ballooned by saved runtime instance data from GenerateRandom()
-# stress-testing (ISM components serialize their instances into the level
-# unless transient) - not meaningful design content, just noise per save.
-Content/levels/NewMap.umap
-
-# Changes on every editor save with no meaningful diff to track.
-Content/music/Music_controller.uasset
+# Content is deliberately NOT under version control. It is all binary .uasset/
+# .umap, so every editor save shows up as an opaque "Bin X -> Y bytes" change
+# that cannot be reviewed, merged, or reverted meaningfully - and much of the
+# churn isn't design work at all: the test level balloons because ISM
+# components serialize their runtime instances into the .umap on every save
+# after a GenerateRandom() stress run, and assets like Music_controller
+# rewrite themselves on save with no real diff. Those two were excluded
+# individually first; this replaces both with the whole folder.
+#
+# The cost, stated plainly: a fresh clone gives the C++ project without its
+# level, HUD widgets, blueprints, meshes or materials, i.e. it will not run
+# as-is. Content lives only on disk here - back it up separately.
+Content/
