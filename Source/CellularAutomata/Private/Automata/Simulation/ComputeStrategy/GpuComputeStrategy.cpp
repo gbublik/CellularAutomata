@@ -75,6 +75,11 @@ void FGpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 	StepBatch(CurrentGrid, NextGrid, Rule, 1);
 }
 
+bool FGpuComputeStrategy::SupportsStepBatching(const FCellularAutomatonRule& Rule) const
+{
+	return !Rule.HasDecayStates();
+}
+
 int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& NextGrid, const FCellularAutomatonRule& Rule, int32 NumSteps) const
 {
 	const int32 RequestedSteps = FMath::Max(1, NumSteps);

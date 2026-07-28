@@ -35,6 +35,15 @@ public:
 	 *     (против бита у плоскости живых), см. её doc-comment. */
 	virtual int32 StepBatch(const FCellGrid& CurrentGrid, FCellGrid& NextGrid, const FCellularAutomatonRule& Rule, int32 NumSteps) const override;
 
+	/** См. базовый класс. Пачки поддерживаются для любого правила, кроме
+	 *  Generations. Остальные ограничения (объём AABB против лимитов) здесь
+	 *  сознательно НЕ проверяются: они зависят от текущего состояния сетки,
+	 *  меняются от поколения к поколению, и StepBatch() умеет на них
+	 *  реагировать сам, урезая пачку. Отвечать "не поддерживаю" из-за
+	 *  разово раздувшегося объёма значило бы навсегда выключить пачку для
+	 *  всего прогона. */
+	virtual bool SupportsStepBatching(const FCellularAutomatonRule& Rule) const override;
+
 	/** См. doc-comment на базовом классе - размер входного битового буфера,
 	 *  посчитанный последним Step() (0, если последний Step() откатился на
 	 *  CPU из-за OOM-guard - см. его тело). */

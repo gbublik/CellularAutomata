@@ -129,10 +129,20 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// как раз завершить, так что проверка сразу актуальна для этого кадра.
 	const bool bBlockedByChunkedRender = bWaitForChunkedRenderToFinish && bChunkedRenderInProgress;
 
+	// Интервал между фоновыми заходами: не 1/Speed, а (поколений за заход)/Speed -
+	// иначе, когда заход считает пачку из StepsPerRender поколений (см.
+	// BatchGenerations в StepAsync()), реальная частота поколений выросла бы в
+	// StepsPerRender раз, и Speed начал бы означать "заходов в секунду" вместо
+	// "поколений в секунду". LastDispatchGenerations - то, что последний
+	// StepAsync() решил считать за заход (1, пока пачки не включились), так что
+	// первый заход прогона паcуется как раньше, а дальше интервал сходится к
+	// фактическому размеру пачки.
+	const float GenerationsPerDispatch = float(FMath::Max(1, LastDispatchGenerations));
+
 	if (bFastStepActive)
 	{
 		TimeSinceLastStep += DeltaTime;
-		const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
+		const float StepInterval = GenerationsPerDispatch / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
 		if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bBlockedByChunkedRender)
 		{
@@ -153,7 +163,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// независимо от FPS, и чтобы правки Speed в Details panel подхватывались
 	// немедленно (интервал пересчитывается каждый раз, а не кэшируется).
 	TimeSinceLastStep += DeltaTime;
-	const float StepInterval = 1.0f / FMath::Max(Speed, KINDA_SMALL_NUMBER);
+	const float StepInterval = GenerationsPerDispatch / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
 	// Шаг считается асинхронно (см. StepAsync()) - пока предыдущий фоновый
 	// счёт не завершился (bStepInProgress), новый не запускаем (гонка на
@@ -2138,6 +2148,31 @@ void AAutomataOrchestrator::StepAsync()
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 	TUniquePtr<FCellGrid> NextGridBuffer = CreateGrid();
 
+	// Сколько поколений посчитать за ОДИН фоновый заход. Больше одного - только
+	// если стратегия действительно умеет пачки для этого правила (см.
+	// FCellularAutomatonComputeStrategy::SupportsStepBatching()): тогда
+	// StepsPerRender поколений считаются за один круг через GPU и рендерится
+	// итог, вместо StepsPerRender отдельных заходов, из которых рисуется
+	// последний. Если не умеет (CPU-стратегия, либо GPU в режиме Generations) -
+	// остаётся ровно прежний ритм "одно поколение за заход", вместе со всей
+	// логикой пропуска рендеров по StepsSinceLastRender: собирать поколения в
+	// пачку там незачем, работа та же, но одним длинным блоком.
+	const int32 BatchGenerations = ComputeStrategy->SupportsStepBatching(AutomatonRule)
+		? FMath::Max(1, StepsPerRender)
+		: 1;
+
+	// Промежуточные буферы поколений (нужны только при BatchGenerations > 1)
+	// создаются уже в фоне, поэтому CellSize/ChunkSize - живые UPROPERTY,
+	// которые фоновому потоку трогать нельзя - снимаем здесь. Тот же приём,
+	// что в Next().
+	const float CellSizeSnapshot = CellSize;
+	const int32 ChunkSizeSnapshot = ChunkSize;
+
+	// Темп в Tick() считается по этому числу: интервал между заходами -
+	// BatchGenerations/Speed, чтобы Speed по-прежнему означал "поколений в
+	// секунду", а не "заходов в секунду" (см. LastDispatchGenerations).
+	LastDispatchGenerations = BatchGenerations;
+
 	bStepInProgress = true;
 
 	FCellGrid* CurrentGridPtr = Grid.Get();
@@ -2148,12 +2183,43 @@ void AAutomataOrchestrator::StepAsync()
 	// шага перед тем, как актор (а с ним и Grid) начнёт разрушаться.
 	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
 		[AutomatonRule = MoveTemp(AutomatonRule), ComputeStrategy = MoveTemp(ComputeStrategy),
-		 NextGridBuffer = MoveTemp(NextGridBuffer), CurrentGridPtr, WeakThis]() mutable
+		 NextGridBuffer = MoveTemp(NextGridBuffer), CurrentGridPtr, WeakThis,
+		 BatchGenerations, CellSizeSnapshot, ChunkSizeSnapshot]() mutable
 		{
 			const double StepStartSeconds = FPlatformTime::Seconds();
-			ComputeStrategy->Step(*CurrentGridPtr, *NextGridBuffer, AutomatonRule);
-			CellAging::ComputeAges(CurrentGridPtr, *NextGridBuffer);
-			CellDecay::AdvanceDecayStates(CurrentGridPtr, *NextGridBuffer, AutomatonRule.GetStates());
+
+			// При BatchGenerations == 1 (CPU-стратегия / Generations) цикл
+			// выполняется ровно один раз и ничего лишнего не аллоцирует -
+			// путь остаётся прежним. Тот же порядок вызовов и то же условие
+			// пропуска ComputeAges(), что в Next(): продвинувшая больше одного
+			// поколения стратегия обязана была заполнить возрасты сама.
+			TUniquePtr<FCellGrid> PreviousGrid;
+			const FCellGrid* SourceGrid = CurrentGridPtr;
+			int32 GenerationsAdvanced = 0;
+			while (true)
+			{
+				const int32 StepsAdvanced = ComputeStrategy->StepBatch(*SourceGrid, *NextGridBuffer, AutomatonRule, BatchGenerations - GenerationsAdvanced);
+
+				if (StepsAdvanced <= 1)
+				{
+					CellAging::ComputeAges(SourceGrid, *NextGridBuffer);
+				}
+				CellDecay::AdvanceDecayStates(SourceGrid, *NextGridBuffer, AutomatonRule.GetStates());
+
+				GenerationsAdvanced += FMath::Max(1, StepsAdvanced);
+				if (GenerationsAdvanced >= BatchGenerations)
+				{
+					break;
+				}
+
+				// Только что посчитанное поколение становится источником для
+				// следующего - и должно оставаться живым, пока в него читают,
+				// поэтому владение переезжает в PreviousGrid, а не теряется.
+				PreviousGrid = MoveTemp(NextGridBuffer);
+				SourceGrid = PreviousGrid.Get();
+				NextGridBuffer = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
+			}
+
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
 			// Снимаем ещё здесь, пока ComputeStrategy жива (уничтожится вместе
@@ -2163,11 +2229,11 @@ void AAutomataOrchestrator::StepAsync()
 			// Grid/рендер трогаем только на game thread - AsyncTask сюда и
 			// маршрутизирует. WeakThis - на случай, если актор уничтожили
 			// (например, level unload) пока фоновый Step() ещё считался.
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, NextGridBuffer = MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes]() mutable
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, NextGridBuffer = MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes, GenerationsAdvanced]() mutable
 			{
 				if (AAutomataOrchestrator* StrongThis = WeakThis.Get())
 				{
-					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes);
+					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes, GenerationsAdvanced);
 				}
 			});
 		});
@@ -2420,8 +2486,14 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 	}
 }
 
-void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes)
+void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, int32 GenerationsAdvanced)
 {
+	// Один фоновый заход мог посчитать сразу несколько поколений (см.
+	// BatchGenerations в StepAsync()) - все счётчики ниже считают ПОКОЛЕНИЯ,
+	// а не заходы, поэтому идут шагом GenerationsAdvanced. При обычном
+	// одиночном шаге это 1, и поведение прежнее.
+	const int32 Generations = FMath::Max(1, GenerationsAdvanced);
+
 	Grid = MoveTemp(NewGrid);
 	LastGpuComputeUploadBytes = ComputeUploadBytes;
 	// Новое поколение делает старое выделение бессмысленным - сбрасываем
@@ -2446,16 +2518,16 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 		return;
 	}
 
-	// Одно реально посчитанное поколение - считаем для HUD независимо от
-	// того, пропустит ли StepsSinceLastRender ниже фактический рендер этого
-	// поколения (см. GenerationCount/FHudStats).
-	++GenerationCount;
+	// Реально посчитанные поколения - считаем для HUD независимо от того,
+	// пропустит ли StepsSinceLastRender ниже фактический рендер (см.
+	// GenerationCount/FHudStats).
+	GenerationCount += Generations;
 
 	// Ghost Shape пересчитывается по своему отдельному интервалу поколений,
 	// независимо от StepsPerRender - см. план "Ghost Shape".
 	if (bEnableGhostShape)
 	{
-		++GhostShapeGenerationsSinceRefresh;
+		GhostShapeGenerationsSinceRefresh += Generations;
 		if (GhostShapeGenerationsSinceRefresh >= FMath::Max(1, GhostShapeRefreshInterval))
 		{
 			GhostShapeGenerationsSinceRefresh = 0;
@@ -2463,7 +2535,11 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 		}
 	}
 
-	++StepsSinceLastRender;
+	// Шагом в Generations, а не на единицу: когда заход посчитал целую пачку
+	// из StepsPerRender поколений, порог достигается тем же самым условием,
+	// и рендерится каждый такой заход - отдельной ветки "пачка рендерит
+	// всегда" не нужно.
+	StepsSinceLastRender += Generations;
 	if (StepsSinceLastRender < StepsPerRender)
 	{
 		UE_LOG(LogTemp, Log, TEXT("StepAsync: живых клеток %d после шага (шаг: %.2f мс [фоновый поток]) - рендер пропущен (%d/%d)"),
@@ -2488,7 +2564,7 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	}
 	else
 	{
-		UE_LOG(LogTemp, Log, TEXT("StepAsync: шаг занял %.2f мс [фоновый поток]"), StepSeconds * 1000.0);
+		UE_LOG(LogTemp, Log, TEXT("StepAsync: %d поколени(й) за заход, %.2f мс [фоновый поток]"), Generations, StepSeconds * 1000.0);
 	}
 	RenderCurrentGrid();
 }

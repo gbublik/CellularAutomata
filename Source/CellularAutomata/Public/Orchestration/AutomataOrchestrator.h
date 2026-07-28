@@ -1381,6 +1381,16 @@ private:
 	 *  (свежий прогон считает с нуля). См. StepsPerRender. */
 	int32 StepsSinceLastRender = 0;
 
+	/** Сколько поколений последний StepAsync() решил посчитать за один фоновый
+	 *  заход (см. BatchGenerations в его теле): 1 - обычный ритм "поколение за
+	 *  заход", больше - пачка целиком внутри одного круга через GPU. Читается
+	 *  только Tick()'ом, чтобы держать интервал между заходами равным
+	 *  (поколений за заход)/Speed - иначе пачка молча умножила бы фактическую
+	 *  частоту поколений на StepsPerRender. Обычный член, не UPROPERTY: чистое
+	 *  рантайм-состояние темпа, переживать Live Coding ему незачем (сбросится
+	 *  в 1 и сойдётся обратно на первом же заходе). */
+	int32 LastDispatchGenerations = 1;
+
 	/** Асинхронная версия шага симуляции для непрерывного Play (используется
 	 *  только из Tick()) - тяжёлый FCellularAutomatonRule::Step() считается в
 	 *  фоновом потоке (EAsyncExecution::ThreadPool), чтобы не блокировать
@@ -1399,7 +1409,7 @@ private:
 	 *  ещё в фоновом потоке (см. FCellularAutomatonComputeStrategy::
 	 *  GetLastComputeUploadBytes()), до того как сама стратегия будет
 	 *  уничтожена по завершении фоновой лямбды. */
-	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes);
+	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, int32 GenerationsAdvanced);
 
 	/** Future от Async() в StepAsync() - StepAsync() передаёт фоновому потоку
 	 *  сырой Grid.Get() (см. StepAsync()), поэтому EndPlay() обязан дождаться
