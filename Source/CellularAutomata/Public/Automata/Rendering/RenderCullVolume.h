@@ -74,14 +74,15 @@ public:
 	bool IsGizmoVisible() const { return bGizmoVisible; }
 
 	/** Показать/спрятать сам куб (проволочные границы BoundsBox плюс залитый
-	 *  VolumeMesh, если ему назначен материал). Отсечение при этом НЕ
-	 *  выключается - куб продолжает резать клетки, просто его собственная
-	 *  визуализация не мешает смотреть на результат. Именно поэтому это
-	 *  отдельная от bEnableRenderCullVolume вещь и отдельный хоткей (Ctrl+C
-	 *  против C): "не хочу видеть коробку" и "не хочу отсечения" - разные
-	 *  желания, и раньше их приходилось путать. Ручки манипулятора этот метод
-	 *  не трогает - их видимость складывает контроллер из режима мыши (Tab) и
-	 *  этого флага, см. AGamePlayerController::OnToggleRenderCullVolumeVisibility(). */
+	 *  VolumeMesh, если ему назначен материал) - и вместе с ним отсечение:
+	 *  спрятанный куб НЕ режет клетки, см. AAutomataOrchestrator::
+	 *  GetActiveCullVolume() за тем, почему инвариант именно такой и почему он
+	 *  не перезаписывает bEnableRenderCullVolume. Поэтому же метод сам просит
+	 *  оркестратор перерисоваться.
+	 *
+	 *  Ручки манипулятора этот метод не трогает - их видимость складывает
+	 *  контроллер из режима мыши (Tab) и этого флага, см.
+	 *  AGamePlayerController::OnToggleRenderCullVolumeVisibility(). */
 	void SetVolumeVisible(bool bVisible);
 
 	bool IsVolumeVisible() const { return bVolumeVisible; }

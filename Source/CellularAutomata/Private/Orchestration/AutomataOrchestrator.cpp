@@ -786,7 +786,7 @@ void AAutomataOrchestrator::SelectCellsInScreenRect(const FMatrix& ViewProjectio
 	// от рендера (BuildAgeBuckets() ограничивает по тем же границам) -
 	// выделение обязано ловить ровно то же подмножество, иначе марки видят
 	// клетки, которых физически нет на экране.
-	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	ARenderCullVolume* CullVolume = GetActiveCullVolume();
 	TArray<FIntVector> RectCells;
 	if (CullVolume)
 	{
@@ -834,7 +834,7 @@ void AAutomataOrchestrator::SelectCellUnderCursor(const FVector& RayOrigin, cons
 	// реально нарисовано, а не всю сетку насквозь. FFilteredCellGridView::
 	// IsAlive() (единственное, что использует DDA-обход PickCellAlongRay())
 	// согласован с отфильтрованным набором - см. её doc-comment.
-	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	ARenderCullVolume* CullVolume = GetActiveCullVolume();
 	TUniquePtr<FFilteredCellGridView> VisibleView;
 	const FCellGrid* PickGrid = Grid.Get();
 	if (CullVolume)
@@ -1123,16 +1123,16 @@ void AAutomataOrchestrator::RefreshGhostShape()
 		return;
 	}
 
-	// Куб отсечения активен (bEnableRenderCullVolume и актёр есть на уровне) -
-	// оставляем только чанки СНАРУЖИ куба, внутри уже рисует обычный
-	// детальный путь (BuildAgeBuckets()), силуэт здесь чистое дополнение.
-	// Иначе (куб выключен хоткеем C, либо его вообще нет на уровне) -
+	// Куб отсечения активен (см. GetActiveCullVolume()) - оставляем только
+	// чанки СНАРУЖИ куба, внутри уже рисует обычный детальный путь
+	// (BuildAgeBuckets()), силуэт здесь чистое дополнение.
+	// Иначе (куб выключен хоткеем C, спрятан Ctrl+C, либо его вообще нет) -
 	// границы отсечения нет, "снаружи" значит "везде": силуэт покрывает всю
 	// сетку целиком и заменяет детальный рендер (см.
 	// ShouldGhostShapeReplaceDetailedRender(), RenderGridImmediate()/
 	// RenderCurrentGrid()) - именно этот режим и даёт выигрыш в скорости
 	// при большом числе клеток без активного куба.
-	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	ARenderCullVolume* CullVolume = GetActiveCullVolume();
 	TArray<FIntVector> ChunksToGhost;
 	if (CullVolume)
 	{
@@ -1195,8 +1195,8 @@ bool AAutomataOrchestrator::ShouldGhostShapeReplaceDetailedRender()
 		return false;
 	}
 
-	// Нет активной границы отсечения (сам куб выключен bEnableRenderCullVolume,
-	// либо на уровне вообще нет ARenderCullVolume) - RefreshGhostShape() в
+	// Нет активной границы отсечения (куб выключен, спрятан, либо на уровне
+	// его вообще нет - см. GetActiveCullVolume()) - RefreshGhostShape() в
 	// этом случае строит силуэт по ВСЕМ занятым чанкам (см. её doc-comment),
 	// т.е. он уже покрывает всю сетку целиком, и детальный поклеточный
 	// рендер (BuildAgeBuckets()+AddInstances по каждой живой клетке) здесь
@@ -1205,7 +1205,7 @@ bool AAutomataOrchestrator::ShouldGhostShapeReplaceDetailedRender()
 	// дешёвый (Grid->GetAliveCellsInBounds() ограничивает его объёмом куба) -
 	// там силуэт остаётся чистым дополнением снаружи, детальный путь не
 	// трогаем.
-	return !bEnableRenderCullVolume || !EnsureRenderCullVolume();
+	return GetActiveCullVolume() == nullptr;
 }
 
 void AAutomataOrchestrator::BakeCellsToMesh()
@@ -2304,11 +2304,10 @@ TArray<TArray<FIntVector>> AAutomataOrchestrator::BuildAgeBuckets()
 	// AgeMaterials).
 	TArray<FIntVector> AliveCells;
 
-	// Если включено и в уровне есть ARenderCullVolume - отсекаем клетки вне
-	// его границ ДО бакетирования/построения трансформов (см. doc-comment
-	// bEnableRenderCullVolume) - иначе (выключено или актёра нет) рендерим
-	// всё как раньше.
-	ARenderCullVolume* CullVolume = bEnableRenderCullVolume ? EnsureRenderCullVolume() : nullptr;
+	// Если отсечение активно (см. GetActiveCullVolume()) - отсекаем клетки вне
+	// границ куба ДО бакетирования/построения трансформов, иначе рендерим всё
+	// как раньше.
+	ARenderCullVolume* CullVolume = GetActiveCullVolume();
 	if (CullVolume)
 	{
 		Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), AliveCells);
@@ -2387,6 +2386,18 @@ ARenderCullVolume* AAutomataOrchestrator::EnsureRenderCullVolume()
 		CachedRenderCullVolume = Cast<ARenderCullVolume>(UGameplayStatics::GetActorOfClass(GetWorld(), ARenderCullVolume::StaticClass()));
 	}
 	return CachedRenderCullVolume;
+}
+
+ARenderCullVolume* AAutomataOrchestrator::GetActiveCullVolume()
+{
+	if (!bEnableRenderCullVolume)
+	{
+		return nullptr;
+	}
+
+	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
+	// Спрятанный куб не режет - см. doc-comment в заголовке.
+	return (CullVolume && CullVolume->IsVolumeVisible()) ? CullVolume : nullptr;
 }
 
 void AAutomataOrchestrator::RenderGridImmediate()

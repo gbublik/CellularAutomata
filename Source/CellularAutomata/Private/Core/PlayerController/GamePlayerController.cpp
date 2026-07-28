@@ -452,7 +452,11 @@ void AGamePlayerController::OnToggleRenderCullVolumeVisibility()
 	// именно меняешь.
 	CullVolume->SetGizmoVisible(bNewVisible && bSelectionModeActive);
 
-	UE_LOG(LogTemp, Log, TEXT("Куб отсечения: %s (отсечение при этом не менялось)"), bNewVisible ? TEXT("показан") : TEXT("скрыт"));
+	// Спрятанный куб не режет (см. AAutomataOrchestrator::GetActiveCullVolume()),
+	// так что Ctrl+C заодно приостанавливает/возвращает отсечение - но
+	// bEnableRenderCullVolume при этом не перезаписывается, поэтому показ
+	// возвращает ровно то состояние, в котором его оставил C.
+	UE_LOG(LogTemp, Log, TEXT("Куб отсечения: %s (пока скрыт, клетки не отсекаются)"), bNewVisible ? TEXT("показан") : TEXT("скрыт"));
 }
 
 void AGamePlayerController::OnToggleGhostShape()

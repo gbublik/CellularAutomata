@@ -60,6 +60,13 @@ void ARenderCullVolume::SetVolumeVisible(bool bVisible)
 	bVolumeVisible = bVisible;
 
 	ApplyVolumeVisuals();
+
+	// Видимость теперь влияет и на само отсечение (спрятанный куб не режет -
+	// см. AAutomataOrchestrator::GetActiveCullVolume()), так что переключение
+	// обязано перерисовать кадр: иначе отрезанные клетки вернулись бы на экран
+	// только со следующим поколением, а на паузе - вообще никогда. Та же
+	// причина, по которой перерисовку зовёт EndGizmoDrag().
+	NotifyOrchestratorToRefresh();
 }
 
 void ARenderCullVolume::ApplyVolumeVisuals()
