@@ -1520,15 +1520,21 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	const double EstimatedMB = double(EstimatedBytes) / (1024.0 * 1024.0);
 	const double CountSeconds = FPlatformTime::Seconds() - CountStartSeconds;
 
-	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: клеток %d -> наружных граней %lld, оценка геометрии ~%.0f МБ (подсчёт: %.0f мс, бюджет %d МБ)"),
-		CellsToBake.Num(), ExposedFaceCount, EstimatedMB, CountSeconds * 1000.0, BakeMemoryBudgetMB);
+	// Свободная физическая память - чтобы бюджет можно было ставить осознанно,
+	// а не наугад: оценка сама по себе не говорит, много это или мало на
+	// конкретной машине.
+	const double AvailableMB = double(FPlatformMemory::GetStats().AvailablePhysical) / (1024.0 * 1024.0);
+
+	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: клеток %d -> наружных граней %lld, оценка пика ~%.0f МБ (подсчёт: %.0f мс, бюджет %d МБ, свободно %.0f МБ)"),
+		CellsToBake.Num(), ExposedFaceCount, EstimatedMB, CountSeconds * 1000.0, BakeMemoryBudgetMB, AvailableMB);
 
 	if (EstimatedMB > double(BakeMemoryBudgetMB))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: отказ - геометрия потребует ~%.0f МБ при бюджете %d МБ (BakeMemoryBudgetMB)"), EstimatedMB, BakeMemoryBudgetMB);
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: отказ - потребуется ~%.0f МБ при бюджете %d МБ (BakeMemoryBudgetMB), свободно %.0f МБ"),
+			EstimatedMB, BakeMemoryBudgetMB, AvailableMB);
 		ShowStatusMessage(StatusKey_Bake, FString::Printf(
-			TEXT("[M] Бейк отменён: нужно ~%.0f МБ при бюджете %d МБ.  Выделите кусок (Tab, рамка) или поднимите BakeMemoryBudgetMB"),
-			EstimatedMB, BakeMemoryBudgetMB));
+			TEXT("[M] Бейк отменён: нужно ~%.0f МБ при бюджете %d МБ (свободно %.0f МБ).  Выделите кусок (Tab, рамка) или поднимите BakeMemoryBudgetMB"),
+			EstimatedMB, BakeMemoryBudgetMB, AvailableMB));
 		return;
 	}
 

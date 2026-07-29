@@ -30,11 +30,26 @@ namespace
 
 int64 CellMeshBuilder::EstimateMeshBytes(int64 ExposedFaceCount)
 {
-	// 4 вершины на грань, у каждой позиция, нормаль и UV; плюс 6 индексов.
-	// Под LWC FVector это 24 байта, так что одна вершина - 64 байта, а грань
-	// целиком около 280.
-	const int64 BytesPerVertex = sizeof(FVector) + sizeof(FVector) + sizeof(FVector2D);
-	return ExposedFaceCount * (4 * BytesPerVertex + 6 * (int64)sizeof(int32));
+	// 4 вершины на грань, 6 индексов. Считаем ОБЕ копии, которые существуют
+	// одновременно на пике:
+	//
+	// 1) FCellMeshData - то, что строит эта функция: позиция, нормаль и UV,
+	//    под LWC это 24+24+16 = 64 байта на вершину;
+	// 2) FProcMeshSection внутри UProceduralMeshComponent - туда
+	//    CreateMeshSection_LinearColor() всё КОПИРУЕТ, а её FProcMeshVertex
+	//    заметно толще: позиция 24, нормаль 24, тангент 32, цвет 4 и ЧЕТЫРЕ
+	//    канала UV по 16 - около 152 байт, причём тангенты, цвет и три UV из
+	//    четырёх мы не используем вовсе, структура просто фиксированная.
+	//
+	// Учитывать только первую было ошибкой: она занижала пик в 3.4 раза, и
+	// бюджет означал совсем не то число, которое в нём написано. Буферы на
+	// стороне GPU сверх этого не учитываются - они появляются позже и живут
+	// уже без наших массивов.
+	const int64 BuildBytesPerVertex = sizeof(FVector) + sizeof(FVector) + sizeof(FVector2D);
+	const int64 SectionBytesPerVertex = 152;
+	const int64 BytesPerVertex = BuildBytesPerVertex + SectionBytesPerVertex;
+	// Индексы тоже в двух копиях - наш TArray<int32> и буфер секции.
+	return ExposedFaceCount * (4 * BytesPerVertex + 2 * 6 * (int64)sizeof(int32));
 }
 
 int64 CellMeshBuilder::CountExposedFaces(const FCellGrid& Grid, const TArray<FIntVector>& Cells, bool bUseGridMembership)
