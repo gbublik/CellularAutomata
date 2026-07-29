@@ -593,6 +593,14 @@ bool AAutomataOrchestrator::GetCameraView(FVector& OutLocation, FVector& OutForw
 	return true;
 }
 
+void AAutomataOrchestrator::ShowStatusMessage(int32 Key, const FString& Message) const
+{
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(Key, 3.0f, FColor::Cyan, Message);
+	}
+}
+
 bool AAutomataOrchestrator::ShouldRefreshViewSlice() const
 {
 	if (!bEnableViewSlice)
@@ -629,6 +637,9 @@ void AAutomataOrchestrator::SetViewSliceEnabled(bool bEnabled)
 {
 	bEnableViewSlice = bEnabled;
 	UE_LOG(LogTemp, Log, TEXT("SetViewSliceEnabled: срез вдоль взгляда %s"), bEnableViewSlice ? TEXT("включён") : TEXT("выключен"));
+	ShowStatusMessage(StatusKey_ViewSlice, bEnableViewSlice
+		? FString::Printf(TEXT("[J] Срез вдоль взгляда ВКЛ  -  середина %.0f, толщина %.0f  ([ ] двигать, Shift+[ ] толщина)"), ViewSliceDistance, ViewSliceThickness)
+		: FString(TEXT("[J] Срез вдоль взгляда ВЫКЛ")));
 
 	// Тик нужен самому срезу, а не только симуляции: он следит за камерой
 	// (см. ShouldRefreshViewSlice() в Tick()), а разглядывают структуру как
@@ -650,6 +661,12 @@ void AAutomataOrchestrator::AdjustViewSliceDistance(float Delta)
 {
 	ViewSliceDistance = FMath::Max(ViewSliceDistance + Delta, 0.0f);
 	UE_LOG(LogTemp, Log, TEXT("AdjustViewSliceDistance: середина среза на %.0f от камеры"), ViewSliceDistance);
+	// Сообщение показывается и когда срез выключен: иначе нажатие [ / ] при
+	// выключенном срезе выглядело бы как "клавиша не работает", хотя значение
+	// исправно меняется и подействует при включении.
+	ShowStatusMessage(StatusKey_ViewSlice, FString::Printf(TEXT("[%s] Срез: середина %.0f, толщина %.0f%s"),
+		Delta < 0.0f ? TEXT("[") : TEXT("]"), ViewSliceDistance, ViewSliceThickness,
+		bEnableViewSlice ? TEXT("") : TEXT("   (срез ВЫКЛЮЧЕН - включить J)")));
 	RefreshRenderCullVolume();
 }
 
@@ -657,6 +674,10 @@ void AAutomataOrchestrator::AdjustViewSliceThickness(float Delta)
 {
 	ViewSliceThickness = FMath::Max(ViewSliceThickness + Delta, 1.0f);
 	UE_LOG(LogTemp, Log, TEXT("AdjustViewSliceThickness: толщина среза %.0f"), ViewSliceThickness);
+	// См. одноимённый комментарий в AdjustViewSliceDistance().
+	ShowStatusMessage(StatusKey_ViewSlice, FString::Printf(TEXT("[Shift+%s] Срез: середина %.0f, толщина %.0f%s"),
+		Delta < 0.0f ? TEXT("[") : TEXT("]"), ViewSliceDistance, ViewSliceThickness,
+		bEnableViewSlice ? TEXT("") : TEXT("   (срез ВЫКЛЮЧЕН - включить J)")));
 	RefreshRenderCullVolume();
 }
 
