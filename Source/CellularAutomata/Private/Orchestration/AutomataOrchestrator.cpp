@@ -3036,15 +3036,20 @@ void AAutomataOrchestrator::RefreshRenderCullVolume()
 
 void AAutomataOrchestrator::MoveCullVolumeToSelection()
 {
+	// Все отказы ниже сообщаются и на экран, а не только в лог: без этого
+	// нажатие K с пустым выделением выглядит как сломанная клавиша - ровно
+	// та же жалоба, что была про срез вдоль взгляда.
 	if (SelectedCells.Num() == 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeToSelection: выделение пусто - сначала выделите клетку (Tab, затем ЛКМ)"));
+		ShowStatusMessage(StatusKey_CullVolume, TEXT("[K] Выделение пусто - сначала Tab, затем ЛКМ по клетке"));
 		return;
 	}
 
 	if (!Grid)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeToSelection: сетка не инициализирована"));
+		ShowStatusMessage(StatusKey_CullVolume, TEXT("[K] Сетка не инициализирована"));
 		return;
 	}
 
@@ -3052,6 +3057,7 @@ void AAutomataOrchestrator::MoveCullVolumeToSelection()
 	if (!CullVolume)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeToSelection: на уровне нет ARenderCullVolume - разместите его сначала"));
+		ShowStatusMessage(StatusKey_CullVolume, TEXT("[K] На уровне нет ARenderCullVolume - разместите его"));
 		return;
 	}
 
@@ -3064,6 +3070,14 @@ void AAutomataOrchestrator::MoveCullVolumeToSelection()
 
 	UE_LOG(LogTemp, Log, TEXT("MoveCullVolumeToSelection: куб отсечения перемещён к клетке %s (мир: %s)"),
 		*TargetCell.ToString(), *TargetLocation.ToString());
+	// Отдельно сообщаем, если куб сейчас не режет: он честно переехал, но на
+	// экране ничего не изменится, и это выглядело бы как несработавшая
+	// клавиша. Условие берём из GetActiveCullVolume() - там же, где его
+	// проверяет рендер, чтобы сообщение не разошлось с поведением.
+	const bool bCullingActive = GetActiveCullVolume() != nullptr;
+	ShowStatusMessage(StatusKey_CullVolume, FString::Printf(TEXT("[K] Куб отсечения по центру клетки %s%s"),
+		*TargetCell.ToString(),
+		bCullingActive ? TEXT("") : TEXT("   (отсечение НЕ активно - C включить, Ctrl+C показать куб)")));
 
 	// SetActorLocation() программно не триггерит ARenderCullVolume::
 	// PostEditMove() (WITH_EDITOR-only, реагирует только на ручное

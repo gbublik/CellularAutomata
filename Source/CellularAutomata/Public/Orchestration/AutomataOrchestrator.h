@@ -1634,6 +1634,7 @@ private:
 	enum EStatusMessageKey : int32
 	{
 		StatusKey_ViewSlice = 1001,
+		StatusKey_CullVolume = 1002,
 	};
 
 	/** Сдвинулась ли камера настолько, что срез пора перестроить. Всегда
