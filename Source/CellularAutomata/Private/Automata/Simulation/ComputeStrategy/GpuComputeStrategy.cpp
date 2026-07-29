@@ -192,6 +192,28 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	// битовая плоскость "угасает" на вход и CPU-проход после.
 	const bool bTrackDecayStates = bDecayActive && EffectiveSteps > 1;
 
+	// ПОТОЛОК ВСЕГО GPU-ПУТИ - MAX_int32 клеток объёма, и он жёсткий: индексы
+	// в упаковке, в распаковке и в шейдере - 32-битные, так что объём больше
+	// 2 147 483 647 переполнил бы их молча. Раньше здесь стояло голое
+	// приведение (int32)VolumeCells, и гвард выше пропускал всё, что меньше
+	// GpuVolumeCellLimit - то есть при лимите в миллиарды объём между 2.1 млрд
+	// и лимитом проходил проверку, а размер буфера считался по обрезанному
+	// числу. Это не падение и не откат, это запись за границы буфера.
+	//
+	// Здесь честный отказ вместо этого: объём сверх потолка уводится на CPU
+	// тем же путём, что и превышение GpuVolumeCellLimit. Поднять потолок
+	// по-настоящему - значит перевести всю индексацию на int64, это отдельная
+	// работа, а не правка одной строки.
+	if (VolumeCells > (int64)MAX_int32)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FGpuComputeStrategy::StepBatch: объём %lld превышает 32-битный потолок индексации (%d) - fallback на CPU. GpuVolumeCellLimit выше этого значения смысла не имеет."),
+			VolumeCells, MAX_int32);
+		LastInputBufferBytes = 0;
+		FCpuComputeStrategy CpuFallback;
+		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
+		return 1;
+	}
+
 	const int32 VolumeCellsI32 = (int32)VolumeCells;
 	const int32 WordCount = FMath::DivideAndRoundUp(VolumeCellsI32, 32);
 	const int32 BytePlaneWordCount = FMath::DivideAndRoundUp(VolumeCellsI32, 4);
