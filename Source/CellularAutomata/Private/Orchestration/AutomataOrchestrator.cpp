@@ -41,6 +41,48 @@
 // FHudStats::CurrentFPS в Tick().
 extern ENGINE_API float GAverageFPS;
 
+namespace
+{
+	/** Печатает разбивку FRenderTimings по фазам. До этого все шесть таймеров
+	 *  исправно набирались и молча выбрасывались - GetLastRenderTimings() не
+	 *  звал никто, и ChunkedRenderCellsPerFrame подбирался на глаз по
+	 *  заиканиям.
+	 *
+	 *  Фазы намеренно разделены на две группы, а не сложены в одну сумму:
+	 *  Transforms/AddInstances/CustomData набираются ПОЧАНКОВО и потому
+	 *  размазаны по кадрам разлива - только из них имеет смысл считать
+	 *  цену клетки и цену кадра, т.е. ровно те две величины, по которым
+	 *  подбирается ChunkedRenderCellsPerFrame. SetMesh/Clear/Scale/Reorder
+	 *  случаются РАЗОМ внутри BeginRender() на первом кадре и по кадрам не
+	 *  делятся вовсе, так что усреднять их вместе с остальными - значит
+	 *  занижать первый кадр и завышать все следующие. Reorder тут особенно
+	 *  интересен: Algo::Sort по миллионам инстансов в один поток может
+	 *  оказаться дороже всего разлива, и никакой бюджет на кадр его не
+	 *  размажет.
+	 *
+	 *  RenderedCells - это LastRenderStats.RenderedCellCount, т.е. число
+	 *  клеток ПОСЛЕ отсечения кубом (ARenderCullVolume): именно оно уходит в
+	 *  AddInstances и именно им управляет ChunkedRenderCellsPerFrame, а не
+	 *  Grid->Num(). */
+	void LogRenderTimings(const TCHAR* Context, const FRenderTimings& Timings, int32 RenderedCells, int32 FrameCount)
+	{
+		const double ChunkedSeconds = Timings.BuildTransformsSeconds + Timings.AddInstanceSeconds + Timings.CustomDataSeconds;
+		const double SetupSeconds = Timings.SetMeshSeconds + Timings.ClearSeconds + Timings.ScaleSeconds + Timings.ReorderSeconds;
+
+		const int32 SafeFrameCount = FMath::Max(FrameCount, 1);
+		const double PerCellMicroseconds = (RenderedCells > 0) ? ChunkedSeconds * 1000000.0 / RenderedCells : 0.0;
+		const double PerFrameMs = ChunkedSeconds * 1000.0 / SafeFrameCount;
+
+		UE_LOG(LogTemp, Log, TEXT("RenderTimings[%s]: клеток %d | разлив %.2f мс = %.3f мкс/клетка, %.2f мс/кадр за %d кадр(ов) [Transforms %.2f / AddInstances %.2f / CustomData %.2f] | разово в BeginRender %.2f мс [SetMesh %.2f / Clear %.2f / Scale %.2f / Reorder %.2f]"),
+			Context, RenderedCells,
+			ChunkedSeconds * 1000.0, PerCellMicroseconds, PerFrameMs, SafeFrameCount,
+			Timings.BuildTransformsSeconds * 1000.0, Timings.AddInstanceSeconds * 1000.0, Timings.CustomDataSeconds * 1000.0,
+			SetupSeconds * 1000.0,
+			Timings.SetMeshSeconds * 1000.0, Timings.ClearSeconds * 1000.0,
+			Timings.ScaleSeconds * 1000.0, Timings.ReorderSeconds * 1000.0);
+	}
+}
+
 // Sets default values
 AAutomataOrchestrator::AAutomataOrchestrator()
 {
@@ -2511,6 +2553,10 @@ void AAutomataOrchestrator::RenderGridImmediate()
 
 	UE_LOG(LogTemp, Log, TEXT("RenderGridImmediate: живых клеток %d отрисовано одним снимком"),
 		Grid->Num());
+	// Один кадр по построению - "мс/кадр" здесь совпадает с полной ценой
+	// разлива и показывает, во что обошёлся бы отказ от чанкинга.
+	LogRenderTimings(TEXT("immediate"), CellsRenderer->GetLastRenderTimings(),
+		LastRenderStats.RenderedCellCount, 1);
 }
 
 void AAutomataOrchestrator::RenderCurrentGrid()
@@ -2584,6 +2630,11 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 	{
 		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: живых клеток %d отрисовано"),
 			Grid->Num());
+		// Чанкинг выключен - всё уехало одним кадром, как в
+		// RenderGridImmediate(). Это же и базовая линия "до чанкинга", с
+		// которой сравнивается мс/кадр разлитого варианта.
+		LogRenderTimings(TEXT("oneshot"), CellsRenderer->GetLastRenderTimings(),
+			LastRenderStats.RenderedCellCount, 1);
 	}
 }
 
@@ -2848,6 +2899,15 @@ void AAutomataOrchestrator::AdvanceChunkedRender()
 	const double TotalSeconds = FPlatformTime::Seconds() - ChunkedRenderStartSeconds;
 	UE_LOG(LogTemp, Log, TEXT("AdvanceChunkedRender: рендер разлитый по кадрам завершён - живых клеток %d за %d кадр(ов)/%.2f мс"),
 		Grid ? Grid->Num() : 0, ChunkedRenderFrameCount, TotalSeconds * 1000.0);
+
+	// TotalSeconds выше - это стена от BeginRender() до последнего чанка, т.е.
+	// в основном время самих кадров, а не работы рендера. Полезная для
+	// подбора ChunkedRenderCellsPerFrame величина - только в разбивке ниже.
+	if (CellsRenderer)
+	{
+		LogRenderTimings(TEXT("chunked"), CellsRenderer->GetLastRenderTimings(),
+			LastRenderStats.RenderedCellCount, ChunkedRenderFrameCount);
+	}
 }
 
 void AAutomataOrchestrator::FinishChunkedRenderImmediately()
