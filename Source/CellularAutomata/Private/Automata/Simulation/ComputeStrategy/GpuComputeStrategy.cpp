@@ -525,50 +525,121 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	const double GpuRoundTripSeconds = FPlatformTime::Seconds() - GpuRoundTripStart;
 	const double UnpackStart = FPlatformTime::Seconds();
 
-	const int32 SliceCells = VolumeDim.X * VolumeDim.Y;
-	for (int32 Index = 0; Index < VolumeCellsI32; ++Index)
+	// Обход ПО СЛОВАМ с прыжками по установленным битам, а не по ячейкам.
+	//
+	// Прежний поклеточный цикл спрашивал бит жизни у каждой из десятков
+	// миллионов ячеек объёма. Тело такой итерации - загрузка слова, сдвиг,
+	// маска и переход, полтора-два такта; замер же давал ~1.9 нс на ячейку
+	// объёма, то есть шесть-семь тактов. Разница - штраф за промах
+	// предсказателя переходов: бит жизни при заполнении около 13% и
+	// фрактальной структуре не предсказывается в принципе, а промах стоит
+	// порядка полутора десятков тактов.
+	//
+	// CountTrailingZeros по слову превращает "спросить у каждой ячейки" в
+	// "перейти к следующей живой": ветвление случается один раз на живую
+	// клетку, а не один раз на ячейку объёма, и на мёртвых ячейках
+	// предсказателю нечего угадывать - их не перебирают поштучно.
+	//
+	// Обход построчный (а не сплошной по всему буферу), чтобы координата X
+	// бралась из позиции бита внутри строки: так в горячем цикле не остаётся
+	// ни одного деления для обратного разбора плоского индекса.
+	//
+	// Здесь же пробовался чанк-выровненный обход - чтобы кеш чанка в
+	// FDenseCellGrid попадал почти всегда, а не примерно в половине случаев.
+	// Он отработал (проверено диагностикой в логе), но не дал ничего: ~15.5
+	// нс на живую клетку и до, и после. Значит остаток стоимости - не поиск
+	// чанка, и усложнение обхода было выброшено. Заодно тот обход с этим
+	// несовместим: слова идут вдоль X и границ чанков не уважают.
+	for (int32 LocalZ = 0; LocalZ < VolumeDim.Z; ++LocalZ)
 	{
-		const bool bCellAlive = (((*OutputWords)[Index >> 5] >> (Index & 31)) & 1u) != 0;
-
-		// Угасающее состояние есть только у НЕ живых клеток, поэтому его
-		// приходится читать и для тех индексов, где бит жизни не выставлен -
-		// иначе весь "хвост" угасания просто не доехал бы обратно в сетку.
-		// Само чтение из уже полученного буфера дешёвое; аллокацию чанка
-		// вызывает только ненулевое состояние (см. SetDecayState()).
-		const uint8 DecayState = bTrackDecayStates
-			? (uint8)(((*OutputDecayStateWords)[Index >> 2] >> ((Index & 3) * 8)) & 0xFFu)
-			: 0;
-
-		if (!bCellAlive && DecayState == 0)
+		const int32 CellZ = MinCell.Z + LocalZ;
+		for (int32 LocalY = 0; LocalY < VolumeDim.Y; ++LocalY)
 		{
-			continue;
-		}
+			const int32 CellY = MinCell.Y + LocalY;
+			const int32 RowStart = (LocalZ * VolumeDim.Y + LocalY) * VolumeDim.X;
 
-		const int32 LocalZ = Index / SliceCells;
-		const int32 Rem = Index % SliceCells;
-		const int32 LocalY = Rem / VolumeDim.X;
-		const int32 LocalX = Rem % VolumeDim.X;
-		const FIntVector Cell = MinCell + FIntVector(LocalX, LocalY, LocalZ);
-
-		if (bCellAlive)
-		{
-			NextGrid.SetAlive(Cell, true);
-
-			if (bTrackAges)
+			int32 LocalX = 0;
+			while (LocalX < VolumeDim.X)
 			{
-				// Нулевой возраст не пишем: SetAlive() уже создал чанк с
-				// обнулёнными возрастами, так что "только что родилась" - это
-				// значение по умолчанию (тот же приём, что в CellDecay).
-				const uint8 Age = (uint8)(((*OutputAgeWords)[Index >> 2] >> ((Index & 3) * 8)) & 0xFFu);
-				if (Age != 0)
+				const int32 RowIndex = RowStart + LocalX;
+				const int32 BitInWord = RowIndex & 31;
+
+				// Сколько бит этого слова ещё принадлежат текущей строке:
+				// слово может кончиться раньше строки, а может и выйти за её
+				// конец - VolumeDim.X не кратен 32.
+				const int32 BitsAvailable = FMath::Min(32 - BitInWord, VolumeDim.X - LocalX);
+
+				uint32 Word = (*OutputWords)[RowIndex >> 5] >> BitInWord;
+				if (BitsAvailable < 32)
 				{
-					NextGrid.SetAge(Cell, Age);
+					// Сдвиг на 32 - неопределённое поведение, поэтому маска
+					// накладывается только когда бит действительно меньше 32.
+					Word &= (1u << BitsAvailable) - 1u;
 				}
+
+				while (Word != 0)
+				{
+					const int32 AliveLocalX = LocalX + (int32)FMath::CountTrailingZeros(Word);
+					const int32 Index = RowStart + AliveLocalX;
+					const FIntVector Cell(MinCell.X + AliveLocalX, CellY, CellZ);
+
+					NextGrid.SetAlive(Cell, true);
+
+					if (bTrackAges)
+					{
+						// Нулевой возраст не пишем: SetAlive() уже создал чанк с
+						// обнулёнными возрастами, так что "только что родилась" - это
+						// значение по умолчанию (тот же приём, что в CellDecay).
+						const uint8 Age = (uint8)(((*OutputAgeWords)[Index >> 2] >> ((Index & 3) * 8)) & 0xFFu);
+						if (Age != 0)
+						{
+							NextGrid.SetAge(Cell, Age);
+						}
+					}
+
+					// Сбросить младший установленный бит и перейти к следующему.
+					Word &= Word - 1u;
+				}
+
+				LocalX += BitsAvailable;
 			}
 		}
-		else
+	}
+
+	// Угасающие клетки - отдельным проходом. Объединить его с проходом выше
+	// нельзя: угасающая клетка по определению НЕ живая, её бит в основной
+	// плоскости нулевой, и прыжки по установленным битам её не увидят.
+	// Проход поклеточный и без хитростей - он выполняется только для правил
+	// Generations (States > 2), а оптимизировался бинарный случай, где эта
+	// плоскость вообще не запрашивается.
+	if (bTrackDecayStates)
+	{
+		int32 Index = 0;
+		for (int32 LocalZ = 0; LocalZ < VolumeDim.Z; ++LocalZ)
 		{
-			NextGrid.SetDecayState(Cell, DecayState);
+			const int32 CellZ = MinCell.Z + LocalZ;
+			for (int32 LocalY = 0; LocalY < VolumeDim.Y; ++LocalY)
+			{
+				const int32 CellY = MinCell.Y + LocalY;
+				for (int32 LocalX = 0; LocalX < VolumeDim.X; ++LocalX, ++Index)
+				{
+					const uint8 DecayState = (uint8)(((*OutputDecayStateWords)[Index >> 2] >> ((Index & 3) * 8)) & 0xFFu);
+					if (DecayState == 0)
+					{
+						continue;
+					}
+
+					// Живая клетка перебивает угасание - ровно как в прежнем
+					// едином цикле, где ветка SetDecayState() стояла в else к
+					// проверке на жизнь.
+					if ((((*OutputWords)[Index >> 5] >> (Index & 31)) & 1u) != 0)
+					{
+						continue;
+					}
+
+					NextGrid.SetDecayState(FIntVector(MinCell.X + LocalX, CellY, CellZ), DecayState);
+				}
+			}
 		}
 	}
 
