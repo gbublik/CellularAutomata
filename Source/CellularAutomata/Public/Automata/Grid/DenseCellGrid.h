@@ -98,9 +98,52 @@ private:
 	FIntVector CellToChunkCoord(const FIntVector& Cell) const;
 	int32 CellToLocalIndex(const FIntVector& Cell) const;
 
+	/** Chunks.Find() для ПУТИ ЗАПИСИ, с кешем последнего чанка. Именно этот
+	 *  поиск оказался главным узким местом всего проекта: замерами он вышел
+	 *  в ~20-24 нс на вызов (хеш плюс промах мимо кеша на большой TMap), и
+	 *  из него целиком складываются и Unpack у FGpuComputeStrategy, и
+	 *  WriteBack у FCpuComputeStrategy - 806 мс из 1111 мс шага на 35 млн
+	 *  клеток. Обе фазы пишут клетки пространственно связными пробегами, так
+	 *  что подряд идущие вызовы почти всегда попадают в тот же чанк, и один
+	 *  сохранённый указатель убирает подавляющее большинство поисков.
+	 *
+	 *  ВАЖНО - вызывать только оттуда, где запись заведомо последовательна.
+	 *  Кеш это разделяемое изменяемое состояние без всякой синхронизации,
+	 *  поэтому он НАМЕРЕННО не используется ни в одном const-методе чтения
+	 *  (IsAlive() молотится из ParallelFor в FCpuComputeStrategy), ни в
+	 *  SetAge() (CellAging::ComputeAges() параллелен по построению - см. его
+	 *  doc-comment о том, почему именно SetAge безопасно звать из потоков).
+	 *  Сейчас законные вызывающие - SetAlive() и SetDecayState(), обе
+	 *  последовательны по той же причине, по которой последователен
+	 *  WriteBack: TBitArray не потокобезопасен на запись.
+	 *
+	 *  Возвращает nullptr, если чанка нет - отрицательный результат тоже
+	 *  кешируется (повторные промахи по одной координате не платят за
+	 *  Find()). */
+	FChunk* FindChunkForWrite(const FIntVector& ChunkCoord);
+
+	/** Запомнить чанк как последний записанный. Звать ОБЯЗАТЕЛЬНО после
+	 *  каждого Chunks.Add(): Add может перевыделить внутренний массив TMap и
+	 *  сдвинуть все элементы, после чего ранее сохранённый указатель
+	 *  повиснет. Перезапись кеша только что добавленным чанком снимает эту
+	 *  опасность - никакого другого указателя мы не держим. */
+	void CacheChunk(const FIntVector& ChunkCoord, FChunk* Chunk);
+
+	/** Сбросить кеш - после Chunks.Remove()/Empty(), т.е. когда сохранённый
+	 *  указатель мог перестать быть валидным. */
+	void InvalidateChunkCache();
+
 	int32 ChunkSize;
 	int32 CellsPerChunk; // ChunkSize^3, кэшировано
 	bool bDecayStatesEnabled;
 	TMap<FIntVector, FChunk> Chunks;
 	int32 AliveCellCount = 0;
+
+	/** См. FindChunkForWrite(). Отдельный флаг валидности, а не часовое
+	 *  значение в координате: CachedChunk == nullptr - это законное
+	 *  закешированное "чанка по такой координате нет", и отличить его от
+	 *  пустого кеша иначе было бы нечем. */
+	FIntVector CachedChunkCoord = FIntVector::ZeroValue;
+	FChunk* CachedChunk = nullptr;
+	bool bChunkCacheValid = false;
 };

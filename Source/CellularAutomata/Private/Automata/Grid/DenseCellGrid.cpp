@@ -50,6 +50,31 @@ int32 FDenseCellGrid::CellToLocalIndex(const FIntVector& Cell) const
 	return (LocalZ * ChunkSize + LocalY) * ChunkSize + LocalX;
 }
 
+FDenseCellGrid::FChunk* FDenseCellGrid::FindChunkForWrite(const FIntVector& ChunkCoord)
+{
+	if (bChunkCacheValid && CachedChunkCoord == ChunkCoord)
+	{
+		return CachedChunk;
+	}
+
+	FChunk* Chunk = Chunks.Find(ChunkCoord);
+	CacheChunk(ChunkCoord, Chunk);
+	return Chunk;
+}
+
+void FDenseCellGrid::CacheChunk(const FIntVector& ChunkCoord, FChunk* Chunk)
+{
+	CachedChunkCoord = ChunkCoord;
+	CachedChunk = Chunk;
+	bChunkCacheValid = true;
+}
+
+void FDenseCellGrid::InvalidateChunkCache()
+{
+	CachedChunk = nullptr;
+	bChunkCacheValid = false;
+}
+
 bool FDenseCellGrid::IsAlive(const FIntVector& Cell) const
 {
 	const FChunk* Chunk = Chunks.Find(CellToChunkCoord(Cell));
@@ -63,12 +88,16 @@ void FDenseCellGrid::SetAlive(const FIntVector& Cell, bool bAlive)
 
 	if (bAlive)
 	{
-		FChunk* Chunk = Chunks.Find(ChunkCoord);
+		FChunk* Chunk = FindChunkForWrite(ChunkCoord);
 		if (!Chunk)
 		{
 			// Ленивое создание чанка - только когда в нём появляется
 			// первая живая клетка.
 			Chunk = &Chunks.Add(ChunkCoord, FChunk(CellsPerChunk, bDecayStatesEnabled));
+			// Обязательно: Add мог перевыделить TMap и сдвинуть элементы,
+			// так что закешированный ранее указатель уже мог повиснуть -
+			// перезаписываем его только что добавленным (см. CacheChunk()).
+			CacheChunk(ChunkCoord, Chunk);
 		}
 
 		if (!Chunk->Bits[LocalIndex])
@@ -80,7 +109,7 @@ void FDenseCellGrid::SetAlive(const FIntVector& Cell, bool bAlive)
 	}
 	else
 	{
-		FChunk* Chunk = Chunks.Find(ChunkCoord);
+		FChunk* Chunk = FindChunkForWrite(ChunkCoord);
 		if (!Chunk)
 		{
 			return;
@@ -101,6 +130,7 @@ void FDenseCellGrid::SetAlive(const FIntVector& Cell, bool bAlive)
 			{
 				// Чанк опустел - высвобождаем память под него полностью.
 				Chunks.Remove(ChunkCoord);
+				InvalidateChunkCache();
 			}
 		}
 	}
@@ -160,7 +190,7 @@ void FDenseCellGrid::SetDecayState(const FIntVector& Cell, uint8 NewState)
 
 	if (NewState != 0)
 	{
-		FChunk* Chunk = Chunks.Find(ChunkCoord);
+		FChunk* Chunk = FindChunkForWrite(ChunkCoord);
 		if (!Chunk)
 		{
 			// Лениво создаём чанк - зеркалит SetAlive(true)'s ленивое
@@ -169,6 +199,8 @@ void FDenseCellGrid::SetDecayState(const FIntVector& Cell, uint8 NewState)
 			// нередко требует создать чанк здесь, а не найти уже
 			// существующий.
 			Chunk = &Chunks.Add(ChunkCoord, FChunk(CellsPerChunk, bDecayStatesEnabled));
+			// См. одноимённый комментарий в SetAlive().
+			CacheChunk(ChunkCoord, Chunk);
 		}
 
 		if (Chunk->DecayStates[LocalIndex] == 0)
@@ -179,7 +211,7 @@ void FDenseCellGrid::SetDecayState(const FIntVector& Cell, uint8 NewState)
 	}
 	else
 	{
-		FChunk* Chunk = Chunks.Find(ChunkCoord);
+		FChunk* Chunk = FindChunkForWrite(ChunkCoord);
 		if (!Chunk)
 		{
 			return;
@@ -196,6 +228,7 @@ void FDenseCellGrid::SetDecayState(const FIntVector& Cell, uint8 NewState)
 			if (Chunk->AliveCount == 0 && Chunk->DecayingCount == 0)
 			{
 				Chunks.Remove(ChunkCoord);
+				InvalidateChunkCache();
 			}
 		}
 	}
@@ -315,6 +348,7 @@ void FDenseCellGrid::Clear()
 {
 	Chunks.Empty();
 	AliveCellCount = 0;
+	InvalidateChunkCache();
 }
 
 int32 FDenseCellGrid::Num() const
