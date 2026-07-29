@@ -33,6 +33,10 @@ public:
 	virtual uint8 GetAge(const FIntVector& Cell) const override;
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) override;
 
+	/** Одна выборка чанка на оба поля вместо двух - см. doc-comment в
+	 *  FCellGrid. Всё остальное побитово совпадает с SetAlive(Cell, true). */
+	virtual void SetAliveWithAge(const FIntVector& Cell, uint8 Age) override;
+
 	/** Первой строкой проверяет bDecayStatesEnabled - при States==2 (канал
 	 *  выключен) это единственная работа, ни один TMap::Find() не
 	 *  выполняется (см. doc-comment FCellGrid::IsDecaying()). */

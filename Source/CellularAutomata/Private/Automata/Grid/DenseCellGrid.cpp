@@ -164,6 +164,33 @@ void FDenseCellGrid::SetAlive(const FIntVector& Cell, bool bAlive)
 	}
 }
 
+void FDenseCellGrid::SetAliveWithAge(const FIntVector& Cell, uint8 Age)
+{
+	const FIntVector ChunkCoord = CellToChunkCoord(Cell);
+	const int32 LocalIndex = CellToLocalIndex(Cell);
+
+	FChunk* Chunk = FindChunkForWrite(ChunkCoord);
+	if (!Chunk)
+	{
+		// Ленивое создание чанка - как в SetAlive(true), включая обязательную
+		// перезапись кеша после Add (см. комментарий там).
+		Chunk = &Chunks.Add(ChunkCoord, FChunk(CellsPerChunk, bDecayStatesEnabled));
+		CacheChunk(ChunkCoord, Chunk);
+	}
+
+	if (!Chunk->Bits[LocalIndex])
+	{
+		Chunk->Bits[LocalIndex] = true;
+		++Chunk->AliveCount;
+		++AliveCellCount;
+	}
+
+	// Пишется безусловно, без проверки на ноль: чанк создаётся с обнулёнными
+	// возрастами, так что запись нуля в ноль ничего не меняет, а ветвление
+	// на горячем пути стоит дороже, чем сам байт.
+	Chunk->Ages[LocalIndex] = Age;
+}
+
 uint8 FDenseCellGrid::GetAge(const FIntVector& Cell) const
 {
 	const FChunk* Chunk = Chunks.Find(CellToChunkCoord(Cell));

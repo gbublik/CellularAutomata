@@ -583,18 +583,21 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 					const int32 Index = RowStart + AliveLocalX;
 					const FIntVector Cell(MinCell.X + AliveLocalX, CellY, CellZ);
 
-					NextGrid.SetAlive(Cell, true);
-
 					if (bTrackAges)
 					{
-						// Нулевой возраст не пишем: SetAlive() уже создал чанк с
-						// обнулёнными возрастами, так что "только что родилась" - это
-						// значение по умолчанию (тот же приём, что в CellDecay).
+						// Оживление и возраст - ОДНИМ вызовом: раздельные
+						// SetAlive()+SetAge() искали место для одной и той же
+						// клетки дважды, причём второй раз без кеша чанка
+						// (см. FCellGrid::SetAliveWithAge()). На 19.5 млн
+						// клеток это стоило ~200 мс из 318.
 						const uint8 Age = (uint8)(((*OutputAgeWords)[Index >> 2] >> ((Index & 3) * 8)) & 0xFFu);
-						if (Age != 0)
-						{
-							NextGrid.SetAge(Cell, Age);
-						}
+						NextGrid.SetAliveWithAge(Cell, Age);
+					}
+					else
+					{
+						// Возрасты посчитает CellAging::ComputeAges() после
+						// шага - плоскость возрастов с GPU даже не приезжала.
+						NextGrid.SetAlive(Cell, true);
 					}
 
 					// Сбросить младший установленный бит и перейти к следующему.
