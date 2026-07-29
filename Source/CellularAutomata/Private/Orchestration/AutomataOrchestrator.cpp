@@ -1110,6 +1110,73 @@ void AAutomataOrchestrator::SelectCellUnderCursor(const FVector& RayOrigin, cons
 		SelectedCells.Num(), *UEnum::GetValueAsString(CombineMode));
 }
 
+bool AAutomataOrchestrator::MoveCullVolumeToChunkUnderCursor(const FVector& RayOrigin, const FVector& RayDirection)
+{
+	if (!Grid)
+	{
+		return false;
+	}
+
+	const float ChunkWorldSize = Grid->GetChunkWorldSize();
+	if (ChunkWorldSize <= 0.0f)
+	{
+		// Сетка без чанков - выбирать нечего (см. FCellGrid::GetChunkWorldSize()).
+		return false;
+	}
+
+	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
+	if (!CullVolume)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeToChunkUnderCursor: на уровне нет ARenderCullVolume - разместите его сначала"));
+		ShowStatusMessage(StatusKey_CullVolume, TEXT("На уровне нет ARenderCullVolume - разместите его"));
+		return false;
+	}
+
+	FVector BoundsCenter = FVector::ZeroVector;
+	float BoundsRadius = 0.0f;
+	if (!ComputeAliveCellsBounds(BoundsCenter, BoundsRadius))
+	{
+		return false;
+	}
+	const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + ChunkWorldSize;
+
+	// Тот же DDA, что ищет клетку под курсором - он принимает абстрактный
+	// FCellGrid и не знает, клетки в нём или чанки. FChunkGridView - это и
+	// есть сетка из чанков (её же строит гост-силуэт), только здесь она
+	// нужна с НАСТОЯЩИМ IsAlive(): иначе луч вернул бы первый задетый чанк,
+	// включая пустые (см. bBuildOccupancySet в её конструкторе).
+	TArray<FIntVector> OccupiedChunks;
+	Grid->GetOccupiedChunkCoords(OccupiedChunks);
+	if (OccupiedChunks.Num() == 0)
+	{
+		return false;
+	}
+
+	const FChunkGridView ChunkView(ChunkWorldSize, Grid->GetCellSize(), MoveTemp(OccupiedChunks), /*bBuildOccupancySet=*/true);
+
+	FIntVector PickedChunk;
+	if (!CellSelection::PickCellAlongRay(ChunkView, RayOrigin, RayDirection, MaxDistance, PickedChunk))
+	{
+		ShowStatusMessage(StatusKey_CullVolume, TEXT("Клик мимо - под курсором нет занятых чанков"));
+		return true;
+	}
+
+	// GridToWorld() у этой вьюхи специально возвращает ЦЕНТР чанка, а не его
+	// угол (см. её doc-comment) - то есть ровно то, во что надо поставить куб.
+	const FVector ChunkCenter = ChunkView.GridToWorld(PickedChunk);
+	CullVolume->SetActorLocation(ChunkCenter);
+
+	UE_LOG(LogTemp, Log, TEXT("MoveCullVolumeToChunkUnderCursor: куб отсечения переставлен на чанк %s (мир: %s)"),
+		*PickedChunk.ToString(), *ChunkCenter.ToString());
+	ShowStatusMessage(StatusKey_CullVolume, FString::Printf(
+		TEXT("Куб отсечения на чанк %s.  H - убрать силуэт, C - включить отсечение"), *PickedChunk.ToString()));
+
+	// SetActorLocation() программно не поднимает PostEditMove() - перерисовываем
+	// сами, как в MoveCullVolumeToSelection().
+	RefreshRenderCullVolume();
+	return true;
+}
+
 void AAutomataOrchestrator::SelectCellsInCullVolume(ESelectionCombineMode CombineMode)
 {
 	if (!Grid)

@@ -888,6 +888,37 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void MoveCullVolumeByCells(const FIntVector& CellDelta);
 
+	/** Переставляет куб отсечения на ЧАНК под курсором. Закрывает дыру в
+	 *  сценарии осмотра: когда Ghost Shape заменяет детальный рендер, клеток
+	 *  на экране нет вовсе, выделить клетку нечем - и поставить куб можно было
+	 *  только гизмо или стрелками, наугад. Клик по кубику силуэта делает это
+	 *  за один жест.
+	 *
+	 *  Внутри - тот же DDA, что ищет клетку (CellSelection::PickCellAlongRay()
+	 *  принимает абстрактный FCellGrid), только по сетке из чанков
+	 *  (FChunkGridView, её же строит гост-силуэт). Возвращает false, если
+	 *  выбирать было нечем в принципе - сетки нет, чанков нет, куба на уровне
+	 *  нет; true - если клик обработан, включая промах по пустоте. */
+	bool MoveCullVolumeToChunkUnderCursor(const FVector& RayOrigin, const FVector& RayDirection);
+
+	/** Правда, когда Ghost Shape сейчас покрывает ВСЮ сетку целиком (не
+	 *  только снаружи куба) и поэтому должен ЗАМЕНИТЬ детальный поклеточный
+	 *  рендер, а не дополнять его - см. doc-comment bEnableGhostShape. Это
+	 *  ровно тот случай, когда bEnableGhostShape включён, а активной границы
+	 *  отсечения нет (сам куб выключен через bEnableRenderCullVolume, либо на
+	 *  уровне вообще нет ARenderCullVolume) - иначе (куб активен) силуэт
+	 *  остаётся чистым дополнением снаружи куба, детальный путь работает как
+	 *  обычно. Пересчитывается заново на каждый вызов (та же конвенция, что у
+	 *  CreateComputeStrategy()/BuildCellRenderData()), используется из
+	 *  RenderGridImmediate()/RenderCurrentGrid().
+	 *
+	 *  Публичный, потому что по нему AGamePlayerController решает, что
+	 *  означает клик - выбрать клетку или переставить куб на чанк (клеток на
+	 *  экране в этом режиме нет вовсе, см. MoveCullVolumeToChunkUnderCursor()).
+	 *  Наружу это состояние и так уже отдаётся в
+	 *  FHudStats::bGhostShapeReplacesDetailedRender. */
+	bool ShouldGhostShapeReplaceDetailedRender();
+
 	/** Срез вдоль взгляда - показывать только клетки, лежащие в слое,
 	 *  перпендикулярном направлению камеры.
 	 *
@@ -1454,18 +1485,6 @@ private:
 	 *  (не каждое - см. её doc-comment), и немедленно из SetGhostShapeEnabled()/
 	 *  RefreshRenderCullVolume(). */
 	void RefreshGhostShape();
-
-	/** Правда, когда Ghost Shape сейчас покрывает ВСЮ сетку целиком (не
-	 *  только снаружи куба) и поэтому должен ЗАМЕНИТЬ детальный поклеточный
-	 *  рендер, а не дополнять его - см. doc-comment bEnableGhostShape. Это
-	 *  ровно тот случай, когда bEnableGhostShape включён, а активной границы
-	 *  отсечения нет (сам куб выключен через bEnableRenderCullVolume, либо
-	 *  на уровне вообще нет ARenderCullVolume) - иначе (куб активен) силуэт
-	 *  остаётся чистым дополнением снаружи куба, детальный путь работает как
-	 *  обычно. Пересчитывается заново на каждый вызов (та же конвенция, что
-	 *  у CreateComputeStrategy()/BuildCellRenderData() - никакого кэширования
-	 *  между вызовами), используется из RenderGridImmediate()/RenderCurrentGrid(). */
-	bool ShouldGhostShapeReplaceDetailedRender();
 
 	/** Убирает ghost-меш, если он есть - вызывается из тех же четырёх точек,
 	 *  что и ClearBakedMesh() (GenerateRandom()/StartFromSelection()/

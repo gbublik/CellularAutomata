@@ -30,11 +30,23 @@
 class CELLULARAUTOMATA_API FChunkGridView : public FCellGrid
 {
 public:
-	FChunkGridView(float InChunkWorldSize, float InCellSize, TArray<FIntVector> InOccupiedChunkCoords)
+	/** bBuildOccupancySet - построить множество занятых чанков, чтобы
+	 *  IsAlive() отвечал по-настоящему. Строителю меша оно не нужно (он
+	 *  проверяет принадлежность своим способом), а вот пикингу лучом
+	 *  необходимо: CellSelection::PickCellAlongRay() ищет ПЕРВУЮ живую
+	 *  ячейку на пути, и с заглушкой "жива всегда" он вернул бы первый же
+	 *  чанк, который задел луч, включая пустые. Множество на десятки тысяч
+	 *  чанков стоит микросекунды, но строить его в гост-рендере, где оно не
+	 *  нужно, незачем - отсюда флаг. */
+	FChunkGridView(float InChunkWorldSize, float InCellSize, TArray<FIntVector> InOccupiedChunkCoords, bool bBuildOccupancySet = false)
 		: FCellGrid(InChunkWorldSize)
 		, ChunkCenterOffset((InChunkWorldSize - InCellSize) * 0.5f)
 		, OccupiedChunkCoords(MoveTemp(InOccupiedChunkCoords))
 	{
+		if (bBuildOccupancySet)
+		{
+			OccupiedChunkSet.Append(OccupiedChunkCoords);
+		}
 	}
 
 	/** См. doc-comment класса: центр куба чанка, а не его угол. CellSize
@@ -45,7 +57,13 @@ public:
 		return FVector(Chunk.X, Chunk.Y, Chunk.Z) * CellSize + FVector(ChunkCenterOffset);
 	}
 
-	virtual bool IsAlive(const FIntVector& Cell) const override { return true; }
+	/** true всегда, если множество занятости не строилось (так было изначально
+	 *  и так достаточно строителю меша); иначе честный ответ по нему - см.
+	 *  bBuildOccupancySet в конструкторе. */
+	virtual bool IsAlive(const FIntVector& Chunk) const override
+	{
+		return OccupiedChunkSet.IsEmpty() ? true : OccupiedChunkSet.Contains(Chunk);
+	}
 	virtual void SetAlive(const FIntVector& Cell, bool bAlive) override {}
 	virtual void Clear() override {}
 	virtual int32 Num() const override { return OccupiedChunkCoords.Num(); }
@@ -58,4 +76,7 @@ private:
 	float ChunkCenterOffset;
 
 	TArray<FIntVector> OccupiedChunkCoords;
+
+	/** Пустое, если конструктор звали без bBuildOccupancySet - см. IsAlive(). */
+	TSet<FIntVector> OccupiedChunkSet;
 };

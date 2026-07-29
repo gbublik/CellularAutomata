@@ -983,6 +983,18 @@ void AGamePlayerController::OnSelectDragFinished()
 			return;
 		}
 
+		// Ghost Shape заменил детальный рендер - клеток на экране нет вовсе,
+		// и выбирать их бессмысленно: клик по кубику силуэта означает "поставь
+		// сюда куб отсечения". Новой клавиши и нового режима не нужно, потому
+		// что в этом состоянии у клика просто нет другого разумного смысла.
+		// Это закрывает разрыв в сценарии осмотра: H показывает всё целиком,
+		// клик выбирает область, дальше C и срез.
+		if (Orchestrator->ShouldGhostShapeReplaceDetailedRender()
+			&& Orchestrator->MoveCullVolumeToChunkUnderCursor(RayOrigin, RayDirection))
+		{
+			return;
+		}
+
 		Orchestrator->SelectCellUnderCursor(RayOrigin, RayDirection, PendingSelectionCombineMode);
 		return;
 	}
