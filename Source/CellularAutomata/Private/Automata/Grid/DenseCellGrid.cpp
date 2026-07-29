@@ -2,33 +2,30 @@
 
 namespace
 {
-	/** Деление с округлением к минус бесконечности (floor division).
-	 *  НЕ совпадает с FMath::DivideAndRoundDown для целых чисел - та
-	 *  функция вопреки названию просто делает Dividend / Divisor
-	 *  (усечение к нулю), поэтому DivideAndRoundDown(-1, 16) == 0, а не
-	 *  -1. Здесь это принципиально важно: генерация клеток уводит
-	 *  координаты в отрицательную область. Divisor предполагается > 0. */
-	FORCEINLINE int32 FloorDiv(int32 Dividend, int32 Divisor)
+	/** Ближайшая сверху степень двойки, не меньше 1. См. RoundedChunkSize()
+	 *  ниже за тем, зачем размер чанка обязан быть степенью двойки. */
+	FORCEINLINE int32 RoundUpToPowerOfTwo(int32 Value)
 	{
-		const int32 Quotient = Dividend / Divisor;
-		const int32 Remainder = Dividend % Divisor;
-		return (Remainder != 0 && Remainder < 0) ? Quotient - 1 : Quotient;
+		return (Value <= 1) ? 1 : static_cast<int32>(1u << FMath::CeilLogTwo(static_cast<uint32>(Value)));
 	}
+}
 
-	/** Остаток по модулю, приведённый к диапазону [0, Divisor) - в
-	 *  отличие от оператора %, который для отрицательного Dividend в
-	 *  C++ возвращает отрицательный (или нулевой) результат. Divisor
-	 *  предполагается > 0. */
-	FORCEINLINE int32 PositiveMod(int32 Dividend, int32 Divisor)
+int32 FDenseCellGrid::RoundedChunkSize(int32 RequestedChunkSize)
+{
+	const int32 Rounded = RoundUpToPowerOfTwo(RequestedChunkSize);
+	if (Rounded != RequestedChunkSize)
 	{
-		const int32 Remainder = Dividend % Divisor;
-		return Remainder < 0 ? Remainder + Divisor : Remainder;
+		UE_LOG(LogTemp, Warning, TEXT("FDenseCellGrid: размер чанка %d округлён до %d - он обязан быть степенью двойки (см. CellToChunkCoord())"),
+			RequestedChunkSize, Rounded);
 	}
+	return Rounded;
 }
 
 FDenseCellGrid::FDenseCellGrid(float InCellSize, int32 InChunkSize, bool bInEnableDecayStates)
 	: FCellGrid(InCellSize)
-	, ChunkSize(FMath::Max(1, InChunkSize))
+	, ChunkSize(RoundedChunkSize(InChunkSize))
+	, ChunkShift(static_cast<int32>(FMath::FloorLog2(static_cast<uint32>(ChunkSize))))
+	, ChunkMask(ChunkSize - 1)
 	, CellsPerChunk(ChunkSize * ChunkSize * ChunkSize)
 	, bDecayStatesEnabled(bInEnableDecayStates)
 {
@@ -36,18 +33,49 @@ FDenseCellGrid::FDenseCellGrid(float InCellSize, int32 InChunkSize, bool bInEnab
 
 FIntVector FDenseCellGrid::CellToChunkCoord(const FIntVector& Cell) const
 {
+	// Арифметический сдвиг вправо - это и есть floor-деление на степень
+	// двойки, включая отрицательные координаты: -1 >> 4 == -1, -17 >> 4 ==
+	// -2, что ровно floor(-1/16) и floor(-17/16). Это принципиально важно
+	// здесь - генерация клеток центрирована в нуле, так что отрицательные
+	// координаты не исключение, а норма.
+	//
+	// Раньше тут звался написанный вручную FloorDiv() - обычное деление
+	// усекает к нулю, а FMath::DivideAndRoundDown вопреки названию делает
+	// то же самое, так что оба давали бы 0 вместо -1 на первой же клетке
+	// слева от начала координат. Ловушка никуда не делась, просто теперь её
+	// снимает сама разрядная сетка, а не ветвление: девять целочисленных
+	// делений на вызов (тут и в CellToLocalIndex()) складывались примерно в
+	// половину стоимости SetAlive(), а он - главный расход всего проекта
+	// (см. FindChunkForWrite()).
 	return FIntVector(
-		FloorDiv(Cell.X, ChunkSize),
-		FloorDiv(Cell.Y, ChunkSize),
-		FloorDiv(Cell.Z, ChunkSize));
+		Cell.X >> ChunkShift,
+		Cell.Y >> ChunkShift,
+		Cell.Z >> ChunkShift);
 }
 
 int32 FDenseCellGrid::CellToLocalIndex(const FIntVector& Cell) const
 {
-	const int32 LocalX = PositiveMod(Cell.X, ChunkSize);
-	const int32 LocalY = PositiveMod(Cell.Y, ChunkSize);
-	const int32 LocalZ = PositiveMod(Cell.Z, ChunkSize);
-	return (LocalZ * ChunkSize + LocalY) * ChunkSize + LocalX;
+	// & ChunkMask - это положительный остаток по степени двойки, тоже без
+	// поправки на знак: -1 & 15 == 15, что и требуется (оператор % вернул бы
+	// -1). Пара к сдвигу в CellToChunkCoord(), см. комментарий там.
+	const int32 LocalX = Cell.X & ChunkMask;
+	const int32 LocalY = Cell.Y & ChunkMask;
+	const int32 LocalZ = Cell.Z & ChunkMask;
+	return ((((LocalZ << ChunkShift) + LocalY) << ChunkShift) + LocalX);
+}
+
+FIntVector FDenseCellGrid::LocalIndexToOffset(int32 LocalIndex) const
+{
+	// Обратная к CellToLocalIndex(): раскладывает плоский индекс внутри
+	// чанка обратно в смещение по осям. Здесь координаты заведомо
+	// неотрицательны (индекс в пределах чанка), так что ловушки со знаком
+	// нет - только замена деления на сдвиг, как и в прямом преобразовании.
+	// Вынесено в общий метод: до этого одна и та же тройка строк была
+	// скопирована в четырёх местах перечисления клеток.
+	return FIntVector(
+		LocalIndex & ChunkMask,
+		(LocalIndex >> ChunkShift) & ChunkMask,
+		LocalIndex >> (ChunkShift * 2));
 }
 
 FDenseCellGrid::FChunk* FDenseCellGrid::FindChunkForWrite(const FIntVector& ChunkCoord)
@@ -261,11 +289,7 @@ void FDenseCellGrid::GetDecayingCells(TArray<FIntVector>& OutCells, TArray<uint8
 			const uint8 State = Chunk.DecayStates[LocalIndex];
 			if (State != 0)
 			{
-				const int32 LocalX = LocalIndex % ChunkSize;
-				const int32 LocalY = (LocalIndex / ChunkSize) % ChunkSize;
-				const int32 LocalZ = LocalIndex / (ChunkSize * ChunkSize);
-
-				OutCells.Add(ChunkOrigin + FIntVector(LocalX, LocalY, LocalZ));
+				OutCells.Add(ChunkOrigin + LocalIndexToOffset(LocalIndex));
 				OutStates.Add(State);
 			}
 		}
@@ -327,10 +351,7 @@ void FDenseCellGrid::GetDecayingCellsInBounds(const FBox& WorldBounds, TArray<FI
 				continue;
 			}
 
-			const int32 LocalX = LocalIndex % ChunkSize;
-			const int32 LocalY = (LocalIndex / ChunkSize) % ChunkSize;
-			const int32 LocalZ = LocalIndex / (ChunkSize * ChunkSize);
-			const FIntVector Cell = ChunkOrigin + FIntVector(LocalX, LocalY, LocalZ);
+			const FIntVector Cell = ChunkOrigin + LocalIndexToOffset(LocalIndex);
 
 			if (bFullyContained ||
 				(Cell.X >= MinCell.X && Cell.X <= MaxCell.X &&
@@ -368,11 +389,7 @@ void FDenseCellGrid::GetAliveCells(TArray<FIntVector>& OutCells) const
 		for (TConstSetBitIterator<> It(Chunk.Bits); It; ++It)
 		{
 			const int32 LocalIndex = It.GetIndex();
-			const int32 LocalX = LocalIndex % ChunkSize;
-			const int32 LocalY = (LocalIndex / ChunkSize) % ChunkSize;
-			const int32 LocalZ = LocalIndex / (ChunkSize * ChunkSize);
-
-			OutCells.Add(ChunkOrigin + FIntVector(LocalX, LocalY, LocalZ));
+			OutCells.Add(ChunkOrigin + LocalIndexToOffset(LocalIndex));
 		}
 	}
 }
@@ -430,10 +447,7 @@ void FDenseCellGrid::GetAliveCellsInBounds(const FBox& WorldBounds, TArray<FIntV
 		for (TConstSetBitIterator<> It(Chunk.Bits); It; ++It)
 		{
 			const int32 LocalIndex = It.GetIndex();
-			const int32 LocalX = LocalIndex % ChunkSize;
-			const int32 LocalY = (LocalIndex / ChunkSize) % ChunkSize;
-			const int32 LocalZ = LocalIndex / (ChunkSize * ChunkSize);
-			const FIntVector Cell = ChunkOrigin + FIntVector(LocalX, LocalY, LocalZ);
+			const FIntVector Cell = ChunkOrigin + LocalIndexToOffset(LocalIndex);
 
 			if (bFullyContained ||
 				(Cell.X >= MinCell.X && Cell.X <= MaxCell.X &&

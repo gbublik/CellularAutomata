@@ -95,8 +95,21 @@ private:
 		int32 DecayingCount = 0;
 	};
 
+	/** Округляет запрошенный размер чанка вверх до степени двойки (и не
+	 *  меньше 1), предупреждая в лог, если пришлось менять. Степень двойки
+	 *  обязательна: на ней floor-деление и положительный остаток - это
+	 *  просто >> и & (см. CellToChunkCoord()/CellToLocalIndex()), а иначе
+	 *  каждый вызов SetAlive()/IsAlive() платит девятью целочисленными
+	 *  делениями. Сам размер чанка - чисто внутренняя гранулярность
+	 *  хранилища, на результат автомата он не влияет никак, так что
+	 *  округлить его безопаснее, чем держать медленную общую ветку. */
+	static int32 RoundedChunkSize(int32 RequestedChunkSize);
+
 	FIntVector CellToChunkCoord(const FIntVector& Cell) const;
 	int32 CellToLocalIndex(const FIntVector& Cell) const;
+	/** Обратная к CellToLocalIndex() - смещение внутри чанка по плоскому
+	 *  индексу. */
+	FIntVector LocalIndexToOffset(int32 LocalIndex) const;
 
 	/** Chunks.Find() для ПУТИ ЗАПИСИ, с кешем последнего чанка. Именно этот
 	 *  поиск оказался главным узким местом всего проекта: замерами он вышел
@@ -133,7 +146,13 @@ private:
 	 *  указатель мог перестать быть валидным. */
 	void InvalidateChunkCache();
 
+	/** Всегда степень двойки - см. RoundedChunkSize(). ChunkShift/ChunkMask
+	 *  выведены из него один раз в конструкторе: log2(ChunkSize) и
+	 *  ChunkSize-1. Порядок объявления важен, они инициализируются от уже
+	 *  округлённого ChunkSize. */
 	int32 ChunkSize;
+	int32 ChunkShift;
+	int32 ChunkMask;
 	int32 CellsPerChunk; // ChunkSize^3, кэшировано
 	bool bDecayStatesEnabled;
 	TMap<FIntVector, FChunk> Chunks;
