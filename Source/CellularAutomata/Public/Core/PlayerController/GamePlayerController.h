@@ -143,16 +143,26 @@ protected:
 	 *  независимых источника пропущенных нажатий. */
 	void OnNewSeed();
 
-	/** Хоткей (1) - включить освещённый режим (VIEWMODE LIT). Игра теперь
-	 *  стартует в этом режиме по умолчанию (см. BeginPlay) - принудительный
-	 *  Unlit больше не форсируется автоматически, а переключается вручную
-	 *  через 1/2. */
-	void OnSetLitMode();
+	/** Общий обработчик хоткеев профилей рендера F1-F4 - просто находит
+	 *  оркестратор и зовёт ApplyRenderPreset(PresetIndex). Четыре тонкие
+	 *  обёртки ниже нужны потому, что BindAction принимает функцию без
+	 *  аргументов - та же схема, что у OnMoveCullVolume() и стрелок. */
+	void OnApplyRenderPreset(int32 PresetIndex);
 
-	/** Хоткей (2) - включить безосветный режим (VIEWMODE UNLIT), тот же, что
-	 *  раньше форсировался в BeginPlay - экономит на освещении при большом
-	 *  числе инстансированных клеток автомата. */
-	void OnSetUnlitMode();
+	/** Хоткеи (F1-F4) - профили рендера (см. FRenderPreset и таблицу в
+	 *  RenderPresets.cpp): Quality, Unlit, Balanced, Performance. Заменили
+	 *  прежнюю пару "хоткей Lit / хоткей Unlit", которая с точки зрения
+	 *  скорости не давала ничего: viewmode теперь лишь одна из настроек
+	 *  профиля, рядом с тенями, отсечением, фоном и движковыми cvar'ами. */
+	void OnApplyRenderPreset0();
+	void OnApplyRenderPreset1();
+	void OnApplyRenderPreset2();
+	void OnApplyRenderPreset3();
+
+	/** Хоткей (U) - показать/скрыть фон (небо и туман), не трогая освещение,
+	 *  через AAutomataOrchestrator::SetBackgroundVisible()/IsBackgroundVisible().
+	 *  Отдельно от профилей: "убрать фон" хочется и поверх Quality тоже. */
+	void OnToggleBackground();
 
 	/** Хоткей (Left Shift, удержание) - ускоряет полёт камеры на время
 	 *  удержания. Камера летает через ADefaultPawn/UFloatingPawnMovement -
@@ -361,11 +371,14 @@ protected:
 	UPROPERTY()
 	TObjectPtr<class UInputAction> FastStepAction;
 
+	/** По одному действию на профиль рендера (F1-F4). Массив, а не четыре
+	 *  именованных поля: они полностью однотипны и различаются только
+	 *  индексом, который тут же и уходит в ApplyRenderPreset(). */
 	UPROPERTY()
-	TObjectPtr<class UInputAction> SetLitModeAction;
+	TArray<TObjectPtr<class UInputAction>> RenderPresetActions;
 
 	UPROPERTY()
-	TObjectPtr<class UInputAction> SetUnlitModeAction;
+	TObjectPtr<class UInputAction> ToggleBackgroundAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> SpeedBoostAction;

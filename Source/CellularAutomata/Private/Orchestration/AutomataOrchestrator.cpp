@@ -35,6 +35,11 @@
 #include "UnrealClient.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
+#include "Automata/Rendering/RenderPresets.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "Components/VolumetricCloudComponent.h"
+#include "EngineUtils.h"
 
 // Сглаженный FPS движка - определён в UnrealEngine.cpp, без публичного
 // заголовка, объявляется локально там, где используется (тот же паттерн,
@@ -282,6 +287,14 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bCellCullingEnabled = bEnableCellCulling;
 	LastHudStats.bRenderCullVolumeEnabled = bEnableRenderCullVolume;
 	LastHudStats.bGhostShapeEnabled = bEnableGhostShape;
+	LastHudStats.bCellsCastShadows = bCellsCastShadows;
+	LastHudStats.bBackgroundVisible = bShowBackground;
+
+	// Профиль рендера: индекс, имя и признак "после применения что-то крутили
+	// руками" - см. FRenderPreset/ApplyRenderPreset().
+	LastHudStats.RenderPresetIndex = ActiveRenderPresetIndex;
+	LastHudStats.RenderPresetName = GetActiveRenderPresetName();
+	LastHudStats.bRenderPresetModified = bRenderPresetModified;
 
 	// Куб: "включено" и "работает" - разные вещи (актёра может не быть на
 	// уровне, куб может быть спрятан), поэтому три отдельных поля, и итоговое
@@ -2859,6 +2872,7 @@ void AAutomataOrchestrator::RenderGridImmediate()
 
 	EnsureCellsRenderer();
 	ApplyCellCullDistances();
+	ApplyCellShadowSettings();
 	ClearInactiveCellsMeshComponent();
 
 	if (!CellsRenderer)
@@ -2921,6 +2935,7 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 
 	EnsureCellsRenderer();
 	ApplyCellCullDistances();
+	ApplyCellShadowSettings();
 	ClearInactiveCellsMeshComponent();
 
 	if (!CellsRenderer)
@@ -3113,6 +3128,9 @@ void AAutomataOrchestrator::SetWaitForChunkedRenderToFinish(bool bWait)
 void AAutomataOrchestrator::SetCellCullingEnabled(bool bEnabled)
 {
 	bEnableCellCulling = bEnabled;
+	// Настройка принадлежит профилю рендера - раз её тронули руками, профиль в
+	// HUD больше не описывает то, что на экране (см. FHudStats::bRenderPresetModified).
+	bRenderPresetModified = true;
 	UE_LOG(LogTemp, Log, TEXT("SetCellCullingEnabled: отсечение клеток по расстоянию %s"), bEnabled ? TEXT("включено") : TEXT("выключено"));
 
 	// Применяем немедленно, не дожидаясь следующего рендера (см. doc-comment
@@ -3131,6 +3149,9 @@ void AAutomataOrchestrator::SetRenderCullVolumeEnabled(bool bEnabled)
 void AAutomataOrchestrator::SetGhostShapeEnabled(bool bEnabled)
 {
 	bEnableGhostShape = bEnabled;
+	// Тот же флаг "профиль тронули руками", что и в SetCellCullingEnabled().
+	// ApplyRenderPreset() зовёт этот сеттер сам и сбрасывает флаг уже после.
+	bRenderPresetModified = true;
 	UE_LOG(LogTemp, Log, TEXT("SetGhostShapeEnabled: Ghost Shape %s"), bEnabled ? TEXT("включён") : TEXT("выключен"));
 
 	// RefreshGhostShape() сам разберётся, что делать: bEnableGhostShape ==
@@ -3157,6 +3178,175 @@ void AAutomataOrchestrator::SetGhostShapeEnabled(bool bEnabled)
 	// поколения - тот же принцип, что и у RefreshRenderCullVolume() ниже.
 	RenderGridImmediate();
 	RefreshGhostShape();
+}
+
+void AAutomataOrchestrator::SetCellShadowsEnabled(bool bEnabled)
+{
+	bCellsCastShadows = bEnabled;
+	bRenderPresetModified = true;
+	UE_LOG(LogTemp, Log, TEXT("SetCellShadowsEnabled: тени от клеток %s"), bEnabled ? TEXT("включены") : TEXT("выключены"));
+
+	// Применяем немедленно, не дожидаясь следующего рендера - SetCastShadow()
+	// сама обновляет SceneProxy, ей не нужен новый AddInstances() (ровно та же
+	// причина, по которой SetCellCullingEnabled() зовёт ApplyCellCullDistances()).
+	ApplyCellShadowSettings();
+}
+
+void AAutomataOrchestrator::ApplyCellShadowSettings()
+{
+	// К ОБОИМ компонентам клеток, а не только к активному - если
+	// CellMeshComponentType переключат позже, второй не должен остаться со
+	// старой настройкой (то же соображение, что в ApplyCellCullDistances()).
+	CellsMeshHierarchical->SetCastShadow(bCellsCastShadows);
+	CellsMeshFlat->SetCastShadow(bCellsCastShadows);
+
+	if (SelectionMeshComponent)
+	{
+		SelectionMeshComponent->SetCastShadow(bCellsCastShadows);
+	}
+}
+
+void AAutomataOrchestrator::SetBackgroundVisible(bool bVisible)
+{
+	bShowBackground = bVisible;
+	bRenderPresetModified = true;
+	UE_LOG(LogTemp, Log, TEXT("SetBackgroundVisible: фон %s"), bVisible ? TEXT("показан") : TEXT("скрыт"));
+
+	ApplyBackgroundVisibility();
+}
+
+void AAutomataOrchestrator::ApplyBackgroundVisibility()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Небо и облака НЕ прячем как актёров, а исключаем из основного прохода:
+	// bRenderInMainPass выключает только отрисовку в кадр (basepass/прозрачность),
+	// оставляя компонент в сцене для всего остального - в том числе для
+	// real-time-захвата ASkyLight, который каждый кадр пересобирает кубмап
+	// окружающего света ИМЕННО С НЕБА.
+	//
+	// Здесь и была ловушка. "Просто спрятать небо" гасит и свет, и это не
+	// побочный эффект, а прямое следствие настройки уровня: у ASkyLight
+	// bRealTimeCapture == true, и исчезнувшее небо оставляет захват без
+	// источника - рассеянный свет уходит в ноль вместе с фоном. На замерах в
+	// PIE (одна и та же точка камеры) пропадали синие и зелёные клетки, вся
+	// картинка сваливалась в один тёплый направленный свет.
+	//
+	// Заморозка захвата (USkyLightComponent::SetRealTimeCaptureEnabled(false))
+	// эту дыру НЕ закрывает - проверено там же и отвергнуто: она не
+	// пересобирает кубмап на месте, а ставит пересъёмку в очередь
+	// (SetCaptureIsDirty() внутри), и та всё равно отрабатывает по уже пустому
+	// небу, замораживая чёрный кубмап. bRenderInMainPass сохраняет освещение
+	// полностью. Источники света (ASkyLight/ADirectionalLight) не трогаются
+	// вовсе - в этом и весь смысл.
+	for (TActorIterator<ASkyAtmosphere> It(World); It; ++It)
+	{
+		if (USkyAtmosphereComponent* SkyComponent = It->GetComponent())
+		{
+			SkyComponent->SetRenderInMainPass(bShowBackground);
+		}
+	}
+	for (TActorIterator<AVolumetricCloud> It(World); It; ++It)
+	{
+		// У AVolumetricCloud нет публичного геттера компонента (в отличие от
+		// ASkyAtmosphere::GetComponent()), поэтому ищем по классу.
+		if (UVolumetricCloudComponent* CloudComponent = It->FindComponentByClass<UVolumetricCloudComponent>())
+		{
+			CloudComponent->SetRenderInMainPass(bShowBackground);
+		}
+	}
+
+	// У AExponentialHeightFog такого переключателя нет, поэтому туман прячем
+	// целиком. Проверено в том же замере: на освещении это не сказывается -
+	// туман, в отличие от неба, захвату ASkyLight светом не служит.
+	for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+	{
+		It->SetActorHiddenInGame(!bShowBackground);
+	}
+}
+
+void AAutomataOrchestrator::RunRenderConsoleCommand(const FString& Command)
+{
+	// Через контроллер, а не GEngine->Exec(): команды VIEWMODE адресованы
+	// вьюпорту конкретного локального игрока, и только этот путь их доставляет
+	// (им же слал их прежний хоткей Lit/Unlit). Для r.* разницы нет, поэтому
+	// весь список идёт одним путём, без ветвления по типу команды.
+	if (GamePC)
+	{
+		GamePC->ConsoleCommand(Command, /*bWriteToLog=*/false);
+		return;
+	}
+
+	// Контроллер ещё не готов (до BeginPlay) - r.* всё равно применятся, а
+	// VIEWMODE в этот момент и применять некуда.
+	if (GEngine)
+	{
+		GEngine->Exec(GetWorld(), *Command);
+	}
+}
+
+TArray<FRenderPreset> AAutomataOrchestrator::GetRenderPresets() const
+{
+	return RenderPresets::GetAll();
+}
+
+FString AAutomataOrchestrator::GetActiveRenderPresetName() const
+{
+	const TArray<FRenderPreset>& Presets = RenderPresets::GetAll();
+	return Presets.IsValidIndex(ActiveRenderPresetIndex) ? Presets[ActiveRenderPresetIndex].Name : FString();
+}
+
+void AAutomataOrchestrator::ApplyRenderPreset(int32 PresetIndex)
+{
+	const TArray<FRenderPreset>& Presets = RenderPresets::GetAll();
+	if (!Presets.IsValidIndex(PresetIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyRenderPreset: нет профиля с индексом %d (всего %d) - ничего не меняем"), PresetIndex, Presets.Num());
+		return;
+	}
+
+	const FRenderPreset& Preset = Presets[PresetIndex];
+
+	// Движковые cvar'ы. Каждый профиль задаёт весь список целиком, поэтому
+	// восстанавливать что-либо от предыдущего не нужно - см. doc-comment
+	// FRenderPreset::ConsoleCommands.
+	for (const FString& Command : Preset.ConsoleCommands)
+	{
+		RunRenderConsoleCommand(Command);
+	}
+	RunRenderConsoleCommand(Preset.bLit ? TEXT("VIEWMODE LIT") : TEXT("VIEWMODE UNLIT"));
+
+	// Настройки клеток. Пишем поля напрямую, а не через сеттеры: каждый из них
+	// сам дёргает применение и перерисовку, и пройти по ним подряд означало бы
+	// три-четыре полных RenderGridImmediate() на одно нажатие клавиши. Ниже
+	// всё применяется по разу.
+	bCellsCastShadows = Preset.bCellsCastShadows;
+	bEnableCellCulling = Preset.bCellCullingEnabled;
+	CellCullStartDistance = Preset.CellCullStartDistance;
+	CellCullEndDistance = Preset.CellCullEndDistance;
+	bShowBackground = Preset.bShowBackground;
+
+	ApplyCellShadowSettings();
+	ApplyCellCullDistances();
+	ApplyBackgroundVisibility();
+
+	// Ghost Shape - последним и через сеттер: он единственный меняет САМ набор
+	// рисуемых объектов (без куба отсечения силуэт заменяет поклеточный рендер
+	// целиком), и его сеттер уже делает ровно то, что здесь нужно - перерисовать
+	// текущее состояние и пересобрать силуэт, не дожидаясь нового поколения.
+	SetGhostShapeEnabled(Preset.bGhostShapeEnabled);
+
+	ActiveRenderPresetIndex = PresetIndex;
+	// Строго после SetGhostShapeEnabled() и прочих сеттеров: каждый из них
+	// поднимает этот флаг ("настройку профиля тронули руками"), и сбрасывать
+	// его нужно уже по итогам всего применения.
+	bRenderPresetModified = false;
+
+	UE_LOG(LogTemp, Log, TEXT("ApplyRenderPreset: профиль рендера -> %s (%s)"), *Preset.Name, *Preset.Description);
 }
 
 void AAutomataOrchestrator::RefreshRenderCullVolume()

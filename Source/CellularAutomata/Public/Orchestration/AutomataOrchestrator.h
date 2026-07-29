@@ -10,6 +10,7 @@
 #include "Automata/Grid/CellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Rendering/ChunkedRenderOrder.h"
+#include "Automata/Rendering/RenderPresets.h"
 #include "Automata/Persistence/AutomatonSaveHeader.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
@@ -242,6 +243,32 @@ struct FHudStats
 	 *  выигрыш в скорости, поэтому его видно отдельно от bGhostShapeEnabled. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bGhostShapeReplacesDetailedRender = false;
+
+	/** Имя последнего применённого профиля рендера (F1-F4) - см.
+	 *  FRenderPreset/ApplyRenderPreset(). Пустая строка, пока ни один не
+	 *  применяли. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	FString RenderPresetName;
+
+	/** Его индекс в RenderPresets::GetAll(), либо INDEX_NONE. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	int32 RenderPresetIndex = INDEX_NONE;
+
+	/** После применения профиля что-то из его настроек поменяли вручную
+	 *  (хоткеями B/C/H/U или в Details panel) - т.е. на экране УЖЕ не то, что
+	 *  описывает RenderPresetName. Отдельное поле, потому что иначе HUD
+	 *  показывал бы "Performance" на картинке, которая ей больше не
+	 *  соответствует; виджету достаточно дорисовать звёздочку. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bRenderPresetModified = false;
+
+	/** Клетки отбрасывают тени - см. bCellsCastShadows. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bCellsCastShadows = true;
+
+	/** Фон (небо/туман) виден (U) - см. bShowBackground. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bBackgroundVisible = true;
 };
 
 UCLASS()
@@ -1056,6 +1083,73 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata|GhostShape")
 	void SetGhostShapeEnabled(bool bEnabled);
 
+	/** Отбрасывают ли клетки тени. Отдельная настройка, а не часть "качества
+	 *  теней" вообще: shadow pass прогоняет ТЕ ЖЕ миллионы инстансов ещё раз на
+	 *  каждый каскад, поэтому на этом проекте она стоит несопоставимо больше,
+	 *  чем на обычной сцене, и выключать её хочется отдельно от освещения. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rendering")
+	bool bCellsCastShadows = true;
+
+	UFUNCTION(BlueprintPure, Category = "Automata|Rendering")
+	bool AreCellShadowsEnabled() const { return bCellsCastShadows; }
+
+	/** Включает/выключает тени от клеток. Не inline: сразу применяет настройку
+	 *  ко всем компонентам клеток (SetCastShadow() обновляет SceneProxy сам, без
+	 *  переливки инстансов), не дожидаясь следующего посчитанного поколения -
+	 *  тот же принцип немедленного применения, что у SetCellCullingEnabled(). */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Rendering")
+	void SetCellShadowsEnabled(bool bEnabled);
+
+	/** Виден ли фон - небо (ASkyAtmosphere), туман (AExponentialHeightFog) и
+	 *  облака (AVolumetricCloud), если они есть на уровне. Источники света
+	 *  (ADirectionalLight/ASkyLight) НЕ трогаются - см. SetBackgroundVisible(). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rendering")
+	bool bShowBackground = true;
+
+	UFUNCTION(BlueprintPure, Category = "Automata|Rendering")
+	bool IsBackgroundVisible() const { return bShowBackground; }
+
+	/** Прячет/показывает фон, СОХРАНЯЯ освещение.
+	 *
+	 *  Наивное "спрятать небо" гасит и свет, и это не побочный эффект, а прямое
+	 *  следствие настройки уровня: у ASkyLight здесь bRealTimeCapture == true,
+	 *  т.е. кубмап окружающего света он пересобирает с неба каждый кадр. Стоит
+	 *  небу исчезнуть - пересобирать не с чего, и рассеянный свет уходит в ноль
+	 *  вместе с фоном.
+	 *
+	 *  Поэтому небо не прячется, а исключается из основного прохода
+	 *  (USkyAtmosphereComponent::SetRenderInMainPass()): камера его не видит,
+	 *  захват - видит. Источники света не трогаются вообще. Подробности и
+	 *  отвергнутый вариант с заморозкой захвата - в ApplyBackgroundVisibility(). */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Rendering")
+	void SetBackgroundVisible(bool bVisible);
+
+	/** Таблица готовых профилей рендера (см. FRenderPreset). Отдаёт копию, как
+	 *  GetRulePresets(): вызывается на построение списка в HUD, не в горячем
+	 *  цикле. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Rendering")
+	TArray<FRenderPreset> GetRenderPresets() const;
+
+	/** Применяет профиль целиком: viewmode, фон, тени от клеток, отсечение,
+	 *  Ghost Shape и весь список движковых cvar'ов. Индекс - позиция в
+	 *  RenderPresets::GetAll(); неверный индекс - warning в лог и НИЧЕГО не
+	 *  меняется (никогда не применяем профиль наполовину - тот же принцип, что
+	 *  у ApplyRulePreset()/ParseRuleString()).
+	 *
+	 *  Сетку НЕ пересоздаёт и симуляцию не трогает - это настройки картинки, а
+	 *  не состояние автомата; текущее состояние лишь перерисовывается заново,
+	 *  чтобы изменения были видны сразу, а не со следующего поколения. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Rendering")
+	void ApplyRenderPreset(int32 PresetIndex);
+
+	/** Индекс последнего применённого профиля, либо INDEX_NONE. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Rendering")
+	int32 GetActiveRenderPresetIndex() const { return ActiveRenderPresetIndex; }
+
+	/** Его имя, либо пустая строка. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Rendering")
+	FString GetActiveRenderPresetName() const;
+
 	/** Метрики последнего BuildCellRenderData() (клетки/МБ, "отрисовано/всего") -
 	 *  см. doc-comment FCellRenderStats. Читает уже посчитанное, ничего не
 	 *  пересчитывает - используется и UE_LOG внутри BuildCellRenderData(), и
@@ -1617,6 +1711,32 @@ private:
 	 *  SetCellCullingEnabled() (хоткей B) могло применить изменение
 	 *  немедленно, не дожидаясь следующего рендера нового поколения. */
 	void ApplyCellCullDistances();
+	/** Применяет bCellsCastShadows к CellsMeshFlat/CellsMeshHierarchical и
+	 *  SelectionMeshComponent. Как и ApplyCellCullDistances(), применяется к
+	 *  ОБОИМ компонентам клеток, а не только к активному: смена
+	 *  CellMeshComponentType не должна оставить второй со старой настройкой. */
+	void ApplyCellShadowSettings();
+	/** Применяет bShowBackground к небу/туману/облакам уровня, предварительно
+	 *  заморозив захват у ASkyLight - см. doc-comment SetBackgroundVisible()
+	 *  про то, почему без заморозки вместе с фоном пропадает и свет. */
+	void ApplyBackgroundVisibility();
+	/** Выполняет консольную команду профиля рендера. Через GamePC, а не через
+	 *  GEngine->Exec(): команды VIEWMODE адресованы конкретному вьюпорту
+	 *  локального игрока, и только этот путь их доставляет (тем же способом их
+	 *  слал прежний хоткей Lit/Unlit). GEngine - запасной путь, если контроллер
+	 *  ещё не готов (до BeginPlay). */
+	void RunRenderConsoleCommand(const FString& Command);
+	/** Индекс последнего применённого профиля рендера (см.
+	 *  ApplyRenderPreset()). UPROPERTY по той же причине, что LastHudStats:
+	 *  должен пережить реинстансинг Live Coding, иначе HUD после хот-патча
+	 *  показал бы "профиль не выбран" на неизменившейся картинке. */
+	UPROPERTY(Transient)
+	int32 ActiveRenderPresetIndex = INDEX_NONE;
+	/** После применения профиля что-то из его настроек поменяли вручную - см.
+	 *  FHudStats::bRenderPresetModified. Ставится в самих сеттерах настроек,
+	 *  которыми профиль владеет, и сбрасывается в конце ApplyRenderPreset(). */
+	UPROPERTY(Transient)
+	bool bRenderPresetModified = false;
 	/** Создаёт/перепривязывает CellsRenderer на актуальный
 	 *  GetActiveCellsMeshComponent(). Одно условие покрывает три случая:
 	 *  первый вызов; смена CellMeshComponentType (рендерер обёрнут вокруг

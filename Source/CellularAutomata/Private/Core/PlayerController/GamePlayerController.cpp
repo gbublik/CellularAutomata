@@ -22,11 +22,21 @@ void AGamePlayerController::SetupInputComponent()
 	FastStepAction = NewObject<UInputAction>(this, TEXT("IA_FastStep"));
 	FastStepAction->ValueType = EInputActionValueType::Boolean;
 
-	SetLitModeAction = NewObject<UInputAction>(this, TEXT("IA_SetLitMode"));
-	SetLitModeAction->ValueType = EInputActionValueType::Boolean;
+	// По действию на профиль рендера. Их ровно столько, сколько клавиш F1-F4
+	// ниже; если в таблицу RenderPresets::GetAll() добавится пятый профиль,
+	// ему нужно будет добавить и действие, и клавишу, и биндинг - поэтому
+	// количество здесь одно на всё, а не переоткрывается в трёх местах.
+	constexpr int32 NumRenderPresetHotkeys = 4;
+	RenderPresetActions.Reset(NumRenderPresetHotkeys);
+	for (int32 PresetIndex = 0; PresetIndex < NumRenderPresetHotkeys; ++PresetIndex)
+	{
+		UInputAction* PresetAction = NewObject<UInputAction>(this, *FString::Printf(TEXT("IA_RenderPreset%d"), PresetIndex));
+		PresetAction->ValueType = EInputActionValueType::Boolean;
+		RenderPresetActions.Add(PresetAction);
+	}
 
-	SetUnlitModeAction = NewObject<UInputAction>(this, TEXT("IA_SetUnlitMode"));
-	SetUnlitModeAction->ValueType = EInputActionValueType::Boolean;
+	ToggleBackgroundAction = NewObject<UInputAction>(this, TEXT("IA_ToggleBackground"));
+	ToggleBackgroundAction->ValueType = EInputActionValueType::Boolean;
 
 	SpeedBoostAction = NewObject<UInputAction>(this, TEXT("IA_SpeedBoost"));
 	SpeedBoostAction->ValueType = EInputActionValueType::Boolean;
@@ -121,11 +131,22 @@ void AGamePlayerController::SetupInputComponent()
 	// что был у P - см. doc-comment InputKey()).
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
-	// F1/F2, а не 1/2: цифровой ряд отдан фильтру по возрасту (см. InputKey()),
-	// и это осознанный размен - режим освещения ставят раз за сессию, а
-	// возрастные слои перебирают постоянно при осмотре.
-	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::F1);
-	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::F2);
+	// F1-F4, а не 1-4: цифровой ряд отдан фильтру по возрасту (см. InputKey()),
+	// а возрастные слои перебирают постоянно при осмотре, тогда как профиль
+	// рендера ставят изредка.
+	//
+	// Отдельная клавиша на профиль, а не одна циклическая: профилей четыре, и
+	// "сделать быстро" нужно немедленно, а не после трёх нажатий вслепую -
+	// перебор имеет смысл там, где вариантов много и они равноправны
+	// (ChunkedRenderOrder на X), а не там, где есть явные "как задумано" и
+	// "максимально быстро" на краях списка.
+	static const FKey RenderPresetKeys[] = { EKeys::F1, EKeys::F2, EKeys::F3, EKeys::F4 };
+	static_assert(UE_ARRAY_COUNT(RenderPresetKeys) == 4, "Клавиш профилей рендера должно быть столько же, сколько действий выше");
+	for (int32 PresetIndex = 0; PresetIndex < RenderPresetActions.Num(); ++PresetIndex)
+	{
+		SimulationMappingContext->MapKey(RenderPresetActions[PresetIndex], RenderPresetKeys[PresetIndex]);
+	}
+	SimulationMappingContext->MapKey(ToggleBackgroundAction, EKeys::U);
 	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
 	SimulationMappingContext->MapKey(ToggleChunkedRenderAction, EKeys::Z);
 	SimulationMappingContext->MapKey(CycleChunkedRenderOrderAction, EKeys::X);
@@ -182,8 +203,24 @@ void AGamePlayerController::SetupInputComponent()
 		// пока зажата", как раньше.
 		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFastStepPressed);
 		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnFastStepReleased);
-		EnhancedInputComp->BindAction(SetLitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetLitMode);
-		EnhancedInputComp->BindAction(SetUnlitModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSetUnlitMode);
+		// Started - профиль применяется однократно на нажатие; удержание F1
+		// не должно переприменять его каждый кадр (полный RenderGridImmediate()
+		// на кадр), поэтому не Triggered.
+		//
+		// Обработчики именованные, а не лямбды с захватом индекса: BindAction
+		// принимает указатель на метод, и это ровно та же схема, что у
+		// четырёх стрелок движения куба отсечения.
+		void (AGamePlayerController::* RenderPresetHandlers[])() = {
+			&AGamePlayerController::OnApplyRenderPreset0,
+			&AGamePlayerController::OnApplyRenderPreset1,
+			&AGamePlayerController::OnApplyRenderPreset2,
+			&AGamePlayerController::OnApplyRenderPreset3
+		};
+		for (int32 PresetIndex = 0; PresetIndex < RenderPresetActions.Num(); ++PresetIndex)
+		{
+			EnhancedInputComp->BindAction(RenderPresetActions[PresetIndex], ETriggerEvent::Started, this, RenderPresetHandlers[PresetIndex]);
+		}
+		EnhancedInputComp->BindAction(ToggleBackgroundAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleBackground);
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSpeedBoostStarted);
 		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSpeedBoostEnded);
 		EnhancedInputComp->BindAction(ToggleChunkedRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleChunkedRender);
@@ -375,14 +412,37 @@ void AGamePlayerController::OnNewSeed()
 	Orchestrator->NewSeed();
 }
 
-void AGamePlayerController::OnSetLitMode()
+void AGamePlayerController::OnApplyRenderPreset(int32 PresetIndex)
 {
-	ConsoleCommand(TEXT("VIEWMODE LIT"));
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnApplyRenderPreset: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// Профиль применяется целиком в оркестраторе, включая VIEWMODE - здесь
+	// намеренно не осталось ни одной консольной команды: иначе часть настроек
+	// профиля жила бы в контроллере, а часть в оркестраторе, и добавление
+	// пятого профиля требовало бы правок в обоих (см. ApplyRenderPreset()).
+	Orchestrator->ApplyRenderPreset(PresetIndex);
 }
 
-void AGamePlayerController::OnSetUnlitMode()
+void AGamePlayerController::OnApplyRenderPreset0() { OnApplyRenderPreset(0); }
+void AGamePlayerController::OnApplyRenderPreset1() { OnApplyRenderPreset(1); }
+void AGamePlayerController::OnApplyRenderPreset2() { OnApplyRenderPreset(2); }
+void AGamePlayerController::OnApplyRenderPreset3() { OnApplyRenderPreset(3); }
+
+void AGamePlayerController::OnToggleBackground()
 {
-	ConsoleCommand(TEXT("VIEWMODE UNLIT"));
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleBackground: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->SetBackgroundVisible(!Orchestrator->IsBackgroundVisible());
 }
 
 void AGamePlayerController::OnSpeedBoostStarted()
