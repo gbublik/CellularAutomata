@@ -999,20 +999,37 @@ public:
 	 *  поколение просто никогда не попадает на экран. Next()/GenerateRandom()
 	 *  этот порог игнорируют - рендерят немедленно всегда. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
-			  meta = (ClampMin = "1"))
+			  meta = (ClampMin = "1", ClampMax = "4096"))
 	int32 StepsPerRender = 1;
 
-	/** Меняет StepsPerRender на Delta (хоткеи [ и ] в AGamePlayerController),
-	 *  клампится снизу к 1 - StepsPerRender не может быть меньше 1 (рендерить
-	 *  реже раза в поколение не имеет смысла). */
+	/** Верхняя граница StepsPerRender. Снизу 1 очевидна (рендерить реже раза
+	 *  в поколение бессмысленно), сверху границы раньше не было вовсе - она
+	 *  понадобилась, когда появилось удвоение с клавиши (Shift+T), которое
+	 *  без потолка ушло бы в переполнение int32 за десяток нажатий. Значение
+	 *  заведомо избыточное: батчинг в FGpuComputeStrategy обрезается гораздо
+	 *  раньше (halo равен размеру батча, объём растёт кубически), так что это
+	 *  предохранитель, а не рабочий диапазон. */
+	static constexpr int32 MaxStepsPerRender = 4096;
+
+	/** Меняет StepsPerRender на Delta (хоткеи T и G в AGamePlayerController),
+	 *  клампится к [1, MaxStepsPerRender]. */
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void AdjustStepsPerRender(int32 Delta);
 
-	/** Абсолютная установка StepsPerRender с тем же клампом (>= 1), что и
+	/** Абсолютная установка StepsPerRender с тем же клампом, что и
 	 *  AdjustStepsPerRender() - для слайдера в HUD (см. SetSpeed() выше про
 	 *  то, зачем сеттер при BlueprintReadWrite-свойстве). */
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void SetStepsPerRender(int32 NewStepsPerRender);
+
+	/** Переход к следующей (bDouble) или предыдущей степени двойки - хоткеи
+	 *  Shift+T и Shift+G. Именно к степени, а не умножение на два: если
+	 *  текущее значение неровное (254, набранное шагом в единицу), удвоение
+	 *  оставило бы его неровным, а так одно нажатие всегда приводит на 2^k.
+	 *  Степени двойки здесь и есть интересные значения - см. doc-comment
+	 *  AGamePlayerController::OnDoubleStepsPerRender(). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void ScaleStepsPerRender(bool bDouble);
 
 	/** Количество живых клеток при генерации */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",

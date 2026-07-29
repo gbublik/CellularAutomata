@@ -571,14 +571,43 @@ void AAutomataOrchestrator::SetSpeed(float NewSpeed)
 
 void AAutomataOrchestrator::AdjustStepsPerRender(int32 Delta)
 {
-	StepsPerRender = FMath::Max(StepsPerRender + Delta, 1);
-	UE_LOG(LogTemp, Log, TEXT("AdjustStepsPerRender: StepsPerRender = %d"), StepsPerRender);
+	SetStepsPerRender(StepsPerRender + Delta);
 }
 
 void AAutomataOrchestrator::SetStepsPerRender(int32 NewStepsPerRender)
 {
-	StepsPerRender = FMath::Max(NewStepsPerRender, 1);
+	StepsPerRender = FMath::Clamp(NewStepsPerRender, 1, MaxStepsPerRender);
 	UE_LOG(LogTemp, Log, TEXT("SetStepsPerRender: StepsPerRender = %d"), StepsPerRender);
+}
+
+void AAutomataOrchestrator::ScaleStepsPerRender(bool bDouble)
+{
+	// Не умножение на два, а переход к следующей/предыдущей СТЕПЕНИ ДВОЙКИ:
+	// если текущее значение степенью двойки не является (например 254,
+	// набранное с клавиши), удвоение оставило бы его таким же неровным - 508.
+	// Так же одно нажатие всегда приводит на 2^k, откуда дальше можно ходить
+	// по степеням точно.
+	const int32 Current = FMath::Clamp(StepsPerRender, 1, MaxStepsPerRender);
+
+	int32 Next;
+	if (bDouble)
+	{
+		Next = 1;
+		while (Next <= Current && Next < MaxStepsPerRender)
+		{
+			Next <<= 1;
+		}
+	}
+	else
+	{
+		Next = MaxStepsPerRender;
+		while (Next >= Current && Next > 1)
+		{
+			Next >>= 1;
+		}
+	}
+
+	SetStepsPerRender(Next);
 }
 
 void AAutomataOrchestrator::InitializeHUD()

@@ -166,6 +166,14 @@ void AGamePlayerController::SetupInputComponent()
 		// кадр, а не только на однократное нажатие (аналогично +/- для Speed).
 		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseStepsPerRender);
 		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseStepsPerRender);
+		// Те же клавиши ещё раз, но на Started и под Shift - переход к
+		// следующей/предыдущей степени двойки. Started, а не Triggered:
+		// удвоение на каждом кадре удержания улетело бы в потолок мгновенно.
+		// Какой из двух обработчиков сработает, решает проверка Shift внутри
+		// них самих - Enhanced Input не умеет требовать модификатор в
+		// маппинге клавиши.
+		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDoubleStepsPerRender);
+		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnHalveStepsPerRender);
 		EnhancedInputComp->BindAction(ToggleSelectionModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSelectionMode);
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSelectDragStarted);
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSelectDragFinished);
@@ -543,8 +551,20 @@ bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator)
 	return true;
 }
 
+bool AGamePlayerController::IsShiftHeld() const
+{
+	return IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
+}
+
 void AGamePlayerController::OnIncreaseStepsPerRender()
 {
+	// С Shift работает OnDoubleStepsPerRender() на Started - здесь молча
+	// уходим, иначе за то же нажатие сработали бы оба.
+	if (IsShiftHeld())
+	{
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -557,6 +577,12 @@ void AGamePlayerController::OnIncreaseStepsPerRender()
 
 void AGamePlayerController::OnDecreaseStepsPerRender()
 {
+	// См. одноимённую проверку в OnIncreaseStepsPerRender().
+	if (IsShiftHeld())
+	{
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -565,6 +591,40 @@ void AGamePlayerController::OnDecreaseStepsPerRender()
 	}
 
 	Orchestrator->AdjustStepsPerRender(-1);
+}
+
+void AGamePlayerController::OnDoubleStepsPerRender()
+{
+	if (!IsShiftHeld())
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnDoubleStepsPerRender: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->ScaleStepsPerRender(true);
+}
+
+void AGamePlayerController::OnHalveStepsPerRender()
+{
+	if (!IsShiftHeld())
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnHalveStepsPerRender: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->ScaleStepsPerRender(false);
 }
 
 void AGamePlayerController::OnToggleSelectionMode()
