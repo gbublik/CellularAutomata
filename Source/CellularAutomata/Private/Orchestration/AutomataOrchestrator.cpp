@@ -3124,6 +3124,37 @@ void AAutomataOrchestrator::MoveCullVolumeToSelection()
 	RefreshRenderCullVolume();
 }
 
+void AAutomataOrchestrator::MoveCullVolumeByCells(const FIntVector& CellDelta)
+{
+	if (CellDelta.IsZero())
+	{
+		return;
+	}
+
+	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
+	if (!CullVolume)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MoveCullVolumeByCells: на уровне нет ARenderCullVolume - разместите его сначала"));
+		ShowStatusMessage(StatusKey_CullVolume, TEXT("Стрелки: на уровне нет ARenderCullVolume - разместите его"));
+		return;
+	}
+
+	const FVector WorldDelta = FVector(CellDelta) * CellSize;
+	const FVector NewLocation = CullVolume->GetActorLocation() + WorldDelta;
+	CullVolume->SetActorLocation(NewLocation);
+
+	// Как и в MoveCullVolumeToSelection(): программный SetActorLocation() не
+	// поднимает PostEditMove(), так что перерисовываем сами. Сообщение тоже
+	// оттуда - куб мог переехать, но если отсечение не активно, на экране
+	// ничего не изменится, и это неотличимо от несработавшей клавиши.
+	const bool bCullingActive = GetActiveCullVolume() != nullptr;
+	ShowStatusMessage(StatusKey_CullVolume, FString::Printf(TEXT("Куб отсечения: %s%s"),
+		*NewLocation.ToCompactString(),
+		bCullingActive ? TEXT("") : TEXT("   (отсечение НЕ активно - C включить, Ctrl+C показать куб)")));
+
+	RefreshRenderCullVolume();
+}
+
 void AAutomataOrchestrator::AdvanceChunkedRender()
 {
 	++ChunkedRenderFrameCount;

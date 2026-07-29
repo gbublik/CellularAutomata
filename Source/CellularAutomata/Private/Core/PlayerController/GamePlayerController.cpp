@@ -58,6 +58,18 @@ void AGamePlayerController::SetupInputComponent()
 	FrameAllCellsAction = NewObject<UInputAction>(this, TEXT("IA_FrameAllCells"));
 	FrameAllCellsAction->ValueType = EInputActionValueType::Boolean;
 
+	MoveCullVolumeUpAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeUp"));
+	MoveCullVolumeUpAction->ValueType = EInputActionValueType::Boolean;
+
+	MoveCullVolumeDownAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeDown"));
+	MoveCullVolumeDownAction->ValueType = EInputActionValueType::Boolean;
+
+	MoveCullVolumeLeftAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeLeft"));
+	MoveCullVolumeLeftAction->ValueType = EInputActionValueType::Boolean;
+
+	MoveCullVolumeRightAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeRight"));
+	MoveCullVolumeRightAction->ValueType = EInputActionValueType::Boolean;
+
 	ToggleViewSliceAction = NewObject<UInputAction>(this, TEXT("IA_ToggleViewSlice"));
 	ToggleViewSliceAction->ValueType = EInputActionValueType::Boolean;
 
@@ -128,6 +140,13 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(IncreaseStepsPerRenderAction, EKeys::T);
 	SimulationMappingContext->MapKey(DecreaseStepsPerRenderAction, EKeys::G);
 	// [ и ] освободились, когда StepsPerRender переехал на T/G.
+	// Стрелки заняты ADefaultPawn (полёт и поворот), поэтому обработчики ниже
+	// работают только в режиме выделения, где ввод пешки отключён - см.
+	// OnMoveCullVolume().
+	SimulationMappingContext->MapKey(MoveCullVolumeUpAction, EKeys::Up);
+	SimulationMappingContext->MapKey(MoveCullVolumeDownAction, EKeys::Down);
+	SimulationMappingContext->MapKey(MoveCullVolumeLeftAction, EKeys::Left);
+	SimulationMappingContext->MapKey(MoveCullVolumeRightAction, EKeys::Right);
 	SimulationMappingContext->MapKey(ToggleViewSliceAction, EKeys::J);
 	SimulationMappingContext->MapKey(ViewSliceNearerAction, EKeys::LeftBracket);
 	SimulationMappingContext->MapKey(ViewSliceFartherAction, EKeys::RightBracket);
@@ -187,6 +206,11 @@ void AGamePlayerController::SetupInputComponent()
 		// маппинге клавиши.
 		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDoubleStepsPerRender);
 		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnHalveStepsPerRender);
+		// Triggered - удержание повторяет сдвиг, как у +/- для Speed.
+		EnhancedInputComp->BindAction(MoveCullVolumeUpAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeUp);
+		EnhancedInputComp->BindAction(MoveCullVolumeDownAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeDown);
+		EnhancedInputComp->BindAction(MoveCullVolumeLeftAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeLeft);
+		EnhancedInputComp->BindAction(MoveCullVolumeRightAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeRight);
 		EnhancedInputComp->BindAction(ToggleViewSliceAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleViewSlice);
 		// Triggered - срез подбирают на глаз, непрерывно, а не однократным
 		// нажатием (как +/- для Speed).
@@ -572,6 +596,48 @@ bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator)
 bool AGamePlayerController::IsShiftHeld() const
 {
 	return IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
+}
+
+void AGamePlayerController::OnMoveCullVolume(const FIntVector& CellDelta)
+{
+	// Вне режима выделения стрелки принадлежат пешке (полёт вперёд-назад и
+	// поворот камеры), и перехватывать их там нельзя - куб ездил бы вместе с
+	// полётом. Молча, без сообщения: иначе оно висело бы на экране всё время,
+	// пока летаешь стрелками.
+	if (!bSelectionModeActive)
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnMoveCullVolume: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->MoveCullVolumeByCells(CellDelta);
+}
+
+void AGamePlayerController::OnMoveCullVolumeUp()
+{
+	// С Shift вертикальная пара уходит на Z вместо Y.
+	OnMoveCullVolume(IsShiftHeld() ? FIntVector(0, 0, 1) : FIntVector(0, 1, 0));
+}
+
+void AGamePlayerController::OnMoveCullVolumeDown()
+{
+	OnMoveCullVolume(IsShiftHeld() ? FIntVector(0, 0, -1) : FIntVector(0, -1, 0));
+}
+
+void AGamePlayerController::OnMoveCullVolumeLeft()
+{
+	OnMoveCullVolume(FIntVector(-1, 0, 0));
+}
+
+void AGamePlayerController::OnMoveCullVolumeRight()
+{
+	OnMoveCullVolume(FIntVector(1, 0, 0));
 }
 
 void AGamePlayerController::OnToggleViewSlice()

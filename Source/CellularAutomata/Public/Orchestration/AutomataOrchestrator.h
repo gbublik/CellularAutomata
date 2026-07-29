@@ -857,6 +857,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void RefreshRenderCullVolume();
 
+	/** Сдвигает куб отсечения на целое число КЛЕТОК по каждой оси (шаг
+	 *  умножается на CellSize внутри). В клетках, а не в мировых единицах,
+	 *  чтобы куб не съезжал с решётки: после MoveCullVolumeToSelection() он
+	 *  стоит ровно по центру клетки, и сдвиг целым числом клеток это
+	 *  свойство сохраняет. Хоткеи - стрелки в режиме выделения, см.
+	 *  AGamePlayerController::OnMoveCullVolume(). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void MoveCullVolumeByCells(const FIntVector& CellDelta);
+
 	/** Срез вдоль взгляда - показывать только клетки, лежащие в слое,
 	 *  перпендикулярном направлению камеры.
 	 *

@@ -249,6 +249,25 @@ protected:
 	/** Зажат ли любой Shift - левый или правый. */
 	bool IsShiftHeld() const;
 
+	/** Стрелки - двигают куб отсечения на клетку за нажатие: вверх/вниз по Y,
+	 *  влево/вправо по X, с Shift вверх/вниз по Z.
+	 *
+	 *  Работают ТОЛЬКО в режиме выделения (Tab) и молча ничего не делают вне
+	 *  него. Причина в конфликте: ADefaultPawn вешает на Up/Down полёт
+	 *  вперёд-назад, а на Left/Right поворот камеры
+	 *  (DefaultPawn.cpp, InitializeDefaultPawnInputBindings) - на голых
+	 *  стрелках куб ездил бы одновременно с полётом. В режиме выделения ввод
+	 *  пешки отключён (SetCameraControlEnabled(false)), стрелки свободны, и
+	 *  это ровно тот режим, в котором куб и позиционируют: выделил клетку,
+	 *  нажал K, дальше подвинул.
+	 *
+	 *  Triggered - удержание повторяет сдвиг, как у +/- для Speed. */
+	void OnMoveCullVolume(const FIntVector& CellDelta);
+	void OnMoveCullVolumeUp();
+	void OnMoveCullVolumeDown();
+	void OnMoveCullVolumeLeft();
+	void OnMoveCullVolumeRight();
+
 	/** Хоткей (J) - включает/выключает срез вдоль взгляда
 	 *  (AAutomataOrchestrator::bEnableViewSlice). */
 	void OnToggleViewSlice();
@@ -363,6 +382,18 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleGhostShapeAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> MoveCullVolumeUpAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> MoveCullVolumeDownAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> MoveCullVolumeLeftAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> MoveCullVolumeRightAction;
 
 	UPROPERTY()
 	TObjectPtr<class UInputAction> ToggleViewSliceAction;
