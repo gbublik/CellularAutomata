@@ -1500,6 +1500,35 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	if (CellsToBake.Num() == 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: нечего запекать - нет ни выделенных, ни живых клеток"));
+		ShowStatusMessage(StatusKey_Bake, TEXT("[M] Нечего запекать - нет ни выделенных, ни живых клеток"));
+		return;
+	}
+
+	// Без выделения печём всю сетку, а значит принадлежность соседа набору
+	// можно спрашивать прямо у неё, не строя TSet по миллионам клеток (см.
+	// CellMeshBuilder::BuildFromCells()). Ответ тот же, памяти на сотни
+	// мегабайт меньше.
+	const bool bUseGridMembership = SelectedCells.Num() == 0;
+
+	// Оценка ДО построения: считаем точное число наружных граней, ничего под
+	// геометрию не выделяя, и отказываемся, если она не влезает в бюджет.
+	// Иначе нажатие M на большой пористой сетке просто съедает всю память и
+	// вешает редактор - наблюдалось.
+	const double CountStartSeconds = FPlatformTime::Seconds();
+	const int64 ExposedFaceCount = CellMeshBuilder::CountExposedFaces(*Grid, CellsToBake, bUseGridMembership);
+	const int64 EstimatedBytes = CellMeshBuilder::EstimateMeshBytes(ExposedFaceCount);
+	const double EstimatedMB = double(EstimatedBytes) / (1024.0 * 1024.0);
+	const double CountSeconds = FPlatformTime::Seconds() - CountStartSeconds;
+
+	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: клеток %d -> наружных граней %lld, оценка геометрии ~%.0f МБ (подсчёт: %.0f мс, бюджет %d МБ)"),
+		CellsToBake.Num(), ExposedFaceCount, EstimatedMB, CountSeconds * 1000.0, BakeMemoryBudgetMB);
+
+	if (EstimatedMB > double(BakeMemoryBudgetMB))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: отказ - геометрия потребует ~%.0f МБ при бюджете %d МБ (BakeMemoryBudgetMB)"), EstimatedMB, BakeMemoryBudgetMB);
+		ShowStatusMessage(StatusKey_Bake, FString::Printf(
+			TEXT("[M] Бейк отменён: нужно ~%.0f МБ при бюджете %d МБ.  Выделите кусок (Tab, рамка) или поднимите BakeMemoryBudgetMB"),
+			EstimatedMB, BakeMemoryBudgetMB));
 		return;
 	}
 
@@ -1511,7 +1540,7 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	}
 
 	const double BakeStartSeconds = FPlatformTime::Seconds();
-	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(*Grid, CellsToBake);
+	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(*Grid, CellsToBake, bUseGridMembership);
 	const double BuildSeconds = FPlatformTime::Seconds() - BakeStartSeconds;
 
 	EnsureBakedMeshComponent();
@@ -1546,6 +1575,9 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 
 	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: %d клеток -> %d вершин / %d треугольников (геометрия: %.2f мс, секция: %.2f мс); сетка и инстансы выгружены, R начнёт новый прогон"),
 		CellsToBake.Num(), MeshData.Vertices.Num(), MeshData.Triangles.Num() / 3, BuildSeconds * 1000.0, SectionSeconds * 1000.0);
+	ShowStatusMessage(StatusKey_Bake, FString::Printf(
+		TEXT("[M] Запечено: %d клеток -> %d треугольников, ~%.0f МБ за %.1f с.  Сетка выгружена, R начнёт заново"),
+		CellsToBake.Num(), MeshData.Triangles.Num() / 3, EstimatedMB, (CountSeconds + BuildSeconds + SectionSeconds)));
 }
 
 void AAutomataOrchestrator::StartFromSelection()

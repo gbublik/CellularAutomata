@@ -28,27 +28,57 @@ namespace
 	};
 }
 
-CellMeshBuilder::FCellMeshData CellMeshBuilder::BuildFromCells(const FCellGrid& Grid, const TArray<FIntVector>& Cells)
+int64 CellMeshBuilder::EstimateMeshBytes(int64 ExposedFaceCount)
 {
-	FCellMeshData MeshData;
+	// 4 вершины на грань, у каждой позиция, нормаль и UV; плюс 6 индексов.
+	// Под LWC FVector это 24 байта, так что одна вершина - 64 байта, а грань
+	// целиком около 280.
+	const int64 BytesPerVertex = sizeof(FVector) + sizeof(FVector) + sizeof(FVector2D);
+	return ExposedFaceCount * (4 * BytesPerVertex + 6 * (int64)sizeof(int32));
+}
 
-	const TSet<FIntVector> CellSet(Cells);
-	const double HalfSize = Grid.GetCellSize() * 0.5;
+int64 CellMeshBuilder::CountExposedFaces(const FCellGrid& Grid, const TArray<FIntVector>& Cells, bool bUseGridMembership)
+{
+	// TSet строится только когда без него нельзя (бейк подмножества) - см.
+	// doc-comment BuildFromCells().
+	TSet<FIntVector> CellSet;
+	if (!bUseGridMembership)
+	{
+		CellSet.Append(Cells);
+	}
 
-	// Первый проход - точный подсчёт наружных граней для Reserve: при
-	// миллионах клеток многократные переаллокации массивов вершин дороже,
-	// чем лишний прогон дешёвых TSet-проверок.
 	int64 ExposedFaceCount = 0;
 	for (const FIntVector& Cell : Cells)
 	{
 		for (const FFaceDef& Face : GFaces)
 		{
-			if (!CellSet.Contains(Cell + Face.NeighborOffset))
+			const FIntVector Neighbor = Cell + Face.NeighborOffset;
+			const bool bNeighborPresent = bUseGridMembership ? Grid.IsAlive(Neighbor) : CellSet.Contains(Neighbor);
+			if (!bNeighborPresent)
 			{
 				++ExposedFaceCount;
 			}
 		}
 	}
+
+	return ExposedFaceCount;
+}
+
+CellMeshBuilder::FCellMeshData CellMeshBuilder::BuildFromCells(const FCellGrid& Grid, const TArray<FIntVector>& Cells, bool bUseGridMembership)
+{
+	FCellMeshData MeshData;
+
+	TSet<FIntVector> CellSet;
+	if (!bUseGridMembership)
+	{
+		CellSet.Append(Cells);
+	}
+	const double HalfSize = Grid.GetCellSize() * 0.5;
+
+	// Первый проход - точный подсчёт наружных граней для Reserve: при
+	// миллионах клеток многократные переаллокации массивов вершин дороже,
+	// чем лишний прогон дешёвых проверок соседей.
+	const int64 ExposedFaceCount = CountExposedFaces(Grid, Cells, bUseGridMembership);
 
 	MeshData.Vertices.Reserve(ExposedFaceCount * 4);
 	MeshData.Normals.Reserve(ExposedFaceCount * 4);
@@ -61,7 +91,9 @@ CellMeshBuilder::FCellMeshData CellMeshBuilder::BuildFromCells(const FCellGrid& 
 
 		for (const FFaceDef& Face : GFaces)
 		{
-			if (CellSet.Contains(Cell + Face.NeighborOffset))
+			const FIntVector Neighbor = Cell + Face.NeighborOffset;
+			const bool bNeighborPresent = bUseGridMembership ? Grid.IsAlive(Neighbor) : CellSet.Contains(Neighbor);
+			if (bNeighborPresent)
 			{
 				continue;
 			}
