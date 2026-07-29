@@ -658,6 +658,18 @@ void AAutomataOrchestrator::SetViewSliceEnabled(bool bEnabled)
 	RefreshRenderCullVolume();
 }
 
+void AAutomataOrchestrator::SetAgeFilter(int32 NewAgeFilter)
+{
+	AgeFilter = FMath::Clamp(NewAgeFilter, 0, 255);
+	UE_LOG(LogTemp, Log, TEXT("SetAgeFilter: %s"), AgeFilter > 0
+		? *FString::Printf(TEXT("показываются только клетки возраста %d"), AgeFilter)
+		: TEXT("фильтр снят, показываются все клетки"));
+	ShowStatusMessage(StatusKey_AgeFilter, AgeFilter > 0
+		? FString::Printf(TEXT("[%d] Только возраст %d  (0 - показать все)"), AgeFilter, AgeFilter)
+		: FString(TEXT("[0] Фильтр по возрасту снят")));
+	RefreshRenderCullVolume();
+}
+
 void AAutomataOrchestrator::AdjustViewSliceDistance(float Delta)
 {
 	ViewSliceDistance = FMath::Max(ViewSliceDistance + Delta, 0.0f);
@@ -2718,6 +2730,14 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	OutInstances.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
+		const uint8 Age = Grid->GetAge(Cell);
+		// Фильтр по возрасту (см. AgeFilter) - раньше остальных проверок:
+		// он отсекает больше всего и обходится одним сравнением.
+		if (AgeFilter > 0 && Age != (uint8)AgeFilter)
+		{
+			continue;
+		}
+
 		const FVector World = Grid->GridToWorld(Cell);
 		if (bSliceActive)
 		{
@@ -2728,7 +2748,7 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 			}
 		}
 
-		OutInstances.Add({ FVector3f(World), AgeLut[Grid->GetAge(Cell)] });
+		OutInstances.Add({ FVector3f(World), AgeLut[Age] });
 	}
 
 	// Generations (States > 2) - угасающие клетки (не живые, но ещё не
@@ -2739,7 +2759,10 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	// бакеты, что и живые, и были от них визуально неотличимы. При States == 2
 	// этот блок вообще не выполняется - ни GetDecayingCells()/
 	// GetDecayingCellsInBounds(), ни лишний проход, ни построение таблицы.
-	if (States > 2)
+	// Фильтр по возрасту прячет угасающие клетки целиком: возраст у них не
+	// определён - это отдельный канал состояния, а не возраст, и приписать им
+	// какой-то возраст значило бы соврать (см. AgeFilter).
+	if (States > 2 && AgeFilter == 0)
 	{
 		TArray<FColor> DecayLut;
 		BuildDecayColorLut(DecayLut);

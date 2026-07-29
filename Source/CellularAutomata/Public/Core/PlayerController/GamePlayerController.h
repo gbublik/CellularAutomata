@@ -268,6 +268,11 @@ protected:
 	void OnMoveCullVolumeLeft();
 	void OnMoveCullVolumeRight();
 
+	/** Цифры 0-9 - фильтр по возрасту клетки (0 снимает фильтр). Ловятся в
+	 *  InputKey(), а не через Enhanced Input: десять клавиш одного вида - это
+	 *  десять UInputAction ради одного switch. */
+	void OnSetAgeFilter(int32 Age);
+
 	/** Хоткей (J) - включает/выключает срез вдоль взгляда
 	 *  (AAutomataOrchestrator::bEnableViewSlice). */
 	void OnToggleViewSlice();

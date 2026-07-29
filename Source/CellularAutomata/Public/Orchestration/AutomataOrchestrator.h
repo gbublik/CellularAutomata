@@ -970,6 +970,35 @@ public:
 			  meta = (ClampMin = "0.0", EditCondition = "bEnableViewSlice"))
 	float ViewSliceRotationThreshold = 2.0f;
 
+	/** Показывать только клетки РОВНО такого возраста; 0 - показывать все.
+	 *  Хоткеи - цифры 0-9 (см. AGamePlayerController::OnSetAgeFilter()).
+	 *
+	 *  Возраст - это число поколений, прожитых клеткой подряд, а у правил
+	 *  вроде 0-6/1,3/2 никто не умирает, поэтому "возраст N" - это ровно
+	 *  концентрический слой, родившийся N поколений назад: у фон-Неймана
+	 *  грань октаэдра, у Мура грань куба. То есть послойное вскрытие, только
+	 *  концентрическое, в дополнение к плоскому срезу вдоль взгляда.
+	 *
+	 *  Ровно возраст, а не полоса возрастов: полоса ближе к тому, что делали
+	 *  прежние AgeMaterials со своими бакетами, но точное равенство
+	 *  предсказуемее - видно ровно один слой, и понятно, какой.
+	 *
+	 *  Угасающие клетки (Generations) при активном фильтре не рисуются вовсе:
+	 *  возраст у них не определён - это отдельный канал состояния, а не
+	 *  возраст (см. FCellGrid::IsDecaying()). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0", ClampMax = "255"))
+	int32 AgeFilter = 0;
+
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	int32 GetAgeFilter() const { return AgeFilter; }
+
+	/** Ставит фильтр и сразу перерисовывает - ждать следующего поколения
+	 *  незачем, а на паузе его и не будет (та же причина, что у
+	 *  SetViewSliceEnabled()). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetAgeFilter(int32 NewAgeFilter);
+
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	bool IsViewSliceEnabled() const { return bEnableViewSlice; }
 
@@ -1721,6 +1750,7 @@ private:
 		StatusKey_ViewSlice = 1001,
 		StatusKey_CullVolume = 1002,
 		StatusKey_Bake = 1003,
+		StatusKey_AgeFilter = 1004,
 	};
 
 	/** Сдвинулась ли камера настолько, что срез пора перестроить. Всегда

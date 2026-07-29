@@ -121,8 +121,11 @@ void AGamePlayerController::SetupInputComponent()
 	// что был у P - см. doc-comment InputKey()).
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
-	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::One);
-	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::Two);
+	// F1/F2, а не 1/2: цифровой ряд отдан фильтру по возрасту (см. InputKey()),
+	// и это осознанный размен - режим освещения ставят раз за сессию, а
+	// возрастные слои перебирают постоянно при осмотре.
+	SimulationMappingContext->MapKey(SetLitModeAction, EKeys::F1);
+	SimulationMappingContext->MapKey(SetUnlitModeAction, EKeys::F2);
 	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
 	SimulationMappingContext->MapKey(ToggleChunkedRenderAction, EKeys::Z);
 	SimulationMappingContext->MapKey(CycleChunkedRenderOrderAction, EKeys::X);
@@ -266,6 +269,28 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	if (Params.Key == EKeys::N && Params.Event == IE_Pressed)
 	{
 		OnNewSeed();
+	}
+
+	// Цифры 0-9 - фильтр по возрасту (0 снимает). Здесь, а не через Enhanced
+	// Input, по причине, не связанной с лагом: десять клавиш одного вида - это
+	// десять UInputAction, десять MapKey и десять обработчиков ради одного
+	// switch. Читаемость дороже единообразия, а задержки эти клавиши не
+	// критичны, в отличие от P/R/N выше.
+	if (Params.Event == IE_Pressed)
+	{
+		static const FKey DigitKeys[10] = {
+			EKeys::Zero, EKeys::One, EKeys::Two, EKeys::Three, EKeys::Four,
+			EKeys::Five, EKeys::Six, EKeys::Seven, EKeys::Eight, EKeys::Nine
+		};
+
+		for (int32 Digit = 0; Digit < 10; ++Digit)
+		{
+			if (Params.Key == DigitKeys[Digit])
+			{
+				OnSetAgeFilter(Digit);
+				break;
+			}
+		}
 	}
 
 	return Super::InputKey(Params);
@@ -638,6 +663,18 @@ void AGamePlayerController::OnMoveCullVolumeLeft()
 void AGamePlayerController::OnMoveCullVolumeRight()
 {
 	OnMoveCullVolume(FIntVector(1, 0, 0));
+}
+
+void AGamePlayerController::OnSetAgeFilter(int32 Age)
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnSetAgeFilter: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->SetAgeFilter(Age);
 }
 
 void AGamePlayerController::OnToggleViewSlice()
