@@ -20,6 +20,7 @@
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Automata/Selection/CellSelection.h"
 #include "Automata/Meshing/CellMeshBuilder.h"
+#include "Automata/Grid/GridDownsample.h"
 #include "Automata/Meshing/ChunkGridView.h"
 #include "Automata/Persistence/AutomatonStateSerializer.h"
 #include "ProceduralMeshComponent.h"
@@ -1510,31 +1511,52 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	// мегабайт меньше.
 	const bool bUseGridMembership = SelectedCells.Num() == 0;
 
-	// Оценка ДО построения: считаем точное число наружных граней, ничего под
-	// геометрию не выделяя, и отказываемся, если она не влезает в бюджет.
-	// Иначе нажатие M на большой пористой сетке просто съедает всю память и
-	// вешает редактор - наблюдалось.
-	const double CountStartSeconds = FPlatformTime::Seconds();
-	const int64 ExposedFaceCount = CellMeshBuilder::CountExposedFaces(*Grid, CellsToBake, bUseGridMembership);
-	const int64 EstimatedBytes = CellMeshBuilder::EstimateMeshBytes(ExposedFaceCount);
-	const double EstimatedMB = double(EstimatedBytes) / (1024.0 * 1024.0);
-	const double CountSeconds = FPlatformTime::Seconds() - CountStartSeconds;
-
 	// Свободная физическая память - чтобы бюджет можно было ставить осознанно,
 	// а не наугад: оценка сама по себе не говорит, много это или мало на
 	// конкретной машине.
 	const double AvailableMB = double(FPlatformMemory::GetStats().AvailablePhysical) / (1024.0 * 1024.0);
 
-	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: клеток %d -> наружных граней %lld, оценка пика ~%.0f МБ (подсчёт: %.0f мс, бюджет %d МБ, свободно %.0f МБ)"),
-		CellsToBake.Num(), ExposedFaceCount, EstimatedMB, CountSeconds * 1000.0, BakeMemoryBudgetMB, AvailableMB);
+	// Подбор огрубления. Считаем точное число наружных граней (без единой
+	// аллокации под геометрию), и если оценка не влезает в бюджет - сливаем
+	// K x K x K клеток в одну и пробуем снова. Выигрыш двойной: клеток в K^3
+	// раз меньше, и структура плотнее, отчего падает ещё и число граней НА
+	// клетку. Без этого нажатие M на большой пористой сетке съедало всю
+	// память и вешало редактор - наблюдалось.
+	//
+	// Огрублённая сетка сама себе набор, поэтому принадлежность соседа
+	// спрашивается у неё (bUseGridMembership = true) независимо от того,
+	// печём мы выделение или всё: выделение уже учтено при её построении.
+	const double CountStartSeconds = FPlatformTime::Seconds();
+	TUniquePtr<FDenseCellGrid> CoarseGrid;
+	TArray<FIntVector> CoarseCells;
+	int32 Simplification = 1;
+	int64 ExposedFaceCount = CellMeshBuilder::CountExposedFaces(*Grid, CellsToBake, bUseGridMembership);
+	double EstimatedMB = double(CellMeshBuilder::EstimateMeshBytes(ExposedFaceCount)) / (1024.0 * 1024.0);
+
+	while (EstimatedMB > double(BakeMemoryBudgetMB) && bAutoSimplifyBake && Simplification < MaxBakeSimplification)
+	{
+		Simplification *= 2;
+		CoarseGrid = GridDownsample::Downsample(*Grid, CellsToBake, Simplification, ChunkSize);
+		CoarseGrid->GetAliveCells(CoarseCells);
+		ExposedFaceCount = CellMeshBuilder::CountExposedFaces(*CoarseGrid, CoarseCells, /*bUseGridMembership=*/true);
+		EstimatedMB = double(CellMeshBuilder::EstimateMeshBytes(ExposedFaceCount)) / (1024.0 * 1024.0);
+
+		UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: огрубление x%d -> клеток %d, граней %lld, оценка ~%.0f МБ"),
+			Simplification, CoarseCells.Num(), ExposedFaceCount, EstimatedMB);
+	}
+
+	const double CountSeconds = FPlatformTime::Seconds() - CountStartSeconds;
+
+	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: клеток %d -> наружных граней %lld, оценка пика ~%.0f МБ, огрубление x%d (подбор: %.0f мс, бюджет %d МБ, свободно %.0f МБ)"),
+		CellsToBake.Num(), ExposedFaceCount, EstimatedMB, Simplification, CountSeconds * 1000.0, BakeMemoryBudgetMB, AvailableMB);
 
 	if (EstimatedMB > double(BakeMemoryBudgetMB))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: отказ - потребуется ~%.0f МБ при бюджете %d МБ (BakeMemoryBudgetMB), свободно %.0f МБ"),
-			EstimatedMB, BakeMemoryBudgetMB, AvailableMB);
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: отказ - потребуется ~%.0f МБ при бюджете %d МБ даже с огрублением x%d"),
+			EstimatedMB, BakeMemoryBudgetMB, Simplification);
 		ShowStatusMessage(StatusKey_Bake, FString::Printf(
-			TEXT("[M] Бейк отменён: нужно ~%.0f МБ при бюджете %d МБ (свободно %.0f МБ).  Выделите кусок (Tab, рамка) или поднимите BakeMemoryBudgetMB"),
-			EstimatedMB, BakeMemoryBudgetMB, AvailableMB));
+			TEXT("[M] Бейк отменён: нужно ~%.0f МБ при бюджете %d МБ (свободно %.0f МБ) даже с огрублением x%d.  Выделите кусок или поднимите BakeMemoryBudgetMB / MaxBakeSimplification"),
+			EstimatedMB, BakeMemoryBudgetMB, AvailableMB, Simplification));
 		return;
 	}
 
@@ -1546,8 +1568,17 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	}
 
 	const double BakeStartSeconds = FPlatformTime::Seconds();
-	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(*Grid, CellsToBake, bUseGridMembership);
+	CellMeshBuilder::FCellMeshData MeshData = CoarseGrid
+		? CellMeshBuilder::BuildFromCells(*CoarseGrid, CoarseCells, /*bUseGridMembership=*/true)
+		: CellMeshBuilder::BuildFromCells(*Grid, CellsToBake, bUseGridMembership);
 	const double BuildSeconds = FPlatformTime::Seconds() - BakeStartSeconds;
+
+	// Огрублённая копия больше не нужна - освобождаем до того, как отдадим
+	// геометрию компоненту, чтобы она не сидела в памяти во время самого
+	// затратного момента (там живут ОБЕ копии геометрии, см.
+	// CellMeshBuilder::EstimateMeshBytes()).
+	CoarseCells.Empty();
+	CoarseGrid.Reset();
 
 	EnsureBakedMeshComponent();
 	BakedMeshComponent->ClearAllMeshSections();
@@ -1582,8 +1613,9 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	UE_LOG(LogTemp, Log, TEXT("BakeCellsToMesh: %d клеток -> %d вершин / %d треугольников (геометрия: %.2f мс, секция: %.2f мс); сетка и инстансы выгружены, R начнёт новый прогон"),
 		CellsToBake.Num(), MeshData.Vertices.Num(), MeshData.Triangles.Num() / 3, BuildSeconds * 1000.0, SectionSeconds * 1000.0);
 	ShowStatusMessage(StatusKey_Bake, FString::Printf(
-		TEXT("[M] Запечено: %d клеток -> %d треугольников, ~%.0f МБ за %.1f с.  Сетка выгружена, R начнёт заново"),
-		CellsToBake.Num(), MeshData.Triangles.Num() / 3, EstimatedMB, (CountSeconds + BuildSeconds + SectionSeconds)));
+		TEXT("[M] Запечено: %d клеток -> %d треугольников, ~%.0f МБ за %.1f с%s.  Сетка выгружена, R начнёт заново"),
+		CellsToBake.Num(), MeshData.Triangles.Num() / 3, EstimatedMB, (CountSeconds + BuildSeconds + SectionSeconds),
+		Simplification > 1 ? *FString::Printf(TEXT(", огрубление x%d"), Simplification) : TEXT("")));
 }
 
 void AAutomataOrchestrator::StartFromSelection()
