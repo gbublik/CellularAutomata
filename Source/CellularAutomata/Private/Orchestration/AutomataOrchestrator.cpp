@@ -73,8 +73,13 @@ namespace
 		const double PerCellMicroseconds = (RenderedCells > 0) ? ChunkedSeconds * 1000000.0 / RenderedCells : 0.0;
 		const double PerFrameMs = ChunkedSeconds * 1000.0 / SafeFrameCount;
 
-		UE_LOG(LogTemp, Log, TEXT("RenderTimings[%s]: клеток %d | разлив %.2f мс = %.3f мкс/клетка, %.2f мс/кадр за %d кадр(ов) [Transforms %.2f / AddInstances %.2f / CustomData %.2f] | разово в BeginRender %.2f мс [SetMesh %.2f / Clear %.2f / Scale %.2f / Reorder %.2f]"),
-			Context, RenderedCells,
+		// FPS в той же строке, потому что вставка инстансов и их отрисовка -
+		// разные стороны одного выбора: HISM строит дерево кластеров (дороже
+		// вставка), но получает окклюзию и отсечение по кластерам (дешевле
+		// отрисовка). Сравнивать CellMeshComponentType по одному лишь
+		// AddInstances бессмысленно, а на глаз - тем более.
+		UE_LOG(LogTemp, Log, TEXT("RenderTimings[%s]: клеток %d | FPS %.1f | разлив %.2f мс = %.3f мкс/клетка, %.2f мс/кадр за %d кадр(ов) [Transforms %.2f / AddInstances %.2f / CustomData %.2f] | разово в BeginRender %.2f мс [SetMesh %.2f / Clear %.2f / Scale %.2f / Reorder %.2f]"),
+			Context, RenderedCells, GAverageFPS,
 			ChunkedSeconds * 1000.0, PerCellMicroseconds, PerFrameMs, SafeFrameCount,
 			Timings.BuildTransformsSeconds * 1000.0, Timings.AddInstanceSeconds * 1000.0, Timings.CustomDataSeconds * 1000.0,
 			SetupSeconds * 1000.0,
