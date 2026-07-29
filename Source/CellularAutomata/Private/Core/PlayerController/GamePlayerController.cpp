@@ -58,6 +58,15 @@ void AGamePlayerController::SetupInputComponent()
 	FrameAllCellsAction = NewObject<UInputAction>(this, TEXT("IA_FrameAllCells"));
 	FrameAllCellsAction->ValueType = EInputActionValueType::Boolean;
 
+	ToggleViewSliceAction = NewObject<UInputAction>(this, TEXT("IA_ToggleViewSlice"));
+	ToggleViewSliceAction->ValueType = EInputActionValueType::Boolean;
+
+	ViewSliceNearerAction = NewObject<UInputAction>(this, TEXT("IA_ViewSliceNearer"));
+	ViewSliceNearerAction->ValueType = EInputActionValueType::Boolean;
+
+	ViewSliceFartherAction = NewObject<UInputAction>(this, TEXT("IA_ViewSliceFarther"));
+	ViewSliceFartherAction->ValueType = EInputActionValueType::Boolean;
+
 	IncreaseStepsPerRenderAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseStepsPerRender"));
 	IncreaseStepsPerRenderAction->ValueType = EInputActionValueType::Boolean;
 
@@ -118,6 +127,10 @@ void AGamePlayerController::SetupInputComponent()
 	SimulationMappingContext->MapKey(FrameAllCellsAction, EKeys::Home);
 	SimulationMappingContext->MapKey(IncreaseStepsPerRenderAction, EKeys::T);
 	SimulationMappingContext->MapKey(DecreaseStepsPerRenderAction, EKeys::G);
+	// [ и ] освободились, когда StepsPerRender переехал на T/G.
+	SimulationMappingContext->MapKey(ToggleViewSliceAction, EKeys::J);
+	SimulationMappingContext->MapKey(ViewSliceNearerAction, EKeys::LeftBracket);
+	SimulationMappingContext->MapKey(ViewSliceFartherAction, EKeys::RightBracket);
 	SimulationMappingContext->MapKey(ToggleSelectionModeAction, EKeys::Tab);
 	SimulationMappingContext->MapKey(SelectDragAction, EKeys::LeftMouseButton);
 	SimulationMappingContext->MapKey(ExtractSelectionAction, EKeys::Enter);
@@ -174,6 +187,11 @@ void AGamePlayerController::SetupInputComponent()
 		// маппинге клавиши.
 		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDoubleStepsPerRender);
 		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnHalveStepsPerRender);
+		EnhancedInputComp->BindAction(ToggleViewSliceAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleViewSlice);
+		// Triggered - срез подбирают на глаз, непрерывно, а не однократным
+		// нажатием (как +/- для Speed).
+		EnhancedInputComp->BindAction(ViewSliceNearerAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnViewSliceNearer);
+		EnhancedInputComp->BindAction(ViewSliceFartherAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnViewSliceFarther);
 		EnhancedInputComp->BindAction(ToggleSelectionModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSelectionMode);
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSelectDragStarted);
 		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSelectDragFinished);
@@ -556,6 +574,60 @@ bool AGamePlayerController::IsShiftHeld() const
 	return IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
 }
 
+void AGamePlayerController::OnToggleViewSlice()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleViewSlice: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->SetViewSliceEnabled(!Orchestrator->IsViewSliceEnabled());
+}
+
+void AGamePlayerController::OnViewSliceNearer()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnViewSliceNearer: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// Шаг задан в мировых единицах и намеренно крупный: клетка по умолчанию
+	// 100 единиц, так что мельче двигать бессмысленно - срез просто не
+	// пересечёт следующий слой клеток.
+	if (IsShiftHeld())
+	{
+		Orchestrator->AdjustViewSliceThickness(-ViewSliceAdjustStep);
+	}
+	else
+	{
+		Orchestrator->AdjustViewSliceDistance(-ViewSliceAdjustStep);
+	}
+}
+
+void AGamePlayerController::OnViewSliceFarther()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnViewSliceFarther: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// См. одноимённый комментарий в OnViewSliceNearer().
+	if (IsShiftHeld())
+	{
+		Orchestrator->AdjustViewSliceThickness(ViewSliceAdjustStep);
+	}
+	else
+	{
+		Orchestrator->AdjustViewSliceDistance(ViewSliceAdjustStep);
+	}
+}
+
 void AGamePlayerController::OnIncreaseStepsPerRender()
 {
 	// С Shift работает OnDoubleStepsPerRender() на Started - здесь молча
@@ -729,7 +801,12 @@ void AGamePlayerController::Tick(float DeltaTime)
 		// точками (см. doc-comment GetGizmoDragOrigin()).
 		if (ComputeGizmoAxisParam(CullVolume->GetGizmoDragOrigin(), CullVolume->GetActiveGizmoAxis(), RayOrigin, AxisParam))
 		{
-			CullVolume->UpdateGizmoDrag(AxisParam);
+			// Shift читается каждый кадр драга, а не запоминается на его
+			// начало (в отличие от модификатора выделения рамкой): здесь это
+			// не "режим операции", а непрерывная подстройка - зажал посреди
+			// драга и пропорции подхватились, отпустил и снова тянется одна
+			// ось.
+			CullVolume->UpdateGizmoDrag(AxisParam, IsShiftHeld());
 		}
 	}
 }

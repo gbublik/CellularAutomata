@@ -828,6 +828,74 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void RefreshRenderCullVolume();
 
+	/** Срез вдоль взгляда - показывать только клетки, лежащие в слое,
+	 *  перпендикулярном направлению камеры.
+	 *
+	 *  Появился как замена повороту ARenderCullVolume, а не как отдельная
+	 *  возможность. Задача была - рассмотреть грань структуры, а у правил
+	 *  вроде 0-6/1,3/2/VN грани лежат в плоскостях x+y+z = const, то есть
+	 *  под 45 градусов ко всем осям: осевой куб с ними не совмещается никаким
+	 *  размером, а отсечение по расстоянию (CellCullStartDistance/
+	 *  CellCullEndDistance) не помогает по двум независимым причинам - оно
+	 *  радиальное (сфера, а не плоскость) и работает на стороне рендера, уже
+	 *  после построения инстансов. Срез же перпендикулярен взгляду, а значит
+	 *  ВСЕГДА параллелен тому, на что смотришь: камера и играет роль поворота,
+	 *  и никаких ручек для угла не нужно вовсе.
+	 *
+	 *  Режется в BuildCellRenderData(), до построения трансформов - как куб, и
+	 *  вместе с кубом (условия складываются, а не заменяют друг друга). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	bool bEnableViewSlice = false;
+
+	/** Расстояние от КАМЕРЫ до середины среза вдоль направления взгляда.
+	 *  Именно от камеры, а не от центра структуры: тогда срез едет вместе с
+	 *  полётом ("покажи то, что передо мной"), а не стоит на месте, вокруг
+	 *  которого надо облетать. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0.0", EditCondition = "bEnableViewSlice"))
+	float ViewSliceDistance = 3000.0f;
+
+	/** Толщина слоя. Клетка остаётся, если её глубина вдоль взгляда попала в
+	 *  ViewSliceDistance +- половину этого значения. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "1.0", EditCondition = "bEnableViewSlice"))
+	float ViewSliceThickness = 1000.0f;
+
+	/** На сколько должна сдвинуться камера, чтобы срез пересчитался. Срез
+	 *  привязан к камере, поэтому строго говоря его надо перестраивать на
+	 *  каждый её сдвиг - а это полное построение инстансов заново. Порог
+	 *  гасит дрожание: на сотне тысяч отрисованных клеток пере-рендер стоит
+	 *  единицы миллисекунд, на миллионах уже заметен, и платить за него из-за
+	 *  микроскопических смещений мыши незачем. Поворот учитывается отдельно (см.
+	 *  ViewSliceRotationThreshold). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0.0", EditCondition = "bEnableViewSlice"))
+	float ViewSliceCameraMoveThreshold = 100.0f;
+
+	/** На сколько градусов должна повернуться камера, чтобы срез
+	 *  пересчитался - см. ViewSliceCameraMoveThreshold. Поворот важнее
+	 *  смещения: он меняет саму ПЛОСКОСТЬ среза, а не только его положение. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0.0", EditCondition = "bEnableViewSlice"))
+	float ViewSliceRotationThreshold = 2.0f;
+
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsViewSliceEnabled() const { return bEnableViewSlice; }
+
+	/** Включает/выключает срез и сразу перерисовывает - как
+	 *  SetRenderCullVolumeEnabled(), по той же причине: ждать следующего
+	 *  поколения незачем, а на паузе его и не будет. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetViewSliceEnabled(bool bEnabled);
+
+	/** Двигает середину среза (хоткеи [ и ]) / меняет толщину (Shift+[ и
+	 *  Shift+]). Обе клампятся и сразу перерисовывают. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void AdjustViewSliceDistance(float Delta);
+
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void AdjustViewSliceThickness(float Delta);
+
 	/** Двигает ARenderCullVolume так, чтобы он оказался отцентрован на
 	 *  ПЕРВОЙ выделенной клетке (SelectedCells[0]) - хоткей K. Куб довольно
 	 *  неудобно таскать гизмо через весь уровень вручную, особенно на
@@ -1534,6 +1602,23 @@ private:
 	 *  остаётся мусором). */
 	UPROPERTY(Transient)
 	ARenderCullVolume* CachedRenderCullVolume = nullptr;
+
+	/** Положение и направление камеры на момент последнего построения среза -
+	 *  с ними сравниваются текущие, чтобы решить, пора ли перестраивать (см.
+	 *  ViewSliceCameraMoveThreshold). Плайн члены, не UPROPERTY: после
+	 *  реинстансинга Live Coding они обнулятся, и худшее, что случится, -
+	 *  один лишний пере-рендер. */
+	FVector LastViewSliceCameraLocation = FVector::ZeroVector;
+	FVector LastViewSliceCameraForward = FVector::ZeroVector;
+	bool bHasViewSliceCameraState = false;
+
+	/** Текущие положение/направление камеры; false, если камеры ещё нет
+	 *  (до BeginPlay/вне PIE). */
+	bool GetCameraView(FVector& OutLocation, FVector& OutForward) const;
+
+	/** Сдвинулась ли камера настолько, что срез пора перестроить. Всегда
+	 *  false, если срез выключен. */
+	bool ShouldRefreshViewSlice() const;
 
 	/** См. GetLastRenderStats()/FCellRenderStats - плайн член (не
 	 *  UPROPERTY), заполняется заново в каждом BuildCellRenderData(), не нужно

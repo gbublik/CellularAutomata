@@ -314,7 +314,7 @@ void ARenderCullVolume::BeginGizmoDrag(EVolumeGizmoHandle Handle, const FVector&
 	DragStartBoxExtent = BoundsBox->GetUnscaledBoxExtent();
 }
 
-void ARenderCullVolume::UpdateGizmoDrag(float AxisParam)
+void ARenderCullVolume::UpdateGizmoDrag(float AxisParam, bool bUniformScale)
 {
 	if (ActiveGizmoHandle == EVolumeGizmoHandle::None)
 	{
@@ -348,6 +348,29 @@ void ARenderCullVolume::UpdateGizmoDrag(float AxisParam)
 		// Нижняя граница, а не просто >0: вывернутый наизнанку или нулевой
 		// куб отсекал бы вообще всё, и вернуть его мышью было бы уже нечем.
 		NewExtent[AxisIndex] = FMath::Max(DragStartBoxExtent[AxisIndex] + Delta / ScaleOnAxis, 1.0f);
+
+		if (bUniformScale)
+		{
+			// Соразмерно - значит по ОТНОШЕНИЮ, а не прибавляя ту же Delta ко
+			// всем осям: одинаковая добавка к разным полуразмерам гонит
+			// коробку к кубу, теряя заданную пропорцию, а нужно сохранить её.
+			// Отношение берётся от значений НА НАЧАЛО драга, а не от текущих,
+			// иначе оно накапливалось бы кадр за кадром и коробка улетала бы
+			// экспоненциально.
+			const float StartOnAxis = DragStartBoxExtent[AxisIndex];
+			if (StartOnAxis > KINDA_SMALL_NUMBER)
+			{
+				const float Ratio = NewExtent[AxisIndex] / StartOnAxis;
+				for (int32 Index = 0; Index < 3; ++Index)
+				{
+					if (Index != AxisIndex)
+					{
+						NewExtent[Index] = FMath::Max(DragStartBoxExtent[Index] * Ratio, 1.0f);
+					}
+				}
+			}
+		}
+
 		BoundsBox->SetBoxExtent(NewExtent);
 		// Залитый куб тянется за проволочным кадр в кадр - иначе его масштаб
 		// остался бы от начала драга и разошёлся бы с границами, по которым

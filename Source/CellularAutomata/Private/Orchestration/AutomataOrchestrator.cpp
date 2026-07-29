@@ -159,6 +159,18 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		AdvanceChunkedRender();
 	}
 
+	// Срез привязан к камере, значит при полёте его надо перестраивать. Здесь,
+	// ДО всех ранних возвратов ниже: разглядывают структуру обычно на паузе,
+	// когда ни bSimulationRunning, ни bFastStepActive не выставлены. Именно
+	// ради этого SetViewSliceEnabled() и включает тик сам (см. там), иначе
+	// актор на паузе не тикает вовсе и срез бы застыл.
+	// Не трогаем сетку, пока её читает фоновый шаг или дорисовывает чанковый
+	// разлив - те же гварды, что у всех прочих путей рендера.
+	if (!bStepInProgress && !bChunkedRenderInProgress && ShouldRefreshViewSlice())
+	{
+		RefreshRenderCullVolume();
+	}
+
 	// Автошаг Shift+F (см. StartFastStep()) - взаимоисключающ с
 	// bSimulationRunning (Start() отказывает, пока это активно, и наоборот),
 	// поэтому безопасно делить TimeSinceLastStep с обычным Play.
@@ -567,6 +579,85 @@ void AAutomataOrchestrator::SetSpeed(float NewSpeed)
 	// верхняя граница шире UIMax свойства).
 	Speed = FMath::Clamp(NewSpeed, 0.1f, 100.0f);
 	UE_LOG(LogTemp, Log, TEXT("SetSpeed: Speed = %.2f"), Speed);
+}
+
+bool AAutomataOrchestrator::GetCameraView(FVector& OutLocation, FVector& OutForward) const
+{
+	if (!GamePC || !GamePC->PlayerCameraManager)
+	{
+		return false;
+	}
+
+	OutLocation = GamePC->PlayerCameraManager->GetCameraLocation();
+	OutForward = GamePC->PlayerCameraManager->GetCameraRotation().Vector();
+	return true;
+}
+
+bool AAutomataOrchestrator::ShouldRefreshViewSlice() const
+{
+	if (!bEnableViewSlice)
+	{
+		return false;
+	}
+
+	FVector Location;
+	FVector Forward;
+	if (!GetCameraView(Location, Forward))
+	{
+		return false;
+	}
+
+	if (!bHasViewSliceCameraState)
+	{
+		return true;
+	}
+
+	if (FVector::Dist(Location, LastViewSliceCameraLocation) > ViewSliceCameraMoveThreshold)
+	{
+		return true;
+	}
+
+	// Поворот сравнивается через скалярное произведение направлений, а не
+	// через разницу углов Эйлера: у последних есть разрывы (переход через
+	// 360, gimbal-эффекты у pitch), из-за которых порог срабатывал бы то
+	// впустую, то не срабатывал вовсе.
+	const float CosThreshold = FMath::Cos(FMath::DegreesToRadians(ViewSliceRotationThreshold));
+	return FVector::DotProduct(Forward, LastViewSliceCameraForward) < CosThreshold;
+}
+
+void AAutomataOrchestrator::SetViewSliceEnabled(bool bEnabled)
+{
+	bEnableViewSlice = bEnabled;
+	UE_LOG(LogTemp, Log, TEXT("SetViewSliceEnabled: срез вдоль взгляда %s"), bEnableViewSlice ? TEXT("включён") : TEXT("выключен"));
+
+	// Тик нужен самому срезу, а не только симуляции: он следит за камерой
+	// (см. ShouldRefreshViewSlice() в Tick()), а разглядывают структуру как
+	// раз на паузе, когда актор иначе не тикал бы вообще
+	// (bStartWithTickEnabled = false, включает только Start()). Выключая срез,
+	// возвращаем тик тому, кто в нём ещё нуждается.
+	SetActorTickEnabled(bEnableViewSlice || bSimulationRunning || bFastStepActive);
+
+	// При включении сбрасываем запомненное положение камеры - иначе первый
+	// Tick() сравнил бы с состоянием от прошлого включения и мог решить, что
+	// перестраивать не нужно.
+	bHasViewSliceCameraState = false;
+	// Немедленно, а не со следующим поколением - на паузе следующего может и
+	// не быть (та же причина, что у SetRenderCullVolumeEnabled()).
+	RefreshRenderCullVolume();
+}
+
+void AAutomataOrchestrator::AdjustViewSliceDistance(float Delta)
+{
+	ViewSliceDistance = FMath::Max(ViewSliceDistance + Delta, 0.0f);
+	UE_LOG(LogTemp, Log, TEXT("AdjustViewSliceDistance: середина среза на %.0f от камеры"), ViewSliceDistance);
+	RefreshRenderCullVolume();
+}
+
+void AAutomataOrchestrator::AdjustViewSliceThickness(float Delta)
+{
+	ViewSliceThickness = FMath::Max(ViewSliceThickness + Delta, 1.0f);
+	UE_LOG(LogTemp, Log, TEXT("AdjustViewSliceThickness: толщина среза %.0f"), ViewSliceThickness);
+	RefreshRenderCullVolume();
 }
 
 void AAutomataOrchestrator::AdjustStepsPerRender(int32 Delta)
@@ -2444,10 +2535,42 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 		Grid->GetAliveCells(AliveCells);
 	}
 
+	// Срез вдоль взгляда - см. bEnableViewSlice. Плоскость среза
+	// перпендикулярна направлению камеры, поэтому проверка на клетку это одно
+	// скалярное произведение: глубина вдоль взгляда против диапазона.
+	// Считается ЗДЕСЬ, а не в рендерере, по той же причине, что и куб: клетки
+	// вне среза не должны стоить построения трансформа.
+	// Инициализированы явно: GetCameraView() пишет их только при успехе, и
+	// хотя читаются они строго под bSliceActive, компилятор этого не выводит.
+	FVector SliceOrigin = FVector::ZeroVector;
+	FVector SliceForward = FVector::ForwardVector;
+	const bool bSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
+	const float SliceMinDepth = ViewSliceDistance - ViewSliceThickness * 0.5f;
+	const float SliceMaxDepth = ViewSliceDistance + ViewSliceThickness * 0.5f;
+
+	if (bSliceActive)
+	{
+		// Запоминаем, для какой камеры срез построен - по этому состоянию
+		// Tick() решает, пора ли перестраивать (см. ShouldRefreshViewSlice()).
+		LastViewSliceCameraLocation = SliceOrigin;
+		LastViewSliceCameraForward = SliceForward;
+		bHasViewSliceCameraState = true;
+	}
+
 	OutInstances.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
-		OutInstances.Add({ FVector3f(Grid->GridToWorld(Cell)), AgeLut[Grid->GetAge(Cell)] });
+		const FVector World = Grid->GridToWorld(Cell);
+		if (bSliceActive)
+		{
+			const double Depth = FVector::DotProduct(World - SliceOrigin, SliceForward);
+			if (Depth < SliceMinDepth || Depth > SliceMaxDepth)
+			{
+				continue;
+			}
+		}
+
+		OutInstances.Add({ FVector3f(World), AgeLut[Grid->GetAge(Cell)] });
 	}
 
 	// Generations (States > 2) - угасающие клетки (не живые, но ещё не
@@ -2477,7 +2600,19 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 		OutInstances.Reserve(OutInstances.Num() + DecayingCells.Num());
 		for (int32 Index = 0; Index < DecayingCells.Num(); ++Index)
 		{
-			OutInstances.Add({ FVector3f(Grid->GridToWorld(DecayingCells[Index])), DecayLut[DecayingStates[Index]] });
+			const FVector World = Grid->GridToWorld(DecayingCells[Index]);
+			// Тот же срез, что и для живых клеток выше - иначе угасающие
+			// торчали бы сквозь него.
+			if (bSliceActive)
+			{
+				const double Depth = FVector::DotProduct(World - SliceOrigin, SliceForward);
+				if (Depth < SliceMinDepth || Depth > SliceMaxDepth)
+				{
+					continue;
+				}
+			}
+
+			OutInstances.Add({ FVector3f(World), DecayLut[DecayingStates[Index]] });
 		}
 	}
 
@@ -2981,7 +3116,9 @@ void AAutomataOrchestrator::StopFastStep()
 {
 	bFastStepActive = false;
 
-	if (!bSimulationRunning && !bChunkedRenderInProgress)
+	// bEnableViewSlice - ещё один потребитель тика помимо симуляции: срез
+	// следит за камерой и на паузе (см. SetViewSliceEnabled()).
+	if (!bSimulationRunning && !bChunkedRenderInProgress && !bEnableViewSlice)
 	{
 		SetActorTickEnabled(false);
 	}
@@ -3040,7 +3177,9 @@ void AAutomataOrchestrator::Stop()
 	// прямо здесь, замораживая "разлив" навсегда до следующего Start()/шага.
 	FinishChunkedRenderImmediately();
 
-	SetActorTickEnabled(false);
+	// Не безусловный false: срез вдоль взгляда следит за камерой и на паузе,
+	// а без тика он застыл бы (см. SetViewSliceEnabled()).
+	SetActorTickEnabled(bEnableViewSlice);
 }
 
 void AAutomataOrchestrator::Clear()

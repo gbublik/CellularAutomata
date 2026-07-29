@@ -249,6 +249,17 @@ protected:
 	/** Зажат ли любой Shift - левый или правый. */
 	bool IsShiftHeld() const;
 
+	/** Хоткей (J) - включает/выключает срез вдоль взгляда
+	 *  (AAutomataOrchestrator::bEnableViewSlice). */
+	void OnToggleViewSlice();
+
+	/** Хоткеи ([ и ]) - двигают середину среза ближе/дальше от камеры; с
+	 *  Shift меняют его толщину. Клавиши освободились, когда StepsPerRender
+	 *  переехал на T/G. Привязаны к Triggered, как +/- для Speed: срез
+	 *  подбирают на глаз, непрерывно, а не однократным нажатием. */
+	void OnViewSliceNearer();
+	void OnViewSliceFarther();
+
 	/** Хоткей (Tab, изначально была C - перевязана рукой во время тестов) -
 	 *  переключает единый режим взаимодействия мышкой - клетки и HUD разом
 	 *  (см. SetSelectionModeActive()). */
@@ -354,6 +365,15 @@ protected:
 	TObjectPtr<class UInputAction> ToggleGhostShapeAction;
 
 	UPROPERTY()
+	TObjectPtr<class UInputAction> ToggleViewSliceAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ViewSliceNearerAction;
+
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ViewSliceFartherAction;
+
+	UPROPERTY()
 	TObjectPtr<class UInputAction> IncreaseSpeedAction;
 
 	UPROPERTY()
@@ -443,6 +463,11 @@ protected:
 
 	/** Шаг изменения Speed за одно нажатие +/-. */
 	static constexpr float SpeedAdjustStep = 0.5f;
+
+	/** Шаг изменения среза вдоль взгляда за одно нажатие [ / ] - в мировых
+	 *  единицах. Намеренно крупный: клетка по умолчанию 100 единиц, так что
+	 *  шаг мельче просто не сдвинул бы срез на следующий слой клеток. */
+	static constexpr float ViewSliceAdjustStep = 200.0f;
 
 	/** Максимальный сдвиг мыши (в пикселях) между нажатием и отпусканием
 	 *  ЛКМ, при котором жест считается кликом (выбор одиночной клетки под
