@@ -674,7 +674,11 @@ void AGamePlayerController::OnSetAgeFilter(int32 Age)
 		return;
 	}
 
-	Orchestrator->SetAgeFilter(Age);
+	// Та же цифра ещё раз - снять фильтр. Отдельной клавиши "показать все" нет
+	// намеренно: ноль отдан НУЛЕВОМУ возрасту (только что родившиеся клетки,
+	// первый цвет рампы и самый интересный слой), а какая цифра сейчас
+	// активна, видно из сообщения на экране.
+	Orchestrator->SetAgeFilter(Orchestrator->GetAgeFilter() == Age ? -1 : Age);
 }
 
 void AGamePlayerController::OnToggleViewSlice()

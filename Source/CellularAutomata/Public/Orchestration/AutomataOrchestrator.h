@@ -970,8 +970,15 @@ public:
 			  meta = (ClampMin = "0.0", EditCondition = "bEnableViewSlice"))
 	float ViewSliceRotationThreshold = 2.0f;
 
-	/** Показывать только клетки РОВНО такого возраста; 0 - показывать все.
-	 *  Хоткеи - цифры 0-9 (см. AGamePlayerController::OnSetAgeFilter()).
+	/** Показывать только клетки РОВНО такого возраста; -1 - показывать все.
+	 *  Хоткеи - цифры 0-9, повторное нажатие той же цифры снимает фильтр
+	 *  (см. AGamePlayerController::OnSetAgeFilter()).
+	 *
+	 *  Выключенное состояние - именно -1, а не 0: возраст 0 это только что
+	 *  родившиеся клетки, первый цвет рампы и самый интересный слой (фронт
+	 *  роста). В первой версии выключением служил ноль, и этот слой оказался
+	 *  недоступен вовсе, а цифры выглядели сдвинутыми на единицу относительно
+	 *  цветов - что и было замечено сразу.
 	 *
 	 *  Возраст - это число поколений, прожитых клеткой подряд, а у правил
 	 *  вроде 0-6/1,3/2 никто не умирает, поэтому "возраст N" - это ровно
@@ -987,8 +994,8 @@ public:
 	 *  возраст у них не определён - это отдельный канал состояния, а не
 	 *  возраст (см. FCellGrid::IsDecaying()). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
-			  meta = (ClampMin = "0", ClampMax = "255"))
-	int32 AgeFilter = 0;
+			  meta = (ClampMin = "-1", ClampMax = "255"))
+	int32 AgeFilter = -1;
 
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	int32 GetAgeFilter() const { return AgeFilter; }

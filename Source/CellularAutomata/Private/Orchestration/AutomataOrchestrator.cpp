@@ -660,13 +660,13 @@ void AAutomataOrchestrator::SetViewSliceEnabled(bool bEnabled)
 
 void AAutomataOrchestrator::SetAgeFilter(int32 NewAgeFilter)
 {
-	AgeFilter = FMath::Clamp(NewAgeFilter, 0, 255);
-	UE_LOG(LogTemp, Log, TEXT("SetAgeFilter: %s"), AgeFilter > 0
+	AgeFilter = FMath::Clamp(NewAgeFilter, -1, 255);
+	UE_LOG(LogTemp, Log, TEXT("SetAgeFilter: %s"), AgeFilter >= 0
 		? *FString::Printf(TEXT("показываются только клетки возраста %d"), AgeFilter)
 		: TEXT("фильтр снят, показываются все клетки"));
-	ShowStatusMessage(StatusKey_AgeFilter, AgeFilter > 0
-		? FString::Printf(TEXT("[%d] Только возраст %d  (0 - показать все)"), AgeFilter, AgeFilter)
-		: FString(TEXT("[0] Фильтр по возрасту снят")));
+	ShowStatusMessage(StatusKey_AgeFilter, AgeFilter >= 0
+		? FString::Printf(TEXT("[%d] Только возраст %d  (та же цифра ещё раз - показать все)"), AgeFilter, AgeFilter)
+		: FString(TEXT("Фильтр по возрасту снят")));
 	RefreshRenderCullVolume();
 }
 
@@ -2732,8 +2732,10 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	{
 		const uint8 Age = Grid->GetAge(Cell);
 		// Фильтр по возрасту (см. AgeFilter) - раньше остальных проверок:
-		// он отсекает больше всего и обходится одним сравнением.
-		if (AgeFilter > 0 && Age != (uint8)AgeFilter)
+		// он отсекает больше всего и обходится одним сравнением. Сравнение
+		// с нулём, а не с единицей: возраст 0 - законный слой, выключенному
+		// фильтру соответствует -1.
+		if (AgeFilter >= 0 && Age != (uint8)AgeFilter)
 		{
 			continue;
 		}
@@ -2762,7 +2764,7 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	// Фильтр по возрасту прячет угасающие клетки целиком: возраст у них не
 	// определён - это отдельный канал состояния, а не возраст, и приписать им
 	// какой-то возраст значило бы соврать (см. AgeFilter).
-	if (States > 2 && AgeFilter == 0)
+	if (States > 2 && AgeFilter < 0)
 	{
 		TArray<FColor> DecayLut;
 		BuildDecayColorLut(DecayLut);
