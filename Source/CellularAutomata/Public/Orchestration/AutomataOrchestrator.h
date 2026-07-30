@@ -12,6 +12,7 @@
 #include "Automata/Rendering/ChunkedRenderOrder.h"
 #include "Automata/Rendering/RenderPresets.h"
 #include "Automata/Persistence/AutomatonSaveHeader.h"
+#include "Automata/Generation/StateGeneratorPresets.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
 #include "Automata/Simulation/RulePresets.h"
@@ -262,6 +263,16 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bRenderPresetModified = false;
 
+	/** Выбранный генератор начального состояния - что построит Y (см.
+	 *  StateGenerators::GetDisplayName()). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	FString StateGeneratorName;
+
+	/** Сколько клеток он даст - оценка без построения, чтобы было видно ДО
+	 *  нажатия, во что обойдётся нажатие. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	int64 EstimatedGeneratorCells = 0;
+
 	/** Клетки отбрасывают тени - см. bCellsCastShadows. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bCellsCastShadows = true;
@@ -413,6 +424,7 @@ public:
 		StatusKey_Bake = 1003,
 		StatusKey_AgeFilter = 1004,
 		StatusKey_Camera = 1005,
+		StatusKey_Generation = 1006,
 	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
@@ -433,6 +445,84 @@ public:
 	/** Сгенерировать новое случайное состояние с новым сидом */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void NewSeed();
+
+	/** Параметры геометрического генератора начального состояния - что именно
+	 *  построит GenerateState() (хоткей Y). См. FStateGeneratorParams.
+	 *
+	 *  Отдельно от блока Automata|Random: тот описывает случайный шар, который
+	 *  строят BeginPlay(), N и R, и который обязан остаться собой независимо от
+	 *  того, что здесь накручено. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation")
+	FStateGeneratorParams GenerationParams;
+
+	/** Потолок на число клеток, которое разрешено построить генератору.
+	 *
+	 *  Не про "много клеток - плохо": рабочий режим этого проекта - миллионы
+	 *  живых клеток, и предел выставлен втрое выше него. Он ловит другое -
+	 *  параметры, при которых объём взлетает на порядки от одного движения
+	 *  слайдера (сплошной куб с полуразмером 200 это 64 млн клеток), причём
+	 *  ловит ДО того, как текущее состояние будет стёрто: превышение - это
+	 *  отказ с сообщением, а не наполовину построенная сетка.
+	 *
+	 *  Огрубления, как у бейка (см. BakeMemoryBudgetMB), здесь намеренно нет:
+	 *  огрубить решётку значит изменить геометрию, а геометрия тут и есть
+	 *  предмет. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (ClampMin = "1000"))
+	int64 MaxGeneratedCells = 24000000;
+
+	/** Построить начальное состояние по GenerationParams - новая сетка с нуля,
+	 *  ровно как GenerateRandom(), только форма задаётся генератором. Хоткей Y.
+	 *
+	 *  Результат становится точкой возврата для R и тем, что уйдёт в файл при
+	 *  Ctrl+S (см. InitialStateCells) - учтите, что на миллионах клеток это
+	 *  делает сейв многомегабайтным. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Generation")
+	void GenerateState();
+
+	/** Следующий тип генератора по кругу (хоткей Shift+Y) - идиома
+	 *  CycleChunkedRenderOrder(). Только меняет GenerationParams.Type и НЕ
+	 *  строит: параметры нового типа почти всегда хочется посмотреть до того,
+	 *  как он что-то построит. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Generation")
+	void CycleStateGeneratorType();
+
+	/** Таблица готовых генераторов для выпадашки в HUD (см.
+	 *  FStateGeneratorPreset/StateGeneratorPresets::GetAll()). Возвращает
+	 *  копию - десяток небольших структур на построение списка, не в горячем
+	 *  цикле. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Generation")
+	TArray<FStateGeneratorPreset> GetStateGeneratorPresets() const;
+
+	/** Применяет пресет по индексу в GetStateGeneratorPresets(): переписывает
+	 *  GenerationParams целиком. Индекс вне диапазона - warning в лог, ничего
+	 *  не меняется.
+	 *
+	 *  По умолчанию только заполняет параметры, не строя: пресет - это
+	 *  отправная точка для правки, а построение - отдельное нажатие Y. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Generation")
+	void ApplyStateGeneratorPreset(int32 PresetIndex, bool bGenerateImmediately = false);
+
+	/** Текущие параметры генератора - для чтения из HUD. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Generation")
+	FStateGeneratorParams GetStateGeneratorParams() const { return GenerationParams; }
+
+	/** Записать параметры с теми же клампами, что стоят в метаданных
+	 *  UPROPERTY: Details panel их соблюдает, а Blueprint пишет в структуру
+	 *  напрямую и может занести что угодно (см. SetSpeed() - тот же довод про
+	 *  сеттер при BlueprintReadWrite-свойстве). */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Generation")
+	void SetStateGeneratorParams(const FStateGeneratorParams& NewParams);
+
+	/** Сколько клеток даст текущий генератор - оценка O(1), без построения,
+	 *  чтобы HUD мог показать число ДО нажатия Y. Верхняя там, где возможны
+	 *  наложения, ожидаемая - у шума. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Generation")
+	int64 EstimateStateGeneratorCells() const;
+
+	/** Отображаемое имя текущего генератора - для подписи в HUD. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Generation")
+	FString GetStateGeneratorDisplayName() const;
 
 	/** Отладочная проверка корректности правила - сажает три классических
 	 *  плоских 2D-паттерна (блок-неподвижку, мигалку-осциллятор, планер) в
@@ -1832,6 +1922,11 @@ private:
 	 *  которыми профиль владеет, и сбрасывается в конце ApplyRenderPreset(). */
 	UPROPERTY(Transient)
 	bool bRenderPresetModified = false;
+	/** Когда последний раз пересчитывали FHudStats::EstimatedGeneratorCells.
+	 *  Оценка для шаров считает решёточные точки точно, за O(R^2), поэтому
+	 *  обновляется по таймеру, а не каждый тик. */
+	UPROPERTY(Transient)
+	double LastGeneratorEstimateSeconds = 0.0;
 	/** Создаёт/перепривязывает CellsRenderer на актуальный
 	 *  GetActiveCellsMeshComponent(). Одно условие покрывает три случая:
 	 *  первый вызов; смена CellMeshComponentType (рендерер обёрнут вокруг
@@ -1919,6 +2014,27 @@ private:
 	 *  panel. Используется и GenerateRandom() (сетка с нуля), и Next()
 	 *  (буфер для следующего поколения). */
 	TUniquePtr<FCellGrid> CreateGrid() const;
+	/** Четыре проверки, общие всем путям построения состояния с нуля:
+	 *  фоновый шаг не держит Grid, назначены меш и материал, есть активный
+	 *  компонент. LogPrefix - имя вызвавшего публичного метода, чтобы строка в
+	 *  логе оставалась привязана к нажатой кнопке. Отказ - warning и false,
+	 *  никогда наполовину. */
+	bool CanGenerateNewState(const TCHAR* LogPrefix) const;
+	/** Общая часть "начать новый прогон вот с этого набора клеток": сброс
+	 *  снимков и счётчиков, свежая сетка, последовательная заливка,
+	 *  запоминание точки возврата и немедленный рендер. Общая для
+	 *  GenerateRandom() и GenerateState().
+	 *
+	 *  Cells принимается по rvalue и освобождается сразу после заливки, до
+	 *  сбора InitialStateCells: на миллионах клеток иначе пик держал бы два
+	 *  больших массива разом. */
+	void RebuildGridFromCells(TArray<FIntVector>&& Cells);
+	/** Полуразмер центрального подкуба, по которому считается гистограмма
+	 *  соседей (см. FStateGeneratorParams::bAnalyzeNeighborCounts).
+	 *  Структуры генераторов периодичны, поэтому ответ от размера выборки не
+	 *  зависит, а вот TSet по всему набору на миллионах клеток стоил бы сотни
+	 *  мегабайт ради тех же чисел. */
+	static constexpr int32 NeighborAnalysisSampleExtent = 24;
 
 	/** Строит новую стратегию расчёта шага по текущему ComputeMethod из
 	 *  Details panel - зеркалит CreateGrid()'s switch-паттерн. Используется

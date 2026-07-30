@@ -318,6 +318,17 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnNewSeed();
 	}
 
+	// Y (построить состояние генератором, Shift+Y - следующий тип) - тот же
+	// случай, что P/R/N: генератор нажимают ровно тогда, когда картинка не
+	// нравится и сетка уже разрослась, то есть в момент худшего лага.
+	// Модификатор проверяется внутри обработчика, а не маппингом - Enhanced
+	// Input не умеет требовать модификатор в привязке клавиши (та же идиома,
+	// что у Ctrl+S/Ctrl+C).
+	if (Params.Key == EKeys::Y && Params.Event == IE_Pressed)
+	{
+		OnGenerateState();
+	}
+
 	// Цифры 0-9 - фильтр по возрасту (9 - ещё и всё, что старше). Здесь, а не через Enhanced
 	// Input, по причине, не связанной с лагом: десять клавиш одного вида - это
 	// десять UInputAction, десять MapKey и десять обработчиков ради одного
@@ -496,6 +507,25 @@ void AGamePlayerController::OnNewSeed()
 	}
 
 	Orchestrator->NewSeed();
+}
+
+void AGamePlayerController::OnGenerateState()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnGenerateState: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+	{
+		Orchestrator->CycleStateGeneratorType();
+	}
+	else
+	{
+		Orchestrator->GenerateState();
+	}
 }
 
 void AGamePlayerController::OnApplyRenderPreset(int32 PresetIndex)

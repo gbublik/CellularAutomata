@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Automata/Generation/StateGenerators.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
@@ -449,6 +450,273 @@ bool FGpuBatchParityTest::RunTest(const FString& Parameters)
 		}
 
 		AddInfo(FString::Printf(TEXT("%s: %d живых клеток после %d поколений, пачка совпала"), Case.Name, Batched->Num(), BatchSize));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FStateGeneratorDeterminismTest,
+	"CellularAutomata.Generation.Determinism",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FStateGeneratorDeterminismTest::RunTest(const FString& Parameters)
+{
+	// Каждый тип перечисления - по разу: один и тот же Seed обязан дать
+	// поэлементно тот же набор, другой Seed - другой. Второе не менее важно
+	// первого: генератор, который просто игнорирует Seed, первую проверку
+	// проходит идеально.
+	const int32 TypeCount = static_cast<int32>(EStateGeneratorType::SymmetricSeed) + 1;
+
+	for (int32 TypeIndex = 0; TypeIndex < TypeCount; ++TypeIndex)
+	{
+		const EStateGeneratorType Type = static_cast<EStateGeneratorType>(TypeIndex);
+
+		FStateGeneratorParams Params;
+		Params.Type = Type;
+		// Область поменьше умолчаний - тест должен быть быстрым, а
+		// детерминизм от размера не зависит.
+		Params.Extent = FIntVector(12, 12, 12);
+		Params.Radius = 8;
+		Params.Amount = 200;
+		Params.ClusterCount = 5;
+		Params.ClusterRadius = 3;
+		Params.CoreExtent = FIntVector(3, 3, 3);
+
+		const FString Name = StateGenerators::GetDisplayName(Type);
+
+		TArray<FIntVector> First;
+		TArray<FIntVector> Second;
+		TArray<FIntVector> Other;
+		StateGenerators::FGenerateStats Stats;
+		FString Error;
+
+		if (!StateGenerators::Generate(Params, /*Seed=*/1234, MAX_int64, First, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("%s: генерация не удалась - %s"), *Name, *Error));
+			continue;
+		}
+
+		if (!StateGenerators::Generate(Params, /*Seed=*/1234, MAX_int64, Second, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("%s: повторная генерация не удалась - %s"), *Name, *Error));
+			continue;
+		}
+
+		if (First != Second)
+		{
+			AddError(FString::Printf(TEXT("%s: тот же сид дал другой набор (%d против %d клеток)"),
+				*Name, First.Num(), Second.Num()));
+			continue;
+		}
+
+		// У шума и затравки заполнение вероятностное, а у кластеров ещё и
+		// перекрываются зёрна - там оценка честно объявлена ожидаемой, и
+		// требовать от неё верхней границы нельзя. У остальных построение
+		// детерминированное, и оценка обязана быть именно ВЕРХНЕЙ: на ней
+		// стоит проверка бюджета, и занижение означало бы, что генератор
+		// строит больше, чем разрешено (ровно так и всплыла ошибка в оценке
+		// полой сферы - непрерывный объём вместо счёта решёточных точек).
+		const bool bEstimateIsUpperBound =
+			Type != EStateGeneratorType::NoiseUniform &&
+			Type != EStateGeneratorType::NoisePerlin &&
+			Type != EStateGeneratorType::NoiseClusters &&
+			Type != EStateGeneratorType::SymmetricSeed;
+
+		const int64 Estimate = StateGenerators::EstimateCellCount(Params);
+		if (bEstimateIsUpperBound && Estimate < First.Num())
+		{
+			AddError(FString::Printf(TEXT("%s: оценка %lld ниже фактических %d клеток"),
+				*Name, Estimate, First.Num()));
+		}
+
+		// У чисто детерминированных построений (решётки, тела) сид не значит
+		// ничего по определению - для них проверять "другой сид даёт другое"
+		// нечего.
+		const bool bUsesSeed =
+			Type == EStateGeneratorType::RandomBall ||
+			Type == EStateGeneratorType::NoiseUniform ||
+			Type == EStateGeneratorType::NoisePerlin ||
+			Type == EStateGeneratorType::NoiseClusters ||
+			Type == EStateGeneratorType::SymmetricSeed;
+
+		if (!bUsesSeed)
+		{
+			AddInfo(FString::Printf(TEXT("%s: %d клеток, воспроизводимо"), *Name, First.Num()));
+			continue;
+		}
+
+		if (!StateGenerators::Generate(Params, /*Seed=*/4321, MAX_int64, Other, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("%s: генерация с другим сидом не удалась - %s"), *Name, *Error));
+			continue;
+		}
+
+		if (First == Other)
+		{
+			AddError(FString::Printf(TEXT("%s: другой сид дал ровно тот же набор - сид не используется"), *Name));
+			continue;
+		}
+
+		AddInfo(FString::Printf(TEXT("%s: %d клеток, воспроизводимо и зависит от сида"), *Name, First.Num()));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLatticeNeighborUniformityTest,
+	"CellularAutomata.Generation.LatticeNeighborUniformity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FLatticeNeighborUniformityTest::RunTest(const FString& Parameters)
+{
+	// Ради этого свойства решётчатые генераторы и существуют: если ВСЕ живые
+	// клетки видят одно и то же число соседей, а примыкающие пустые - другое,
+	// то правило можно подобрать так, чтобы структура стояла вечно, а выбитая
+	// из неё одна клетка запускала цепную реакцию. Числа здесь - те самые, что
+	// обещаны в подсказках пресетов; разъедься они с реальностью, подсказка
+	// уводила бы в подбор заведомо невозможного правила.
+	struct FCase
+	{
+		const TCHAR* Name;
+		EStateGeneratorType Type;
+		int32 ExpectedAliveNeighbors;
+		int32 ForbiddenEmptyNeighbors;
+	};
+
+	static const FCase Cases[] = {
+		// Плоскости толщиной в клетку: живая видит 8 своих соседей по плите,
+		// а пустая прямо над плитой - все 9 клеток под собой.
+		{ TEXT("плоскости"), EStateGeneratorType::LatticePlanes, 8, 9 },
+		// Блоки 2x2x2: живая видит 7 соседей по блоку, а пустая - не больше 4.
+		{ TEXT("блоки"),     EStateGeneratorType::LatticeBlocks, 7, 7 },
+	};
+
+	for (const FCase& Case : Cases)
+	{
+		FStateGeneratorParams Params;
+		Params.Type = Case.Type;
+		Params.Extent = FIntVector(40, 40, 40);
+		Params.Period = FIntVector(8, 8, 8);
+		Params.Thickness = 1;
+		Params.BlockSize = 2;
+		Params.bAxisX = true;
+		Params.bAxisY = false;
+		Params.bAxisZ = false;
+
+		TArray<FIntVector> Cells;
+		StateGenerators::FGenerateStats Stats;
+		FString Error;
+
+		if (!StateGenerators::Generate(Params, /*Seed=*/0, MAX_int64, Cells, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("%s: генерация не удалась - %s"), Case.Name, *Error));
+			continue;
+		}
+
+		StateGenerators::FNeighborHistogram Histogram;
+		// Полуразмер выборки заметно меньше области построения - иначе в неё
+		// попали бы клетки у самого края, у которых соседей меньше просто
+		// потому, что структура там кончается.
+		StateGenerators::AnalyzeNeighborCounts(Cells, ENeighborhood::Moore, /*MaxSampleExtent=*/20, Histogram);
+
+		if (Histogram.SampledAlive == 0)
+		{
+			AddError(FString::Printf(TEXT("%s: в выборку не попало ни одной живой клетки"), Case.Name));
+			continue;
+		}
+
+		// Однородность: вся масса гистограммы обязана стоять в одной колонке.
+		const int64 AtExpected = Histogram.AliveByCount[Case.ExpectedAliveNeighbors];
+		if (AtExpected != Histogram.SampledAlive)
+		{
+			AddError(FString::Printf(TEXT("%s: соседей по %d только у %lld из %lld живых клеток - %s"),
+				Case.Name, Case.ExpectedAliveNeighbors, AtExpected, Histogram.SampledAlive,
+				*StateGenerators::DescribeHistogram(Histogram)));
+			continue;
+		}
+
+		// И ни одна примыкающая пустая клетка не должна попадать в то же
+		// число: иначе "выживает" и "рождается" неразделимы, и структура
+		// принципиально не может быть метастабильной.
+		const int64 EmptyClash = Histogram.EmptyByCount[Case.ForbiddenEmptyNeighbors];
+		if (Case.ForbiddenEmptyNeighbors == Case.ExpectedAliveNeighbors && EmptyClash > 0)
+		{
+			AddError(FString::Printf(TEXT("%s: %lld пустых клеток видят столько же соседей (%d), сколько живые - %s"),
+				Case.Name, EmptyClash, Case.ForbiddenEmptyNeighbors,
+				*StateGenerators::DescribeHistogram(Histogram)));
+			continue;
+		}
+
+		AddInfo(FString::Printf(TEXT("%s: все %lld живых клеток видят ровно %d соседей - %s"),
+			Case.Name, Histogram.SampledAlive, Case.ExpectedAliveNeighbors,
+			*StateGenerators::DescribeHistogram(Histogram)));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRandomBallLegacyParityTest,
+	"CellularAutomata.Generation.RandomBallParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FRandomBallLegacyParityTest::RunTest(const FString& Parameters)
+{
+	// Золотой тест: генератор RandomBall обязан давать ровно то же, что давал
+	// прежний цикл внутри GenerateRandom(). Эталон - AutomataTestUtils::
+	// SeedSphere(), который этот цикл и воспроизводит. Без такой проверки
+	// рефакторинг мог бы тихо сдвинуть все ранее сохранённые сиды: одна и та
+	// же цифра в поле Random Seed начала бы давать другую картинку.
+	struct FCase
+	{
+		int32 Seed;
+		int32 Radius;
+		int32 Amount;
+	};
+
+	static const FCase Cases[] = {
+		{ 0,    10, 1000 },
+		{ 1234, 20, 5000 },
+		{ -7,    5,  300 },
+	};
+
+	for (const FCase& Case : Cases)
+	{
+		FDenseCellGrid Reference(100.0f, 16);
+		AutomataTestUtils::SeedSphere(Reference, Case.Seed, Case.Radius, Case.Amount);
+
+		FStateGeneratorParams Params;
+		Params.Type = EStateGeneratorType::RandomBall;
+		Params.Radius = Case.Radius;
+		Params.Amount = Case.Amount;
+
+		TArray<FIntVector> Cells;
+		StateGenerators::FGenerateStats Stats;
+		FString Error;
+
+		if (!StateGenerators::Generate(Params, Case.Seed, MAX_int64, Cells, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("сид %d: генерация не удалась - %s"), Case.Seed, *Error));
+			continue;
+		}
+
+		// Генератор отдаёт броски как есть, с повторами (их поглощает заливка
+		// в сетку), поэтому сравнивать надо осевшие клетки, а не длины
+		// массивов.
+		FDenseCellGrid Produced(100.0f, 16);
+		for (const FIntVector& Cell : Cells)
+		{
+			Produced.SetAlive(Cell, true);
+		}
+
+		FString Mismatch;
+		if (!AutomataTestUtils::GridsMatch(Reference, Produced, Mismatch))
+		{
+			AddError(FString::Printf(TEXT("сид %d: генератор разошёлся с прежним GenerateRandom() - %s"),
+				Case.Seed, *Mismatch));
+			continue;
+		}
+
+		AddInfo(FString::Printf(TEXT("сид %d: %d клеток, совпало с прежним поведением"), Case.Seed, Produced.Num()));
 	}
 
 	return true;
