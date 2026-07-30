@@ -112,6 +112,11 @@ bool FUiController::IsHUDVisible() const
     return HUDWidget.IsValid() && HUDWidget->IsInViewport();
 }
 
+UUserWidget* FUiController::GetWidget() const
+{
+    return HUDWidget.Get();
+}
+
 bool FUiController::IsHUDValid() const
 {
     return HUDWidget.IsValid();

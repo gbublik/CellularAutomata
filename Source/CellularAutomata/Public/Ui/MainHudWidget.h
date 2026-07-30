@@ -38,6 +38,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
 	AAutomataOrchestrator* GetOrchestrator();
 
+	/** Нажали клавишу показа/скрытия информационной панели (F5, см.
+	 *  AGamePlayerController::OnToggleHudInfoPanel()).
+	 *
+	 *  Реализуется графом в Blueprint-наследнике: C++ намеренно не знает, что
+	 *  именно прячется - одна панель, несколько или цикл "всё -> компактно ->
+	 *  ничего". Вёрстка HUD живёт в UMG, и решать, что такое "информационная
+	 *  панель", должна она же. Событие нужно потому, что виджет не получает
+	 *  нажатий клавиш сам: ввод приходит в PlayerController, а до виджета его
+	 *  надо донести. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Automata|HUD")
+	void OnToggleInfoPanel();
+
 protected:
 	virtual void NativeConstruct() override;
 

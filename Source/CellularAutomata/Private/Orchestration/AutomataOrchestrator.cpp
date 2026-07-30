@@ -19,6 +19,7 @@
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Automata/Selection/CellSelection.h"
+#include "Ui/MainHudWidget.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Generation/StateGeneratorPresets.h"
 #include "Automata/Meshing/CellMeshBuilder.h"
@@ -919,6 +920,48 @@ void AAutomataOrchestrator::InitializeHUD()
 		
 		UiController->ShowHUD();
 	}
+}
+
+UMainHudWidget* AAutomataOrchestrator::GetHudWidget() const
+{
+	if (!UiController)
+	{
+		return nullptr;
+	}
+
+	// Cast, а не static_cast: HUDWidgetClass задаётся в Details-панели и
+	// формально может оказаться любым UUserWidget - тогда честнее вернуть
+	// nullptr, чем притвориться, что это наш виджет.
+	return Cast<UMainHudWidget>(UiController->GetWidget());
+}
+
+void AAutomataOrchestrator::ToggleHudInfoPanel()
+{
+	UMainHudWidget* Widget = GetHudWidget();
+	if (!Widget)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ToggleHudInfoPanel: HUD-виджет не создан или не унаследован от UMainHudWidget"));
+		return;
+	}
+
+	// Что именно прячется, решает граф в Blueprint - см. doc-comment события.
+	Widget->OnToggleInfoPanel();
+}
+
+void AAutomataOrchestrator::ToggleHud()
+{
+	if (!UiController)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ToggleHud: HUD не инициализирован (InitializeHUD() вызывается из BeginPlay)"));
+		return;
+	}
+
+	UiController->ToggleHUD();
+}
+
+bool AAutomataOrchestrator::IsHudVisible() const
+{
+	return UiController && UiController->IsHUDVisible();
 }
 
 void AAutomataOrchestrator::InitializePlayerController()

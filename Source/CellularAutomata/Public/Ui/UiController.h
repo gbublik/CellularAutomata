@@ -30,6 +30,15 @@ public:
 	// Проверка состояния
 	bool IsHUDVisible() const;
 	bool IsHUDValid() const;
+
+	/** Текущий виджет HUD, либо nullptr, если он ещё не создан или уже
+	 *  уничтожен. Нужен вызывающим, которым надо обратиться к самому виджету
+	 *  (например, сообщить ему о нажатии клавиши - см.
+	 *  AAutomataOrchestrator::ToggleHudInfoPanel()). Отдаётся через геттер, а
+	 *  не через публичное поле NewWidget: тот сырой указатель ничего не знает
+	 *  о времени жизни виджета, а HUDWidget - слабая ссылка и честно вернёт
+	 *  nullptr после уничтожения. */
+	UUserWidget* GetWidget() const;
 	
 	
 	UUserWidget* NewWidget;

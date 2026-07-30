@@ -21,6 +21,7 @@
 
 class UInstancedStaticMeshComponent;
 class UHierarchicalInstancedStaticMeshComponent;
+class UMainHudWidget;
 class UProceduralMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
@@ -1685,8 +1686,34 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
 	TSubclassOf<UUserWidget> HUDWidgetClass;
-	
-	
+
+	/** Текущий HUD-виджет, либо nullptr (HUD ещё не создан, класс виджета не
+	 *  назначен, или мы вне PIE). Blueprint-доступен, чтобы до виджета можно
+	 *  было дотянуться из графа, не пересоздавая его. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	UMainHudWidget* GetHudWidget() const;
+
+	/** Показать/скрыть информационную панель HUD - хоткей F5.
+	 *
+	 *  Пересылает вызов виджету (UMainHudWidget::OnToggleInfoPanel(), событие
+	 *  для Blueprint): решение о том, ЧТО прячется, принимает вёрстка в UMG, а
+	 *  не C++. Мостик существует потому, что виджет не получает нажатий клавиш
+	 *  сам - ввод приходит в PlayerController.
+	 *
+	 *  Отдельно от FUiController::ToggleHUD(), который снимает с экрана HUD
+	 *  целиком: панель - это часть интерфейса, а не весь он. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|HUD")
+	void ToggleHudInfoPanel();
+
+	/** Показать/скрыть HUD целиком (FUiController::ToggleHUD()). Логика была
+	 *  написана давно, но до сих пор ниоткуда не вызывалась - выведена наружу,
+	 *  чтобы её можно было повесить на кнопку в самом HUD. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|HUD")
+	void ToggleHud();
+
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	bool IsHudVisible() const;
+
 private:
 	TUniquePtr<FUiController> UiController;
 	TUniquePtr<FCellGrid> Grid;

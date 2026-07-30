@@ -181,6 +181,12 @@ protected:
 	 *  клавишу жмут в момент худшего лага. */
 	void OnGenerateState();
 
+	/** Хоткей (F5) - показать/скрыть информационную панель HUD
+	 *  (AAutomataOrchestrator::ToggleHudInfoPanel(), а оттуда событие в сам
+	 *  виджет). Клавиша нужна потому, что UMG-виджет не получает нажатий сам:
+	 *  ввод приходит сюда, в PlayerController. */
+	void OnToggleHudInfoPanel();
+
 	/** Общий обработчик хоткеев профилей рендера F1-F4 - просто находит
 	 *  оркестратор и зовёт ApplyRenderPreset(PresetIndex). Четыре тонкие
 	 *  обёртки ниже нужны потому, что BindAction принимает функцию без

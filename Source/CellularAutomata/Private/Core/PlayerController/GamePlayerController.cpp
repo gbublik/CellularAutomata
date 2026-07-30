@@ -329,6 +329,15 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnGenerateState();
 	}
 
+	// F5 - показать/скрыть информационную панель HUD. Здесь, а не через
+	// Enhanced Input, за компанию с соседними клавишами: F1-F4 (профили
+	// рендера) идут через маппинг, но эта клавиша ничего не ждёт от триггеров
+	// и одному нажатию должна соответствовать ровно одна реакция.
+	if (Params.Key == EKeys::F5 && Params.Event == IE_Pressed)
+	{
+		OnToggleHudInfoPanel();
+	}
+
 	// Цифры 0-9 - фильтр по возрасту (9 - ещё и всё, что старше), Shift+цифра -
 	// добавить возраст к показанным или убрать его. Здесь, а не через Enhanced
 	// Input, по причине, не связанной с лагом: десять клавиш одного вида - это
@@ -527,6 +536,18 @@ void AGamePlayerController::OnGenerateState()
 	{
 		Orchestrator->GenerateState();
 	}
+}
+
+void AGamePlayerController::OnToggleHudInfoPanel()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleHudInfoPanel: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->ToggleHudInfoPanel();
 }
 
 void AGamePlayerController::OnApplyRenderPreset(int32 PresetIndex)
