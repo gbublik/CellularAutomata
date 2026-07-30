@@ -53,4 +53,36 @@ struct FSliceCaptureParams
 	 *  текстуре. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture")
 	bool bEncodeSRGB = true;
+
+	/** Сколько кадров снимает серия (см.
+	 *  AAutomataOrchestrator::StartSeriesCapture()). Первый кадр - текущее
+	 *  состояние, остальные снимаются по ходу симуляции. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture|Series",
+			  meta = (ClampMin = "1", UIMin = "2", UIMax = "200"))
+	int32 SeriesFrameCount = 12;
+
+	/** Через сколько поколений снимать очередной кадр серии.
+	 *
+	 *  Считается в ПОКОЛЕНИЯХ, а не в кадрах экрана и не в секундах: узор
+	 *  меняется поколениями, и только такой шаг даёт равномерную серию
+	 *  независимо от того, с какой скоростью идёт симуляция и сколько
+	 *  поколений посчиталось за один фоновый заход. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture|Series",
+			  meta = (ClampMin = "1", UIMin = "1", UIMax = "100"))
+	int32 SeriesGenerationsPerFrame = 5;
+
+	/** Считать серию на максимальной скорости, не рисуя промежуточные
+	 *  поколения на экране.
+	 *
+	 *  Смысл в том, что рендер клеток - самая дорогая часть кадра (AddInstances
+	 *  это порядка 97% времени отрисовки), а серия его не использует вовсе:
+	 *  снимок растеризуется прямо из сетки, и поколению незачем попадать на
+	 *  экран, чтобы попасть в файл. Заодно снимается и пауза между шагами:
+	 *  Speed задаёт темп для просмотра, а серии он только мешает.
+	 *
+	 *  Пока серия идёт, картинка на экране стоит - это нормально, прогресс
+	 *  виден в строке состояния; по окончании экран догоняет одним рендером.
+	 *  Выключите, если хотите наблюдать процесс глазами. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture|Series")
+	bool bSeriesFastMode = true;
 };

@@ -193,6 +193,10 @@ protected:
 	 *  сетки, поэтому не зависит ни от размера окна, ни от зума. */
 	void OnCaptureTextureSlice();
 
+	/** Хоткей (F7) - начать съёмку серии кадров по ходу симуляции, а если она
+	 *  уже идёт, оборвать её (AAutomataOrchestrator::StartSeriesCapture()). */
+	void OnToggleSeriesCapture();
+
 	/** Общий обработчик хоткеев профилей рендера F1-F4 - просто находит
 	 *  оркестратор и зовёт ApplyRenderPreset(PresetIndex). Четыре тонкие
 	 *  обёртки ниже нужны потому, что BindAction принимает функцию без

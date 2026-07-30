@@ -346,6 +346,12 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnCaptureTextureSlice();
 	}
 
+	// F7 - начать/оборвать съёмку серии кадров по ходу симуляции.
+	if (Params.Key == EKeys::F7 && Params.Event == IE_Pressed)
+	{
+		OnToggleSeriesCapture();
+	}
+
 	// Цифры 0-9 - фильтр по возрасту (9 - ещё и всё, что старше), Shift+цифра -
 	// добавить возраст к показанным или убрать его. Здесь, а не через Enhanced
 	// Input, по причине, не связанной с лагом: десять клавиш одного вида - это
@@ -575,6 +581,20 @@ void AGamePlayerController::OnCaptureTextureSlice()
 	{
 		Orchestrator->CaptureTextureSlice();
 	}
+}
+
+void AGamePlayerController::OnToggleSeriesCapture()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleSeriesCapture: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// Одна клавиша на начало и на обрыв - StartSeriesCapture() сам решает, что
+	// значит нажатие в текущем состоянии.
+	Orchestrator->StartSeriesCapture();
 }
 
 void AGamePlayerController::OnApplyRenderPreset(int32 PresetIndex)

@@ -565,6 +565,32 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata|Capture")
 	bool EstimateSliceCaptureSize(int32& OutWidth, int32& OutHeight);
 
+	/** Снять СЕРИЮ кадров одной структуры по ходу её развития - хоткей F7,
+	 *  повторное нажатие обрывает досрочно.
+	 *
+	 *  Кадры пишутся в свою подпапку Series_<дата> и нумеруются подряд, так
+	 *  что их сразу можно собрать в анимацию или разложить как варианты одного
+	 *  орнамента. Первый кадр - текущее состояние, дальше каждые
+	 *  SeriesGenerationsPerFrame поколений.
+	 *
+	 *  Съёмка навешивается на обычный ход симуляции, а не крутит свой цикл:
+	 *  так она не блокирует редактор на минуты, её видно на экране, и её можно
+	 *  прервать. Если симуляция стоит - серия запускает её сама и остановит,
+	 *  когда закончит (а если Play шёл до серии, то не тронет). */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Capture")
+	void StartSeriesCapture();
+
+	/** Прекратить съёмку серии - и по завершении, и по досрочному обрыву. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Capture")
+	void StopSeriesCapture();
+
+	UFUNCTION(BlueprintPure, Category = "Automata|Capture")
+	bool IsSeriesCaptureActive() const { return bSeriesCaptureActive; }
+
+	/** Сколько кадров серии ещё осталось снять - для подписи в HUD. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Capture")
+	int32 GetSeriesFramesRemaining() const { return SeriesFramesRemaining; }
+
 	/** Отладочная проверка корректности правила - сажает три классических
 	 *  плоских 2D-паттерна (блок-неподвижку, мигалку-осциллятор, планер) в
 	 *  одном Z-слое, на достаточном расстоянии друг от друга, чтобы не
@@ -2150,6 +2176,28 @@ private:
 	 *  сбора InitialStateCells: на миллионах клеток иначе пик держал бы два
 	 *  больших массива разом. */
 	void RebuildGridFromCells(TArray<FIntVector>&& Cells);
+	/** Состояние съёмки серии. Все Transient - должны пережить реинстансинг
+	 *  Live Coding, иначе хот-патч посреди серии оставил бы её включённой без
+	 *  счётчиков (или наоборот) и кадры продолжали бы капать в никуда. */
+	UPROPERTY(Transient)
+	bool bSeriesCaptureActive = false;
+	UPROPERTY(Transient)
+	int32 SeriesFramesRemaining = 0;
+	UPROPERTY(Transient)
+	int32 SeriesGenerationsSinceFrame = 0;
+	UPROPERTY(Transient)
+	int32 SeriesFrameIndex = 0;
+	/** Куда пишется текущая серия - своя подпапка на каждый запуск. */
+	UPROPERTY(Transient)
+	FString SeriesDirectory;
+	/** Симуляцию запустила сама серия, значит ей же её и останавливать. Если
+	 *  Play шёл до начала съёмки, серия его не трогает - она наблюдатель, а не
+	 *  хозяин. */
+	UPROPERTY(Transient)
+	bool bSeriesStartedSimulation = false;
+	/** Снимает очередной кадр серии и доводит счётчики; завершает серию, когда
+	 *  кадры кончились. */
+	void CaptureSeriesFrame();
 	/** Взведён на время сбора клеток для снимка: BuildCellRenderData() тогда
 	 *  берёт цветовые таблицы гамма-кодированными. Флаг, а не параметр, чтобы
 	 *  не менять сигнатуру горячего пути рендера ради одного редкого вызова;

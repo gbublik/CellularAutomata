@@ -200,12 +200,18 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// фактическому размеру пачки.
 	const float GenerationsPerDispatch = float(FMath::Max(1, LastDispatchGenerations));
 
+	// Серия в быстром режиме идёт без пауз между шагами: Speed задаёт темп для
+	// ПРОСМОТРА, а съёмке он только мешает - файлы получатся те же самые, но
+	// ждать придётся во столько раз дольше. Следующий заход всё равно стартует
+	// не раньше, чем закончится предыдущий (bStepInProgress).
+	const bool bSeriesRush = bSeriesCaptureActive && SliceCaptureParams.bSeriesFastMode;
+
 	if (bFastStepActive)
 	{
 		TimeSinceLastStep += DeltaTime;
 		const float StepInterval = GenerationsPerDispatch / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
-		if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bBlockedByChunkedRender)
+		if ((bSeriesRush || TimeSinceLastStep >= StepInterval) && !bStepInProgress && !bBlockedByChunkedRender)
 		{
 			TimeSinceLastStep = 0.0f;
 			StepAsync();
@@ -241,7 +247,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// bChunkedRenderInProgress истинным. Оставшееся время не копится "про
 	// запас" - реальная скорость сама упрётся в то, сколько Step() занимает
 	// на этой сетке (плюс, в режиме ожидания, во сколько занимает разлив).
-	if (TimeSinceLastStep >= StepInterval && !bStepInProgress && !bBlockedByChunkedRender)
+	if ((bSeriesRush || TimeSinceLastStep >= StepInterval) && !bStepInProgress && !bBlockedByChunkedRender)
 	{
 		TimeSinceLastStep = 0.0f;
 		StepAsync();
@@ -3010,6 +3016,117 @@ void AAutomataOrchestrator::CaptureTextureSlice()
 	WriteSliceCaptureToFile(EnsureSliceDirectory() / FileName);
 }
 
+void AAutomataOrchestrator::StartSeriesCapture()
+{
+	if (bSeriesCaptureActive)
+	{
+		// Повторный вызов - обрыв: у хоткея одна клавиша на оба действия, и
+		// прервать серию должно быть так же просто, как начать.
+		StopSeriesCapture();
+		return;
+	}
+
+	if (!Grid || Grid->Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StartSeriesCapture: сетка пуста - снимать нечего"));
+		ShowStatusMessage(StatusKey_SliceCapture, TEXT("Серия не начата: сетка пуста"));
+		return;
+	}
+
+	// Своя подпапка на запуск: кадры одной серии должны лежать вместе и
+	// нумероваться подряд, иначе их не собрать в анимацию.
+	SeriesDirectory = EnsureSliceDirectory() / FString::Printf(TEXT("Series_%s"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+	IFileManager::Get().MakeDirectory(*SeriesDirectory, /*Tree=*/true);
+
+	SeriesFrameIndex = 0;
+	SeriesFramesRemaining = FMath::Max(SliceCaptureParams.SeriesFrameCount, 1);
+	SeriesGenerationsSinceFrame = 0;
+	bSeriesCaptureActive = true;
+
+	UE_LOG(LogTemp, Log, TEXT("StartSeriesCapture: %d кадров через каждые %d поколений -> %s"),
+		SeriesFramesRemaining, FMath::Max(SliceCaptureParams.SeriesGenerationsPerFrame, 1), *SeriesDirectory);
+
+	// Текущее состояние - это тоже кадр серии, и притом единственный, который
+	// пользователь видел глазами, когда решил снимать.
+	CaptureSeriesFrame();
+
+	// Серия могла закончиться на первом же кадре (SeriesFrameCount == 1).
+	if (!bSeriesCaptureActive)
+	{
+		return;
+	}
+
+	if (!bSimulationRunning && !IsFastStepActive())
+	{
+		bSeriesStartedSimulation = true;
+		Start();
+	}
+}
+
+void AAutomataOrchestrator::StopSeriesCapture()
+{
+	if (!bSeriesCaptureActive)
+	{
+		return;
+	}
+
+	const int32 Captured = SeriesFrameIndex;
+	bSeriesCaptureActive = false;
+	SeriesFramesRemaining = 0;
+	SeriesGenerationsSinceFrame = 0;
+
+	// Останавливаем только то, что сами и запустили.
+	if (bSeriesStartedSimulation)
+	{
+		bSeriesStartedSimulation = false;
+		if (bSimulationRunning)
+		{
+			Stop();
+		}
+	}
+
+	// В быстром режиме промежуточные поколения на экран не выводились, и на нём
+	// осталась картинка того состояния, с которого серия началась. Догоняем
+	// одним рендером - иначе выглядело бы как зависшая симуляция.
+	if (SliceCaptureParams.bSeriesFastMode && Grid.IsValid())
+	{
+		RenderGridImmediate();
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("StopSeriesCapture: снято %d кадров -> %s"), Captured, *SeriesDirectory);
+	ShowStatusMessage(StatusKey_SliceCapture,
+		FString::Printf(TEXT("Серия завершена: %d кадров в %s"), Captured, *FPaths::GetCleanFilename(SeriesDirectory)));
+}
+
+void AAutomataOrchestrator::CaptureSeriesFrame()
+{
+	const FString FileName = FString::Printf(TEXT("Frame_%04d.png"), SeriesFrameIndex);
+
+	if (!WriteSliceCaptureToFile(SeriesDirectory / FileName))
+	{
+		// Причину уже сказал WriteSliceCaptureToFile(). Серию обрываем: если
+		// кадр не снялся, следующие почти наверняка не снимутся тоже, а
+		// молча продолжать капать ошибками в лог - худший вариант.
+		UE_LOG(LogTemp, Warning, TEXT("CaptureSeriesFrame: кадр %d не снят - серия прервана"), SeriesFrameIndex);
+		StopSeriesCapture();
+		return;
+	}
+
+	++SeriesFrameIndex;
+	--SeriesFramesRemaining;
+
+	if (SeriesFramesRemaining <= 0)
+	{
+		StopSeriesCapture();
+		return;
+	}
+
+	// Своё сообщение поверх того, что показал WriteSliceCaptureToFile(): в
+	// серии важнее прогресс, чем размер очередного файла.
+	ShowStatusMessage(StatusKey_SliceCapture,
+		FString::Printf(TEXT("Серия: кадр %d из %d"), SeriesFrameIndex, SeriesFrameIndex + SeriesFramesRemaining));
+}
+
 void AAutomataOrchestrator::CaptureTextureSliceAs()
 {
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
@@ -3721,6 +3838,22 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// GenerationCount/FHudStats).
 	GenerationCount += Generations;
 
+	// Серия снимков идёт по своему счётчику ПОКОЛЕНИЙ - как и Ghost Shape
+	// ниже, и по той же причине: шагом заходов было бы неравномерно (один
+	// заход может посчитать сразу пачку), а шагом кадров экрана - зависело бы
+	// от скорости отрисовки. Съёмка не смотрит на StepsSinceLastRender: она
+	// растеризует сетку сама и не нуждается в том, чтобы поколение попало на
+	// экран.
+	if (bSeriesCaptureActive)
+	{
+		SeriesGenerationsSinceFrame += Generations;
+		if (SeriesGenerationsSinceFrame >= FMath::Max(1, SliceCaptureParams.SeriesGenerationsPerFrame))
+		{
+			SeriesGenerationsSinceFrame = 0;
+			CaptureSeriesFrame();
+		}
+	}
+
 	// Ghost Shape пересчитывается по своему отдельному интервалу поколений,
 	// независимо от StepsPerRender - см. план "Ghost Shape".
 	if (bEnableGhostShape)
@@ -3731,6 +3864,15 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 			GhostShapeGenerationsSinceRefresh = 0;
 			RefreshGhostShape();
 		}
+	}
+
+	// Серия в быстром режиме не рисует промежуточные поколения вовсе: снимок
+	// растеризуется прямо из сетки, и поколению незачем попадать на экран,
+	// чтобы попасть в файл, а рендер клеток - самая дорогая часть кадра.
+	// Экран догонит одним рендером в StopSeriesCapture().
+	if (bSeriesCaptureActive && SliceCaptureParams.bSeriesFastMode)
+	{
+		return;
 	}
 
 	// Шагом в Generations, а не на единицу: когда заход посчитал целую пачку
