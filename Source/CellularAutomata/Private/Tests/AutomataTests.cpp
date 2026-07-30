@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Automata/Capture/CellRasterizer.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Simulation/CellAging.h"
@@ -717,6 +718,190 @@ bool FRandomBallLegacyParityTest::RunTest(const FString& Parameters)
 		}
 
 		AddInfo(FString::Printf(TEXT("сид %d: %d клеток, совпало с прежним поведением"), Case.Seed, Produced.Num()));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSliceCaptureOrientationTest,
+	"CellularAutomata.Slice.Orientation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FSliceCaptureOrientationTest::RunTest(const FString& Parameters)
+{
+	// Фигура АСИММЕТРИЧНАЯ намеренно: на симметричной не видно ни
+	// транспонирования, ни зеркала - то есть ровно тех ошибок, ради которых
+	// тест и пишется. Буква "Г" в плоскости XY на высоте 0:
+	//   (0,0) угол, (2,0) конец горизонтали, (0,1) конец вертикали.
+	constexpr double CellSize = 100.0;
+
+	auto MakeCell = [](double X, double Y, double Z, FColor Color)
+	{
+		FCellRenderInstance Instance;
+		Instance.Position = FVector3f(static_cast<float>(X * CellSize), static_cast<float>(Y * CellSize), static_cast<float>(Z * CellSize));
+		Instance.Color = Color;
+		return Instance;
+	};
+
+	const FColor Corner(255, 0, 0, 255);
+	const FColor AlongX(0, 255, 0, 255);
+	const FColor AlongY(0, 0, 255, 255);
+
+	TArray<FCellRenderInstance> Cells = {
+		MakeCell(0, 0, 0, Corner),
+		MakeCell(2, 0, 0, AlongX),
+		MakeCell(0, 1, 0, AlongY),
+	};
+
+	// Взгляд сверху вниз, "север" камеры направлен по +X - то же, что даёт
+	// NumPad8 при нулевом рыскании.
+	CellRasterizer::FRasterParams Params;
+	Params.CellSize = CellSize;
+	Params.PixelsPerCell = 1;
+	Params.BackgroundColor = FColor(0, 0, 0, 255);
+	CellRasterizer::BuildAxes(/*CameraForward=*/FVector(0, 0, -1), /*CameraUp=*/FVector(1, 0, 0), Params);
+
+	CellRasterizer::FRasterImage Image;
+	FString Error;
+	if (!CellRasterizer::Rasterize(Cells, Params, MAX_int64, Image, Error))
+	{
+		AddError(FString::Printf(TEXT("растеризация не удалась - %s"), *Error));
+		return true;
+	}
+
+	// Три клетки: 3 вдоль X (0..2) и 2 вдоль Y (0..1). Сверху ось X идёт
+	// вверх по картинке, значит высота 3, ширина 2.
+	TestEqual(TEXT("ширина"), Image.Width, 2);
+	TestEqual(TEXT("высота"), Image.Height, 3);
+
+	auto PixelAt = [&Image](int32 X, int32 Y) -> FColor
+	{
+		return Image.Pixels[Y * Image.Width + X];
+	};
+
+	// Угол лежит внизу картинки (X = 0 это "юг" при взгляде сверху с севером
+	// по +X), клетка с большим X - вверху, клетка с большим Y - правее.
+	const FColor CornerPixel = PixelAt(0, 2);
+	const FColor AlongXPixel = PixelAt(0, 0);
+	const FColor AlongYPixel = PixelAt(1, 2);
+
+	TestEqual(TEXT("угол фигуры"), CornerPixel.ToPackedARGB(), Corner.ToPackedARGB());
+	TestEqual(TEXT("конец вдоль X - вверху"), AlongXPixel.ToPackedARGB(), AlongX.ToPackedARGB());
+	TestEqual(TEXT("конец вдоль Y - справа"), AlongYPixel.ToPackedARGB(), AlongY.ToPackedARGB());
+
+	// Оси обязаны остаться попарно ортогональными и осевыми.
+	TestTrue(TEXT("оси ортогональны"),
+		FMath::IsNearlyZero(FVector::DotProduct(Params.RightAxis, Params.UpAxis)) &&
+		FMath::IsNearlyZero(FVector::DotProduct(Params.RightAxis, Params.ForwardAxis)) &&
+		FMath::IsNearlyZero(FVector::DotProduct(Params.UpAxis, Params.ForwardAxis)));
+
+	// Диагональный ракурс не должен схлопывать оси в одну - это и есть тот
+	// случай, ради которого горизонталь выводится через векторное
+	// произведение, а не снапается отдельно.
+	CellRasterizer::FRasterParams Diagonal;
+	CellRasterizer::BuildAxes(FVector(1, 1, -1).GetSafeNormal(), FVector(0, 0, 1), Diagonal);
+	TestTrue(TEXT("диагональ: оси не совпали"),
+		!Diagonal.ForwardAxis.Equals(Diagonal.UpAxis) &&
+		!Diagonal.RightAxis.IsNearlyZero());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSliceCaptureRasterTest,
+	"CellularAutomata.Slice.Raster",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FSliceCaptureRasterTest::RunTest(const FString& Parameters)
+{
+	constexpr double CellSize = 100.0;
+
+	auto MakeCell = [](double X, double Y, double Z, FColor Color)
+	{
+		FCellRenderInstance Instance;
+		Instance.Position = FVector3f(static_cast<float>(X * CellSize), static_cast<float>(Y * CellSize), static_cast<float>(Z * CellSize));
+		Instance.Color = Color;
+		return Instance;
+	};
+
+	CellRasterizer::FRasterParams Params;
+	Params.CellSize = CellSize;
+	Params.BackgroundColor = FColor(0, 0, 0, 255);
+	CellRasterizer::BuildAxes(FVector(0, 0, -1), FVector(1, 0, 0), Params);
+
+	const FColor Near(10, 200, 30, 255);
+	const FColor Far(200, 10, 30, 255);
+
+	// Две клетки на одном луче: камера смотрит вниз (-Z), значит ближняя - та,
+	// что ВЫШЕ. Побеждать обязана она, причём независимо от порядка во входном
+	// массиве: порядок GetAliveCells() меняется от поколения к поколению.
+	{
+		TArray<FCellRenderInstance> Straight = { MakeCell(0, 0, 5, Near), MakeCell(0, 0, 0, Far) };
+		TArray<FCellRenderInstance> Reversed = { MakeCell(0, 0, 0, Far), MakeCell(0, 0, 5, Near) };
+
+		CellRasterizer::FRasterImage ImageA;
+		CellRasterizer::FRasterImage ImageB;
+		FString Error;
+
+		if (!CellRasterizer::Rasterize(Straight, Params, MAX_int64, ImageA, Error) ||
+			!CellRasterizer::Rasterize(Reversed, Params, MAX_int64, ImageB, Error))
+		{
+			AddError(FString::Printf(TEXT("растеризация не удалась - %s"), *Error));
+			return true;
+		}
+
+		TestEqual(TEXT("один пиксель"), ImageA.Pixels.Num(), 1);
+		TestEqual(TEXT("побеждает ближняя клетка"), ImageA.Pixels[0].ToPackedARGB(), Near.ToPackedARGB());
+		TestEqual(TEXT("порядок входа не влияет"), ImageB.Pixels[0].ToPackedARGB(), ImageA.Pixels[0].ToPackedARGB());
+	}
+
+	// Масштаб: одна клетка при PixelsPerCell = 4 обязана дать ровный блок 4x4
+	// одного цвета - никакой интерполяции, ни одного промежуточного оттенка.
+	{
+		CellRasterizer::FRasterParams Scaled = Params;
+		Scaled.PixelsPerCell = 4;
+
+		TArray<FCellRenderInstance> One = { MakeCell(0, 0, 0, Near) };
+		CellRasterizer::FRasterImage Image;
+		FString Error;
+
+		if (!CellRasterizer::Rasterize(One, Scaled, MAX_int64, Image, Error))
+		{
+			AddError(FString::Printf(TEXT("растеризация не удалась - %s"), *Error));
+			return true;
+		}
+
+		TestEqual(TEXT("ширина блока"), Image.Width, 4);
+		TestEqual(TEXT("высота блока"), Image.Height, 4);
+
+		bool bUniform = true;
+		for (const FColor& Pixel : Image.Pixels)
+		{
+			bUniform = bUniform && (Pixel.ToPackedARGB() == Near.ToPackedARGB());
+		}
+		TestTrue(TEXT("весь блок одного цвета"), bUniform);
+	}
+
+	// Бюджет: отказ обязан прийти ДО построения и не оставить полурезультата.
+	{
+		TArray<FCellRenderInstance> FarApart = { MakeCell(0, 0, 0, Near), MakeCell(5000, 5000, 0, Far) };
+
+		CellRasterizer::FRasterImage Image;
+		FString Error;
+		const bool bOk = CellRasterizer::Rasterize(FarApart, Params, /*MaxPixels=*/1024, Image, Error);
+
+		TestFalse(TEXT("превышение бюджета отклонено"), bOk);
+		TestTrue(TEXT("причина названа"), !Error.IsEmpty());
+		TestEqual(TEXT("буфер не тронут"), Image.Pixels.Num(), 0);
+	}
+
+	// Пустой вход - честная ошибка, а не картинка 1x1.
+	{
+		TArray<FCellRenderInstance> Empty;
+		CellRasterizer::FRasterImage Image;
+		FString Error;
+
+		TestFalse(TEXT("пустой вход отклонён"), CellRasterizer::Rasterize(Empty, Params, MAX_int64, Image, Error));
+		TestTrue(TEXT("причина названа"), !Error.IsEmpty());
 	}
 
 	return true;

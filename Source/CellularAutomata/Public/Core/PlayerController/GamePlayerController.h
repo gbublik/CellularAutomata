@@ -187,6 +187,12 @@ protected:
 	 *  ввод приходит сюда, в PlayerController. */
 	void OnToggleHudInfoPanel();
 
+	/** Хоткей (F6) - снять текущий вид как PNG-срез
+	 *  (AAutomataOrchestrator::CaptureTextureSlice()); с зажатым Shift - через
+	 *  диалог выбора файла. Это не скриншот: картинка растеризуется прямо из
+	 *  сетки, поэтому не зависит ни от размера окна, ни от зума. */
+	void OnCaptureTextureSlice();
+
 	/** Общий обработчик хоткеев профилей рендера F1-F4 - просто находит
 	 *  оркестратор и зовёт ApplyRenderPreset(PresetIndex). Четыре тонкие
 	 *  обёртки ниже нужны потому, что BindAction принимает функцию без

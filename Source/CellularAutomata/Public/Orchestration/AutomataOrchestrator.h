@@ -12,6 +12,7 @@
 #include "Automata/Rendering/ChunkedRenderOrder.h"
 #include "Automata/Rendering/RenderPresets.h"
 #include "Automata/Persistence/AutomatonSaveHeader.h"
+#include "Automata/Capture/SliceCaptureParams.h"
 #include "Automata/Generation/StateGeneratorPresets.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
@@ -426,6 +427,7 @@ public:
 		StatusKey_AgeFilter = 1004,
 		StatusKey_Camera = 1005,
 		StatusKey_Generation = 1006,
+		StatusKey_SliceCapture = 1007,
 	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
@@ -524,6 +526,44 @@ public:
 	/** Отображаемое имя текущего генератора - для подписи в HUD. */
 	UFUNCTION(BlueprintPure, Category = "Automata|Generation")
 	FString GetStateGeneratorDisplayName() const;
+
+	/** Настройки съёмки текстурного среза - см. FSliceCaptureParams. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture")
+	FSliceCaptureParams SliceCaptureParams;
+
+	/** Потолок на площадь снимка в пикселях (по умолчанию 8192x8192).
+	 *
+	 *  Проверяется ДО начала работы, как MaxGeneratedCells у генераторов:
+	 *  превышение - отказ с сообщением, а не наполовину заполненный буфер.
+	 *  Считайте это примерно половиной пика памяти: сначала буфер пикселей
+	 *  (4 байта на пиксель), затем рядом с ним буфер PNG. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture",
+			  meta = (ClampMin = "65536"))
+	int64 MaxCapturePixels = 67108864;
+
+	/** Снять текущий вид как PNG в Saved/AutomataSlices - хоткей F6.
+	 *
+	 *  Не скриншот: изображение растеризуется прямо из сетки, поэтому
+	 *  сглаживания нет вовсе, клетка занимает ровно PixelsPerCell пикселей, а
+	 *  размер не зависит ни от окна, ни от зума. Камера задаёт только ось, с
+	 *  которой смотрим (её базис округляется до ближайшего осевого), а что
+	 *  попадёт в кадр, решают активные фильтры - куб отсечения, фильтр
+	 *  возрастов, срез вдоль взгляда. Снимается вся структура целиком, а не
+	 *  то, что уместилось в рамку экрана. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Capture")
+	void CaptureTextureSlice();
+
+	/** То же, но с диалогом выбора файла (Shift+F6). Обычная съёмка идёт без
+	 *  диалога намеренно: снимков делают много подряд, и ценность в том, что
+	 *  нажатие ничего не спрашивает. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Capture")
+	void CaptureTextureSliceAs();
+
+	/** Размер снимка при текущих настройках, без его построения - чтобы HUD
+	 *  показывал, во что обойдётся нажатие (та же идиома, что
+	 *  EstimateStateGeneratorCells()). Возвращает false, если снимать нечего. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Capture")
+	bool EstimateSliceCaptureSize(int32& OutWidth, int32& OutHeight);
 
 	/** Отладочная проверка корректности правила - сажает три классических
 	 *  плоских 2D-паттерна (блок-неподвижку, мигалку-осциллятор, планер) в
@@ -2009,9 +2049,16 @@ private:
 	 *  один раз на BuildCellRenderData(), а не на клетку - при миллионах
 	 *  клеток интерполяция в цикле это миллионы лишних лерпов, а сама таблица
 	 *  занимает 1 КБ. Заодно единственная конверсия в FColor (обязательно
-	 *  ToFColor(bSRGB=false), см. FCellRenderInstance) живёт в одном месте. */
-	void BuildAgeColorLut(TArray<FColor>& OutLut) const;
-	void BuildDecayColorLut(TArray<FColor>& OutLut) const;
+	 *  ToFColor(bSRGB=false), см. FCellRenderInstance) живёт в одном месте.
+	 *
+	 *  bSRGB переключает гамма-кодирование и по умолчанию ВЫКЛЮЧЕН - именно
+	 *  это нужно рендеру. Включает его только съёмка среза в PNG: файл любой
+	 *  просмотрщик читает как sRGB, поэтому линейные байты дали бы картинку
+	 *  заметно темнее той, что на экране, и ни строчки в логе об этом бы не
+	 *  было. Один параметр вместо второй таблицы - рампа остаётся одним
+	 *  источником правды. */
+	void BuildAgeColorLut(TArray<FColor>& OutLut, bool bSRGB = false) const;
+	void BuildDecayColorLut(TArray<FColor>& OutLut, bool bSRGB = false) const;
 	/** Ядро интерполяции: T в [0,1] -> точка на ломаной по ключам Keys.
 	 *  Пустой массив -> белый, один ключ -> он же. */
 	static FLinearColor SampleColorRamp(const TArray<FLinearColor>& Keys, float T);
@@ -2103,6 +2150,26 @@ private:
 	 *  сбора InitialStateCells: на миллионах клеток иначе пик держал бы два
 	 *  больших массива разом. */
 	void RebuildGridFromCells(TArray<FIntVector>&& Cells);
+	/** Взведён на время сбора клеток для снимка: BuildCellRenderData() тогда
+	 *  берёт цветовые таблицы гамма-кодированными. Флаг, а не параметр, чтобы
+	 *  не менять сигнатуру горячего пути рендера ради одного редкого вызова;
+	 *  выставляется и снимается строго вокруг него в BuildSliceCapture(). */
+	bool bBuildingSliceCapture = false;
+	/** Общая часть съёмки: собирает видимые клетки, разрешает оси по камере и
+	 *  растеризует. Заполняет OutPixels/OutWidth/OutHeight либо возвращает
+	 *  false с описанием причины, ничего не тронув.
+	 *
+	 *  Клетки берутся из BuildCellRenderData() - того же самого сбора, что
+	 *  готовит экранный рендер. Поэтому снимок повторяет ВСЁ, что видно (куб
+	 *  отсечения, фильтр возрастов, срез, угасающие клетки Generations), и
+	 *  второму набору правил "что показывать" тут просто неоткуда взяться. */
+	bool BuildSliceCapture(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight, FString& OutError);
+	/** Кодирует пиксели в PNG и пишет файл. Отделено от построения, чтобы
+	 *  съёмка с диалогом и без него делили ровно один путь записи. */
+	bool WriteSliceCaptureToFile(const FString& FilePath);
+	/** Каталог для снимков (Saved/AutomataSlices), создаётся при обращении -
+	 *  тот же приём, что EnsureSaveDirectory() для сохранений. */
+	FString EnsureSliceDirectory() const;
 	/** Полуразмер центрального подкуба, по которому считается гистограмма
 	 *  соседей (см. FStateGeneratorParams::bAnalyzeNeighborCounts).
 	 *  Структуры генераторов периодичны, поэтому ответ от размера выборки не

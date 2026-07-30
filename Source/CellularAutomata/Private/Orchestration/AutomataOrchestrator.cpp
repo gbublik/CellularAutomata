@@ -20,6 +20,7 @@
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Automata/Selection/CellSelection.h"
 #include "Ui/MainHudWidget.h"
+#include "Automata/Capture/CellRasterizer.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Generation/StateGeneratorPresets.h"
 #include "Automata/Meshing/CellMeshBuilder.h"
@@ -1142,7 +1143,7 @@ FLinearColor AAutomataOrchestrator::SampleColorRamp(const TArray<FLinearColor>& 
 	return FMath::Lerp(Keys[LowIndex], Keys[HighIndex], Position - float(LowIndex));
 }
 
-void AAutomataOrchestrator::BuildAgeColorLut(TArray<FColor>& OutLut) const
+void AAutomataOrchestrator::BuildAgeColorLut(TArray<FColor>& OutLut, bool bSRGB) const
 {
 	OutLut.SetNumUninitialized(256);
 	const float MaxAge = float(FMath::Max(1, AgeColorMaxAge));
@@ -1151,11 +1152,11 @@ void AAutomataOrchestrator::BuildAgeColorLut(TArray<FColor>& OutLut) const
 		// bSRGB=false обязательно: PerInstanceCustomData это сырой float,
 		// материал никакого sRGB-декода не делает - гамма-кодирование здесь
 		// тихо испортило бы всю рампу (см. FCellRenderInstance).
-		OutLut[Age] = SampleColorRamp(AgeColors, float(Age) / MaxAge).ToFColor(/*bSRGB=*/false);
+		OutLut[Age] = SampleColorRamp(AgeColors, float(Age) / MaxAge).ToFColor(bSRGB);
 	}
 }
 
-void AAutomataOrchestrator::BuildDecayColorLut(TArray<FColor>& OutLut) const
+void AAutomataOrchestrator::BuildDecayColorLut(TArray<FColor>& OutLut, bool bSRGB) const
 {
 	OutLut.SetNumUninitialized(256);
 
@@ -1171,7 +1172,7 @@ void AAutomataOrchestrator::BuildDecayColorLut(TArray<FColor>& OutLut) const
 	for (int32 State = 0; State < 256; ++State)
 	{
 		const float T = float(FMath::Clamp(State - 2, 0, Denominator)) / float(Denominator);
-		OutLut[State] = SampleColorRamp(Ramp, T).ToFColor(/*bSRGB=*/false);
+		OutLut[State] = SampleColorRamp(Ramp, T).ToFColor(bSRGB);
 	}
 }
 
@@ -2854,6 +2855,198 @@ FString AAutomataOrchestrator::GetStateGeneratorDisplayName() const
 	return StateGenerators::GetDisplayName(GenerationParams.Type);
 }
 
+FString AAutomataOrchestrator::EnsureSliceDirectory() const
+{
+	const FString Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("AutomataSlices"));
+	IFileManager::Get().MakeDirectory(*Dir, /*Tree=*/true);
+	return Dir;
+}
+
+bool AAutomataOrchestrator::BuildSliceCapture(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight, FString& OutError)
+{
+	if (!Grid || Grid->Num() == 0)
+	{
+		OutError = TEXT("сетка пуста - снимать нечего");
+		return false;
+	}
+
+	// Тот же сбор, что готовит экранный рендер: клетки уже отфильтрованы кубом,
+	// возрастом и срезом, и уже окрашены по рампе. Побочный эффект - перезапись
+	// LastRenderStats, поэтому сохраняем и возвращаем: съёмка не должна
+	// подменять собой статистику последнего РЕНДЕРА, которую показывает HUD.
+	const FCellRenderStats SavedRenderStats = LastRenderStats;
+
+	// Цвета для файла нужны гамма-кодированными, в отличие от экранных - см.
+	// FSliceCaptureParams::bEncodeSRGB. Признак снимается на время сбора.
+	const bool bSavedCaptureColors = bBuildingSliceCapture;
+	bBuildingSliceCapture = SliceCaptureParams.bEncodeSRGB;
+
+	TArray<FCellRenderInstance> Cells;
+	BuildCellRenderData(Cells);
+
+	bBuildingSliceCapture = bSavedCaptureColors;
+	LastRenderStats = SavedRenderStats;
+
+	if (Cells.Num() == 0)
+	{
+		OutError = TEXT("после фильтров не осталось ни одной видимой клетки");
+		return false;
+	}
+
+	CellRasterizer::FRasterParams RasterParams;
+	RasterParams.CellSize = Grid->GetCellSize();
+	RasterParams.PixelsPerCell = FMath::Max(SliceCaptureParams.PixelsPerCell, 1);
+	RasterParams.Mode = SliceCaptureParams.Mode;
+	RasterParams.ForegroundColor = SliceCaptureParams.ForegroundColor;
+	RasterParams.BackgroundColor = SliceCaptureParams.bTransparentBackground
+		? FColor(0, 0, 0, 0)
+		: SliceCaptureParams.BackgroundColor;
+
+	// Оси - от камеры, но только как ориентир "с какой стороны": базис
+	// округляется до осевого, иначе клетки не легли бы в регулярную сетку.
+	FVector CameraForward = FVector::ForwardVector;
+	FVector CameraUp = FVector::UpVector;
+	if (GamePC && GamePC->PlayerCameraManager)
+	{
+		const FRotationMatrix CameraBasis(GamePC->PlayerCameraManager->GetCameraRotation());
+		CameraForward = CameraBasis.GetUnitAxis(EAxis::X);
+		// Верх берётся У КАМЕРЫ, а не из мира: при взгляде сверху вниз мировой
+		// "вверх" вырожден, а камерный указывает, где у картинки север.
+		CameraUp = CameraBasis.GetUnitAxis(EAxis::Z);
+	}
+
+	CellRasterizer::BuildAxes(CameraForward, CameraUp, RasterParams);
+
+	CellRasterizer::FRasterImage Image;
+	if (!CellRasterizer::Rasterize(Cells, RasterParams, MaxCapturePixels, Image, OutError))
+	{
+		return false;
+	}
+
+	OutWidth = Image.Width;
+	OutHeight = Image.Height;
+	OutPixels = MoveTemp(Image.Pixels);
+	return true;
+}
+
+bool AAutomataOrchestrator::EstimateSliceCaptureSize(int32& OutWidth, int32& OutHeight)
+{
+	if (!Grid || Grid->Num() == 0)
+	{
+		return false;
+	}
+
+	const FCellRenderStats SavedRenderStats = LastRenderStats;
+	TArray<FCellRenderInstance> Cells;
+	BuildCellRenderData(Cells);
+	LastRenderStats = SavedRenderStats;
+
+	CellRasterizer::FRasterParams RasterParams;
+	RasterParams.CellSize = Grid->GetCellSize();
+	RasterParams.PixelsPerCell = FMath::Max(SliceCaptureParams.PixelsPerCell, 1);
+
+	FVector CameraForward = FVector::ForwardVector;
+	FVector CameraUp = FVector::UpVector;
+	if (GamePC && GamePC->PlayerCameraManager)
+	{
+		const FRotationMatrix CameraBasis(GamePC->PlayerCameraManager->GetCameraRotation());
+		CameraForward = CameraBasis.GetUnitAxis(EAxis::X);
+		CameraUp = CameraBasis.GetUnitAxis(EAxis::Z);
+	}
+
+	CellRasterizer::BuildAxes(CameraForward, CameraUp, RasterParams);
+	return CellRasterizer::ComputeImageSize(Cells, RasterParams, OutWidth, OutHeight);
+}
+
+bool AAutomataOrchestrator::WriteSliceCaptureToFile(const FString& FilePath)
+{
+	const double StartSeconds = FPlatformTime::Seconds();
+
+	TArray<FColor> Pixels;
+	int32 Width = 0;
+	int32 Height = 0;
+	FString Error;
+
+	if (!BuildSliceCapture(Pixels, Width, Height, Error))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureTextureSlice: %s"), *Error);
+		ShowStatusMessage(StatusKey_SliceCapture, FString::Printf(TEXT("Снимок не сделан: %s"), *Error));
+		return false;
+	}
+
+	TArray64<uint8> PngBytes;
+	FImageUtils::PNGCompressImageArray(Width, Height, TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), PngBytes);
+
+	if (PngBytes.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureTextureSlice: не удалось закодировать PNG"));
+		ShowStatusMessage(StatusKey_SliceCapture, TEXT("Снимок не сделан: ошибка кодирования PNG"));
+		return false;
+	}
+
+	if (!FFileHelper::SaveArrayToFile(PngBytes, *FilePath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureTextureSlice: не удалось записать файл '%s'"), *FilePath);
+		ShowStatusMessage(StatusKey_SliceCapture, TEXT("Снимок не сделан: файл не записан"));
+		return false;
+	}
+
+	const double Seconds = FPlatformTime::Seconds() - StartSeconds;
+	const double MegaBytes = static_cast<double>(PngBytes.Num()) / (1024.0 * 1024.0);
+
+	UE_LOG(LogTemp, Log, TEXT("CaptureTextureSlice: %dx%d, %.2f МБ, %.2f мс -> %s"),
+		Width, Height, MegaBytes, Seconds * 1000.0, *FilePath);
+	ShowStatusMessage(StatusKey_SliceCapture,
+		FString::Printf(TEXT("Снимок %dx%d (%.1f МБ): %s"), Width, Height, MegaBytes, *FPaths::GetCleanFilename(FilePath)));
+
+	return true;
+}
+
+void AAutomataOrchestrator::CaptureTextureSlice()
+{
+	// Без диалога намеренно: снимки делают сериями, и ценность в том, что
+	// нажатие ничего не спрашивает. Полный путь уходит в лог.
+	const FString FileName = FString::Printf(TEXT("Slice_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+	WriteSliceCaptureToFile(EnsureSliceDirectory() / FileName);
+}
+
+void AAutomataOrchestrator::CaptureTextureSliceAs()
+{
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform || !FSlateApplication::IsInitialized())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureTextureSliceAs: диалоги недоступны - снимок не сделан"));
+		return;
+	}
+
+	const void* ParentWindowHandle = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+	const FString DefaultFileName = FString::Printf(TEXT("Slice_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+
+	TArray<FString> PickedFiles;
+	const bool bPicked = DesktopPlatform->SaveFileDialog(
+		ParentWindowHandle,
+		TEXT("Сохранить срез"),
+		EnsureSliceDirectory(),
+		DefaultFileName,
+		TEXT("PNG Image (*.png)|*.png"),
+		EFileDialogFlags::None,
+		PickedFiles);
+
+	if (!bPicked || PickedFiles.Num() == 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("CaptureTextureSliceAs: отменено"));
+		return;
+	}
+
+	FString FilePath = FPaths::ConvertRelativePathToFull(PickedFiles[0]);
+	if (FPaths::GetExtension(FilePath).IsEmpty())
+	{
+		FilePath += TEXT(".png");
+	}
+
+	WriteSliceCaptureToFile(FilePath);
+}
+
 void AAutomataOrchestrator::Next()
 {
 	if (bStepInProgress)
@@ -3164,7 +3357,7 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	// миллионах клеток интерполяция в цикле - это миллионы лишних лерпов,
 	// тогда как таблица занимает 1 КБ и даёт одно чтение по индексу.
 	TArray<FColor> AgeLut;
-	BuildAgeColorLut(AgeLut);
+	BuildAgeColorLut(AgeLut, bBuildingSliceCapture);
 
 	TArray<FIntVector> AliveCells;
 
@@ -3248,7 +3441,7 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	if (States > 2 && !IsAgeFilterActive())
 	{
 		TArray<FColor> DecayLut;
-		BuildDecayColorLut(DecayLut);
+		BuildDecayColorLut(DecayLut, bBuildingSliceCapture);
 
 		TArray<FIntVector> DecayingCells;
 		TArray<uint8> DecayingStates;

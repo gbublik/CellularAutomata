@@ -338,6 +338,14 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnToggleHudInfoPanel();
 	}
 
+	// F6 - снять текущий вид как PNG-срез, Shift+F6 - то же с диалогом выбора
+	// файла. Модификатор проверяется в обработчике (Enhanced Input не умеет
+	// требовать его в привязке), см. OnCaptureTextureSlice().
+	if (Params.Key == EKeys::F6 && Params.Event == IE_Pressed)
+	{
+		OnCaptureTextureSlice();
+	}
+
 	// Цифры 0-9 - фильтр по возрасту (9 - ещё и всё, что старше), Shift+цифра -
 	// добавить возраст к показанным или убрать его. Здесь, а не через Enhanced
 	// Input, по причине, не связанной с лагом: десять клавиш одного вида - это
@@ -548,6 +556,25 @@ void AGamePlayerController::OnToggleHudInfoPanel()
 	}
 
 	Orchestrator->ToggleHudInfoPanel();
+}
+
+void AGamePlayerController::OnCaptureTextureSlice()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnCaptureTextureSlice: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+	{
+		Orchestrator->CaptureTextureSliceAs();
+	}
+	else
+	{
+		Orchestrator->CaptureTextureSlice();
+	}
 }
 
 void AGamePlayerController::OnApplyRenderPreset(int32 PresetIndex)
