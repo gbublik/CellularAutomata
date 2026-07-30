@@ -9,6 +9,7 @@
 
 class AAutomataOrchestrator;
 class ARenderCullVolume;
+class AGameCameraManager;
 
 /**
  *
@@ -19,9 +20,20 @@ class CELLULARAUTOMATA_API AGamePlayerController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	/** Нужен ровно для одного: подменить класс камеры-менеджера на
+	 *  AGameCameraManager (ортопроекция на NumPad 5). Именно конструктор, а не
+	 *  BeginPlay(): APlayerController спавнит камеру-менеджер в
+	 *  PostInitializeComponents(), к BeginPlay() менять класс уже поздно. */
+	AGamePlayerController();
 
 	UFUNCTION(BlueprintCallable, Category = "Input")
 	void SetCameraControlEnabled(bool bEnable);
+
+	/** Включена ли сейчас ортогональная проекция (NumPad 5) - для FHudStats,
+	 *  который зеркалит живые переключатели, а не хранит их копию. false, если
+	 *  камеры-менеджера ещё нет (до BeginPlay/вне PIE). */
+	UFUNCTION(BlueprintPure, Category = "Camera")
+	bool IsOrthographicCamera() const;
 
 	/** Кадрирует камеру на все живые клетки Orchestrator - код хоткея Home
 	 *  (OnFrameAllCells()). НЕ вызывается автоматически из
@@ -36,9 +48,25 @@ public:
 	 *  Подъезжает камерой вдоль текущего направления взгляда (не меняя ракурс, только
 	 *  расстояние) так, чтобы вся сетка Orchestrator поместилась в кадр -
 	 *  см. AAutomataOrchestrator::ComputeAliveCellsBounds()/FramingPadding.
-	 *  false, если Orchestrator пуст, сетка пуста, или пешка/камера ещё не
-	 *  готовы - кадрировать нечего/некем. */
-	bool FrameAllCells(AAutomataOrchestrator* Orchestrator);
+	 *
+	 *  bVisibleOnly (Shift+Home) - кадрировать не по всей сетке, а только по
+	 *  тому, что СЕЙЧАС реально нарисовано (AAutomataOrchestrator::
+	 *  ComputeVisibleCellsBounds() - те же три фильтра, что у рендера: куб
+	 *  отсечения, возрастной фильтр, срез вдоль взгляда). Нужно ровно потому,
+	 *  что обычный Home кадрирует на ВСЮ фигуру и обрезанным кубом кадром это
+	 *  не заканчивается: большая часть структуры, отрезанная кубом, всё равно
+	 *  тянет камеру на себя, и итоговый план оказывается издалека почти пустым.
+	 *
+	 *  false, если Orchestrator пуст, сетка пуста (или - при bVisibleOnly -
+	 *  фильтры не оставили ни одной клетки), или пешка/камера ещё не готовы -
+	 *  кадрировать нечего/некем. */
+	bool FrameAllCells(AAutomataOrchestrator* Orchestrator, bool bVisibleOnly = false);
+
+	/** То же кадрирование, но с ЗАДАННОГО направления взгляда: камера встаёт с
+	 *  противоположной стороны сетки и разворачивается на неё (осевые ракурсы
+	 *  нумпада, см. OnAlignCamera()). FrameAllCells() выше - тот же код с
+	 *  текущим направлением и без поворота. bVisibleOnly - см. её doc-comment. */
+	bool FrameAllCellsFromDirection(AAutomataOrchestrator* Orchestrator, const FVector& ViewDirection, bool bVisibleOnly = false);
 
 	/** Включает/выключает единый режим взаимодействия мышкой - и с клетками
 	 *  (драг-выделение, см. OnSelectDragStarted/Finished), и с HUD
@@ -225,10 +253,11 @@ protected:
 	void OnIncreaseSpeed();
 	void OnDecreaseSpeed();
 
-	/** Хоткей (Home) - резолвит AAutomataOrchestrator и делегирует в
-	 *  публичный FrameAllCells() (см. её doc-comment для деталей математики
-	 *  кадрирования) - тонкий обработчик, вся логика теперь переиспользуема
-	 *  и вызывается также из AAutomataOrchestrator::ResetToInitialState(). */
+	/** Хоткей (Home, и NumPad 0 - см. InputKey()) - резолвит AAutomataOrchestrator
+	 *  и делегирует в публичный FrameAllCells() (см. её doc-comment для деталей
+	 *  математики кадрирования) - тонкий обработчик. Shift+Home - тот же
+	 *  FrameAllCells(bVisibleOnly=true): кадрировать по тому, что реально
+	 *  видно (отсечено кубом/срезом/фильтром), а не по всей фигуре целиком. */
 	void OnFrameAllCells();
 
 	/** Хоткеи (T и G) - меняют StepsPerRender автомата на ±1 через
@@ -285,6 +314,49 @@ protected:
 	 *  не через Enhanced Input: десять клавиш одного вида - это десять
 	 *  UInputAction ради одного switch. */
 	void OnSetAgeFilter(int32 Age);
+
+	/** Нумпад - позиционирование камеры; Home кадрирует по текущему ракурсу, а
+	 *  это то же самое "сбоку": 1 - спереди, 3 - сзади, 4 - слева, 6 - справа,
+	 *  8 - сверху, 2 - снизу, 7 - изометрия. Камера встаёт с противоположной от
+	 *  направления взгляда стороны на расстоянии кадрирования и разворачивается
+	 *  на сетку (FrameAllCellsFromDirection()).
+	 *
+	 *  ViewName - только для сообщения на экране: без него нажатие на пустой
+	 *  сетке выглядит как несработавшая клавиша (та же причина, что у
+	 *  ShowStatusMessage() вообще). bVisibleOnly (Shift) - см. doc-comment
+	 *  FrameAllCells(); снимается в InputKey() один раз на все клавиши нумпада,
+	 *  а не перечитывается в каждом обработчике. */
+	void OnAlignCamera(const FVector& ViewDirection, const FString& ViewName, bool bVisibleOnly = false);
+
+	/** NumPad 9 - тот же ракурс с противоположной стороны (взгляд
+	 *  разворачивается на 180°). Полезнее ещё одной фиксированной оси: обойти
+	 *  структуру, чтобы посмотреть, что у неё с обратной стороны, - обычный
+	 *  жест, а какая именно ось сейчас смотрит в камеру, помнить не нужно.
+	 *  Shift+NumPad 9 - bVisibleOnly, читает IsShiftHeld() сама (в отличие от
+	 *  OnAlignCamera() выше, у неё нет вызывающего цикла, который снял бы
+	 *  модификатор один раз заранее). */
+	void OnAlignCameraToOppositeSide();
+
+	/** NumPad 5 - ортопроекция вкл/выкл (AGameCameraManager::SetOrthographic()).
+	 *  При включении ширина кадра сразу подгоняется под сетку: с шириной по
+	 *  умолчанию ортопроекция показала бы либо одну клетку во весь экран, либо
+	 *  пустоту, и это читалось бы как поломка, а не как смена проекции. */
+	void OnToggleOrthographic();
+
+	/** NumPad * и / - зум ортопроекции (ширина кадра, умножением - см.
+	 *  AGameCameraManager::ScaleOrthoWidth()). Нужен потому, что в
+	 *  ортопроекции полёт вперёд-назад на масштаб не влияет вовсе: W/S,
+	 *  привычный "зум", там просто ничего не делают.
+	 *
+	 *  Работают и при выключенной ортопроекции (значение сохранится до её
+	 *  включения) - сообщение об этом на экране по той же причине, что у [ / ]
+	 *  при выключенном срезе: иначе клавиша выглядит сломанной. */
+	void OnAdjustOrthoWidth(bool bZoomIn);
+
+	/** NumPad . - кадрировать на ВЫДЕЛЕНИЕ (а не на всю сетку), сохранив
+	 *  текущий ракурс. Пара к K/L: выделил интересный кусок - подъехал к нему,
+	 *  не выискивая его глазами в структуре целиком. */
+	void OnFrameSelection();
 
 	/** Хоткей (J) - включает/выключает срез вдоль взгляда
 	 *  (AAutomataOrchestrator::bEnableViewSlice). */
@@ -529,6 +601,37 @@ protected:
 	/** Запас поверх точного расстояния кадрирования (OnFrameAllCells()) -
 	 *  без него сетка ровно касалась бы краёв кадра. */
 	static constexpr float FramingPadding = 1.1f;
+
+	/** Во сколько раз меняется ширина ортопроекции за одно нажатие * / /. */
+	static constexpr float OrthoZoomStep = 1.25f;
+
+	/** Общая часть всех кадрирований: ставит пешку на расстояние, с которого
+	 *  сфера (Center, Radius) целиком влезает в кадр, и (если bApplyRotation)
+	 *  разворачивает взгляд вдоль ViewDirection.
+	 *
+	 *  Питч клампится границами камеры-менеджера (ViewPitchMin/Max), и для
+	 *  ПОЗИЦИИ берётся уже подрезанное направление, а не исходное: вид сверху -
+	 *  это ровно -90°, которые камера-менеджер всё равно подрежет до -89.9 на
+	 *  первом же движении мыши, и если поставить камеру строго по вертикали, а
+	 *  смотреть на 0.1° мимо, центр кадра поедет. */
+	bool FrameBounds(const FVector& Center, float Radius, const FVector& ViewDirection, bool bApplyRotation);
+
+	/** Ширина ортопроекции, при которой сфера радиуса Radius видна целиком.
+	 *  OrthoWidth задаёт ШИРИНУ кадра, а высота получается делением на
+	 *  соотношение сторон - поэтому на широком экране (а он практически всегда
+	 *  широкий) вписывать надо по высоте, иначе сетку обрежет сверху и снизу. */
+	float ComputeOrthoWidthForRadius(float Radius) const;
+
+	/** Камера-менеджер проекта; nullptr, если его ещё нет или (после правки
+	 *  PlayerCameraManagerClass в Blueprint-наследнике) он другого класса. */
+	AGameCameraManager* GetGameCameraManager() const;
+
+	/** Сообщение поверх картинки о том, что сделала камера. Идёт через
+	 *  AAutomataOrchestrator::ShowStatusMessage() (а не своим вызовом
+	 *  AddOnScreenDebugMessage) намеренно: ключи там глобальные, и время жизни,
+	 *  цвет и нумерация ключей должны оставаться в одном месте, иначе сообщения
+	 *  о камере затирали бы чужие. */
+	void ShowCameraStatusMessage(const FString& Message) const;
 
 	/** Исходный MaxSpeed пешки до ускорения Shift'ом - 0 значит ещё не
 	 *  закэширован (см. OnSpeedBoostStarted()/OnSpeedBoostEnded()). */

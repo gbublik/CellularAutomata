@@ -280,6 +280,7 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bSimulationRunning = bSimulationRunning;
 	LastHudStats.bFastStepActive = bFastStepActive;
 	LastHudStats.bSelectionModeActive = GamePC ? GamePC->IsSelectionModeActive() : false;
+	LastHudStats.bOrthographicCamera = GamePC ? GamePC->IsOrthographicCamera() : false;
 	LastHudStats.ComputeMethod = ComputeMethod;
 	LastHudStats.bChunkedRenderEnabled = bEnableChunkedRender;
 	LastHudStats.ChunkedRenderOrder = ChunkedRenderOrder;
@@ -2223,6 +2224,97 @@ bool AAutomataOrchestrator::ComputeAliveCellsBounds(FVector& OutCenter, float& O
 
 	TArray<FIntVector> AliveCells;
 	Grid->GetAliveCells(AliveCells);
+	return ComputeCellsBounds(AliveCells, OutCenter, OutRadius);
+}
+
+bool AAutomataOrchestrator::ComputeVisibleCellsBounds(FVector& OutCenter, float& OutRadius)
+{
+	if (!Grid || Grid->Num() == 0)
+	{
+		return false;
+	}
+
+	// Те же три фильтра, что BuildCellRenderData() применяет к живым клеткам -
+	// продублировано намеренно, см. doc-comment в заголовке про то, почему не
+	// вызывается сама BuildCellRenderData().
+	TArray<FIntVector> Cells;
+	ARenderCullVolume* CullVolume = GetActiveCullVolume();
+	if (CullVolume)
+	{
+		Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), Cells);
+	}
+	else
+	{
+		Grid->GetAliveCells(Cells);
+	}
+
+	FVector SliceOrigin = FVector::ZeroVector;
+	FVector SliceForward = FVector::ForwardVector;
+	const bool bSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
+	const float SliceMinDepth = ViewSliceDistance - ViewSliceThickness * 0.5f;
+	const float SliceMaxDepth = ViewSliceDistance + ViewSliceThickness * 0.5f;
+
+	const int32 AgeFilterMin = AgeFilter;
+	const int32 AgeFilterMax = bAgeFilterIncludesOlder ? 255 : AgeFilter;
+
+	TArray<FIntVector> VisibleCells;
+	VisibleCells.Reserve(Cells.Num());
+	for (const FIntVector& Cell : Cells)
+	{
+		if (AgeFilter >= 0)
+		{
+			const int32 Age = static_cast<int32>(Grid->GetAge(Cell));
+			if (Age < AgeFilterMin || Age > AgeFilterMax)
+			{
+				continue;
+			}
+		}
+
+		if (bSliceActive)
+		{
+			const FVector World = Grid->GridToWorld(Cell);
+			const double Depth = FVector::DotProduct(World - SliceOrigin, SliceForward);
+			if (Depth < SliceMinDepth || Depth > SliceMaxDepth)
+			{
+				continue;
+			}
+		}
+
+		VisibleCells.Add(Cell);
+	}
+
+	return ComputeCellsBounds(VisibleCells, OutCenter, OutRadius);
+}
+
+bool AAutomataOrchestrator::ComputeSelectedCellsBounds(FVector& OutCenter, float& OutRadius) const
+{
+	if (!Grid || SelectedCells.Num() == 0)
+	{
+		return false;
+	}
+
+	// Только ещё живые - та же защитная фильтрация, что в
+	// RenderSelectionOverlay()/StartFromSelection(): выделение переживает шаги
+	// симуляции, и клетка под ним могла давно умереть.
+	TArray<FIntVector> Cells;
+	Cells.Reserve(SelectedCells.Num());
+	for (const FIntVector& Cell : SelectedCells)
+	{
+		if (Grid->IsAlive(Cell))
+		{
+			Cells.Add(Cell);
+		}
+	}
+
+	return ComputeCellsBounds(Cells, OutCenter, OutRadius);
+}
+
+bool AAutomataOrchestrator::ComputeCellsBounds(const TArray<FIntVector>& AliveCells, FVector& OutCenter, float& OutRadius) const
+{
+	if (!Grid || AliveCells.Num() == 0)
+	{
+		return false;
+	}
 
 	// Приближённая МИНИМАЛЬНАЯ описанная сфера (алгоритм Ritter'а), а не
 	// прежняя "сфера вокруг углов AABB" (центр AABB, радиус - половина его

@@ -2,6 +2,7 @@
 
 #include "Core/PlayerController/GamePlayerController.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Core/CameraManager/GameCameraManager.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputAction.h"
@@ -13,6 +14,15 @@
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Engine/LocalPlayer.h"
 #include "SceneView.h"
+
+AGamePlayerController::AGamePlayerController()
+{
+	// Ортопроекцию задаёт камера-менеджер (см. AGameCameraManager - там же
+	// объяснено, почему не UCameraComponent на пешке). Класс подменяется здесь,
+	// а не в BeginPlay(): APlayerController спавнит менеджер в
+	// PostInitializeComponents(), то есть раньше.
+	PlayerCameraManagerClass = AGameCameraManager::StaticClass();
+}
 
 // YourPlayerController.cpp
 void AGamePlayerController::SetupInputComponent()
@@ -330,6 +340,82 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		}
 	}
 
+	// Нумпад - позиционирование камеры: Home кадрирует по текущему ракурсу, а
+	// это то же самое, но с заданной стороны. Тоже в InputKey(), а не через
+	// Enhanced Input, по той же причине, что цифры выше: дюжина клавиш одного
+	// вида - это дюжина UInputAction ради одной таблицы.
+	//
+	// Работает при ВКЛЮЧЁННОМ NumLock: без него Windows присылает с этих клавиш
+	// Left/Up/Home/Delete и прочее, т.е. коды, которыми двигают куб отсечения.
+	// Конфликта нет (это разные FKey), но это ровно то, из-за чего нумпад без
+	// NumLock кажется нерабочим.
+	if (Params.Event == IE_Pressed)
+	{
+		// Направление ВЗГЛЯДА (камера ставится с противоположной стороны, см.
+		// FrameAllCellsFromDirection()). Оси проекта: X - вперёд, Y - вправо,
+		// Z - вверх, поэтому "вид слева" - это взгляд в +Y. Раскладка
+		// геометрическая, как в DCC-редакторах: 4 слева, 6 справа, 8 сверху,
+		// 2 снизу.
+		struct FNumPadViewBinding
+		{
+			FKey Key;
+			FVector ViewDirection;
+			const TCHAR* Name;
+		};
+		static const FNumPadViewBinding ViewBindings[] = {
+			{ EKeys::NumPadFour,  FVector( 0.0,  1.0,  0.0), TEXT("слева") },
+			{ EKeys::NumPadSix,   FVector( 0.0, -1.0,  0.0), TEXT("справа") },
+			{ EKeys::NumPadEight, FVector( 0.0,  0.0, -1.0), TEXT("сверху") },
+			{ EKeys::NumPadTwo,   FVector( 0.0,  0.0,  1.0), TEXT("снизу") },
+			{ EKeys::NumPadOne,   FVector( 1.0,  0.0,  0.0), TEXT("спереди") },
+			{ EKeys::NumPadThree, FVector(-1.0,  0.0,  0.0), TEXT("сзади") },
+			// Единственный ракурс, показывающий сразу три оси - по нему видно
+			// объём структуры, которого осевые виды как раз не показывают.
+			{ EKeys::NumPadSeven, FVector( 1.0,  1.0, -1.0), TEXT("изометрия") },
+		};
+
+		if (Params.Key == EKeys::NumPadFive)
+		{
+			OnToggleOrthographic();
+		}
+		else if (Params.Key == EKeys::NumPadZero)
+		{
+			// Ровно то же, что Home - кадр по текущему ракурсу; на нумпаде
+			// нужен потому, что рука уже там.
+			OnFrameAllCells();
+		}
+		else if (Params.Key == EKeys::NumPadNine)
+		{
+			OnAlignCameraToOppositeSide();
+		}
+		else if (Params.Key == EKeys::Decimal)
+		{
+			OnFrameSelection();
+		}
+		else if (Params.Key == EKeys::Multiply)
+		{
+			OnAdjustOrthoWidth(/*bZoomIn=*/true);
+		}
+		else if (Params.Key == EKeys::Divide)
+		{
+			OnAdjustOrthoWidth(/*bZoomIn=*/false);
+		}
+		else
+		{
+			for (const FNumPadViewBinding& Binding : ViewBindings)
+			{
+				if (Params.Key == Binding.Key)
+				{
+					// Shift - кадрировать только по видимому (см. doc-comment
+					// FrameAllCells()); снят один раз на всю таблицу, а не в
+					// каждой ветке отдельно.
+					OnAlignCamera(Binding.ViewDirection, Binding.Name, IsShiftHeld());
+					break;
+				}
+			}
+		}
+	}
+
 	return Super::InputKey(Params);
 }
 
@@ -639,10 +725,10 @@ void AGamePlayerController::OnFrameAllCells()
 		return;
 	}
 
-	FrameAllCells(Orchestrator);
+	FrameAllCells(Orchestrator, IsShiftHeld());
 }
 
-bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator)
+bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator, bool bVisibleOnly)
 {
 	if (!Orchestrator)
 	{
@@ -651,16 +737,79 @@ bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator)
 
 	FVector Center;
 	float Radius;
-	if (!Orchestrator->ComputeAliveCellsBounds(Center, Radius))
+	// bVisibleOnly - кадрировать по тому, что кубом/срезом/фильтром реально
+	// оставлено на экране, а не по всей фигуре (см. doc-comment в заголовке -
+	// без этого обрезанная кубом сетка тянула бы камеру далеко за пределы
+	// самого куба, к отрезанной и невидимой части структуры).
+	const bool bHaveBounds = bVisibleOnly
+		? Orchestrator->ComputeVisibleCellsBounds(Center, Radius)
+		: Orchestrator->ComputeAliveCellsBounds(Center, Radius);
+	if (!bHaveBounds)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FrameAllCells: сетка пуста - кадрировать нечего"));
+		UE_LOG(LogTemp, Warning, TEXT("FrameAllCells: %s - кадрировать нечего"),
+			bVisibleOnly ? TEXT("ничего не видно (фильтры отсекли все клетки)") : TEXT("сетка пуста"));
 		return false;
 	}
 
+	if (!PlayerCameraManager)
+	{
+		return false;
+	}
+
+	// Ракурс не меняем - только отодвигаем/придвигаем камеру вдоль текущего
+	// направления взгляда, чтобы сетка оказалась в кадре целиком.
+	return FrameBounds(Center, Radius, PlayerCameraManager->GetCameraRotation().Vector(), /*bApplyRotation=*/false);
+}
+
+bool AGamePlayerController::FrameAllCellsFromDirection(AAutomataOrchestrator* Orchestrator, const FVector& ViewDirection, bool bVisibleOnly)
+{
+	if (!Orchestrator)
+	{
+		return false;
+	}
+
+	FVector Center;
+	float Radius;
+	const bool bHaveBounds = bVisibleOnly
+		? Orchestrator->ComputeVisibleCellsBounds(Center, Radius)
+		: Orchestrator->ComputeAliveCellsBounds(Center, Radius);
+	if (!bHaveBounds)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FrameAllCellsFromDirection: %s - кадрировать нечего"),
+			bVisibleOnly ? TEXT("ничего не видно (фильтры отсекли все клетки)") : TEXT("сетка пуста"));
+		return false;
+	}
+
+	return FrameBounds(Center, Radius, ViewDirection, /*bApplyRotation=*/true);
+}
+
+bool AGamePlayerController::FrameBounds(const FVector& Center, float Radius, const FVector& ViewDirection, bool bApplyRotation)
+{
 	APawn* FlyingPawn = GetPawn();
 	if (!FlyingPawn || !PlayerCameraManager)
 	{
 		return false;
+	}
+
+	FVector Direction = ViewDirection.GetSafeNormal();
+	if (Direction.IsNearlyZero())
+	{
+		return false;
+	}
+
+	if (bApplyRotation)
+	{
+		// Питч подрезаем границами камеры-менеджера сразу: вид сверху - это
+		// ровно -90°, которые он всё равно подрежет до -89.9 при первом же
+		// движении мыши, и картинка бы дёрнулась.
+		FRotator TargetRotation = Direction.Rotation();
+		TargetRotation.Pitch = FMath::Clamp(TargetRotation.Pitch, PlayerCameraManager->ViewPitchMin, PlayerCameraManager->ViewPitchMax);
+		SetControlRotation(TargetRotation);
+
+		// Позицию считаем по УЖЕ подрезанному направлению, иначе камера стояла
+		// бы строго по вертикали, а смотрела на 0.1° мимо - и центр кадра
+		// уезжал бы тем сильнее, чем крупнее структура.
+		Direction = TargetRotation.Vector();
 	}
 
 	// Расстояние, на котором сфера радиуса Radius целиком видна под углом
@@ -668,14 +817,175 @@ bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator)
 	// FramingPadding, чтобы был небольшой запас по краям.
 	const float HalfFovRadians = FMath::DegreesToRadians(PlayerCameraManager->GetFOVAngle()) * 0.5f;
 	const float Distance = (Radius / FMath::Sin(HalfFovRadians)) * FramingPadding;
+	FlyingPawn->SetActorLocation(Center - Direction * Distance);
 
-	// Ракурс не меняем - только отодвигаем/придвигаем камеру вдоль текущего
-	// направления взгляда, чтобы сетка оказалась в кадре целиком.
-	const FVector ViewDirection = PlayerCameraManager->GetCameraRotation().Vector();
-	FlyingPawn->SetActorLocation(Center - ViewDirection * Distance);
+	// В ортопроекции расстояние на видимый размер не влияет вовсе - кадрирует
+	// ширина кадра, её и подгоняем. Камеру при этом всё равно отодвигаем на то
+	// же расстояние, чтобы переключение проекции туда-обратно не меняло кадр.
+	if (AGameCameraManager* CameraManager = GetGameCameraManager())
+	{
+		if (CameraManager->IsOrthographic())
+		{
+			CameraManager->SetOrthoWidth(ComputeOrthoWidthForRadius(Radius));
+		}
+	}
 
-	UE_LOG(LogTemp, Log, TEXT("FrameAllCells: камера поставлена на расстояние %.1f от центра сетки (радиус %.1f)"), Distance, Radius);
+	UE_LOG(LogTemp, Log, TEXT("FrameBounds: камера поставлена на расстояние %.1f от центра (радиус %.1f)"), Distance, Radius);
 	return true;
+}
+
+float AGamePlayerController::ComputeOrthoWidthForRadius(float Radius) const
+{
+	int32 ViewportX = 0;
+	int32 ViewportY = 0;
+	GetViewportSize(ViewportX, ViewportY);
+
+	// Вписываем по МЕНЬШЕЙ стороне кадра: OrthoWidth задаёт ширину, высота
+	// получается делением на соотношение сторон, так что на широком экране
+	// диаметр надо укладывать в высоту (иначе обрежет сверху и снизу), а на
+	// узком - в ширину.
+	const float Aspect = (ViewportX > 0 && ViewportY > 0)
+		? static_cast<float>(ViewportX) / static_cast<float>(ViewportY)
+		: 1.0f;
+
+	return 2.0f * Radius * FramingPadding * FMath::Max(1.0f, Aspect);
+}
+
+AGameCameraManager* AGamePlayerController::GetGameCameraManager() const
+{
+	return Cast<AGameCameraManager>(PlayerCameraManager);
+}
+
+bool AGamePlayerController::IsOrthographicCamera() const
+{
+	const AGameCameraManager* CameraManager = GetGameCameraManager();
+	return CameraManager ? CameraManager->IsOrthographic() : false;
+}
+
+void AGamePlayerController::ShowCameraStatusMessage(const FString& Message) const
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (Orchestrator)
+	{
+		Orchestrator->ShowStatusMessage(AAutomataOrchestrator::StatusKey_Camera, Message);
+	}
+}
+
+void AGamePlayerController::OnAlignCamera(const FVector& ViewDirection, const FString& ViewName, bool bVisibleOnly)
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnAlignCamera: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	if (!FrameAllCellsFromDirection(Orchestrator, ViewDirection, bVisibleOnly))
+	{
+		ShowCameraStatusMessage(bVisibleOnly
+			? FString::Printf(TEXT("Вид %s: ничего не видно (фильтры отсекли все клетки)"), *ViewName)
+			: FString::Printf(TEXT("Вид %s: кадрировать нечего - сетка пуста"), *ViewName));
+		return;
+	}
+
+	ShowCameraStatusMessage(bVisibleOnly
+		? FString::Printf(TEXT("Вид %s (только видимое)"), *ViewName)
+		: FString::Printf(TEXT("Вид %s"), *ViewName));
+}
+
+void AGamePlayerController::OnAlignCameraToOppositeSide()
+{
+	if (!PlayerCameraManager)
+	{
+		return;
+	}
+
+	// Разворот ровно текущего направления, без фиксированной оси: ракурс мог
+	// быть выставлен и мышью, а не нумпадом.
+	OnAlignCamera(-PlayerCameraManager->GetCameraRotation().Vector(), TEXT("с другой стороны"), IsShiftHeld());
+}
+
+void AGamePlayerController::OnToggleOrthographic()
+{
+	AGameCameraManager* CameraManager = GetGameCameraManager();
+	if (!CameraManager)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleOrthographic: камера-менеджер не AGameCameraManager - ортопроекция недоступна"));
+		return;
+	}
+
+	const bool bEnable = !CameraManager->IsOrthographic();
+	CameraManager->SetOrthographic(bEnable);
+
+	// Ширину сразу подгоняем под сетку - см. doc-comment обработчика: с
+	// шириной по умолчанию (или оставшейся от прошлой, совсем другого размера,
+	// структуры) первое включение выглядело бы как поломка.
+	if (bEnable)
+	{
+		AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+		FVector Center;
+		float Radius;
+		if (Orchestrator && Orchestrator->ComputeAliveCellsBounds(Center, Radius))
+		{
+			CameraManager->SetOrthoWidth(ComputeOrthoWidthForRadius(Radius));
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("OnToggleOrthographic: проекция -> %s (ширина кадра %.0f)"),
+		bEnable ? TEXT("ортогональная") : TEXT("перспективная"), CameraManager->GetOrthoWidth());
+
+	if (bEnable)
+	{
+		ShowCameraStatusMessage(FString::Printf(TEXT("[NumPad 5] Ортопроекция, ширина %.0f  (зум - NumPad * и /)"), CameraManager->GetOrthoWidth()));
+	}
+	else
+	{
+		ShowCameraStatusMessage(TEXT("[NumPad 5] Перспектива"));
+	}
+}
+
+void AGamePlayerController::OnAdjustOrthoWidth(bool bZoomIn)
+{
+	AGameCameraManager* CameraManager = GetGameCameraManager();
+	if (!CameraManager)
+	{
+		return;
+	}
+
+	CameraManager->ScaleOrthoWidth(bZoomIn ? 1.0f / OrthoZoomStep : OrthoZoomStep);
+
+	// Сообщение показывается и при выключенной ортопроекции: значение честно
+	// поменялось и подействует при её включении, а молчание выглядело бы как
+	// несработавшая клавиша (та же причина, что у [ / ] при выключенном срезе).
+	ShowCameraStatusMessage(FString::Printf(TEXT("[NumPad %s] Ширина ортопроекции %.0f%s"),
+		bZoomIn ? TEXT("*") : TEXT("/"),
+		CameraManager->GetOrthoWidth(),
+		CameraManager->IsOrthographic() ? TEXT("") : TEXT("  (ортопроекция выключена - NumPad 5)")));
+}
+
+void AGamePlayerController::OnFrameSelection()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnFrameSelection: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	FVector Center;
+	float Radius;
+	if (!Orchestrator->ComputeSelectedCellsBounds(Center, Radius))
+	{
+		ShowCameraStatusMessage(TEXT("[NumPad .] Выделение пусто - сначала Tab, затем ЛКМ по клетке"));
+		return;
+	}
+
+	// Ракурс сохраняем: выделение уже нашли глазами с текущей стороны,
+	// разворачивать камеру незачем - надо только подъехать.
+	if (PlayerCameraManager && FrameBounds(Center, Radius, PlayerCameraManager->GetCameraRotation().Vector(), /*bApplyRotation=*/false))
+	{
+		ShowCameraStatusMessage(TEXT("[NumPad .] Кадр по выделению"));
+	}
 }
 
 bool AGamePlayerController::IsShiftHeld() const

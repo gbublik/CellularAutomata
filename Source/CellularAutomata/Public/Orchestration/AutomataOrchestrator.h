@@ -269,6 +269,12 @@ struct FHudStats
 	/** Фон (небо/туман) виден (U) - см. bShowBackground. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bBackgroundVisible = true;
+
+	/** Ортогональная проекция (NumPad 5). Читается с контроллера
+	 *  (AGamePlayerController::IsOrthographicCamera()), как и
+	 *  bSelectionModeActive выше: проекция - состояние камеры, а не автомата. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bOrthographicCamera = false;
 };
 
 UCLASS()
@@ -344,6 +350,70 @@ public:
 	 *  инициализирована или пуста. */
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	bool ComputeAliveCellsBounds(FVector& OutCenter, float& OutRadius) const;
+
+	/** То же, но только вокруг СЕЙЧАС ВИДИМЫХ клеток - те же три фильтра, что
+	 *  применяет к живым клеткам рендер (BuildCellRenderData()): куб отсечения
+	 *  (GetActiveCullVolume()), возрастной фильтр (AgeFilter/
+	 *  bAgeFilterIncludesOlder), срез вдоль взгляда (bEnableViewSlice). Нужно
+	 *  Shift+Home и Shift+нумпад-видам (AGamePlayerController::FrameAllCells()/
+	 *  OnAlignCamera()) - обычное кадрирование берёт ВСЮ фигуру целиком, и
+	 *  когда кубом отсечена большая её часть, камера всё равно отъезжает так,
+	 *  будто куба нет, а итог - маленький объект посреди пустого кадра.
+	 *
+	 *  Угасающие клетки (Generations) в этот подсчёт не входят - для рамки
+	 *  кадрирования, в отличие от самого рендера, точность до угасающей клетки
+	 *  не нужна, а радиус и так берётся с запасом (см. ComputeCellsBounds()).
+	 *
+	 *  Продублировала фильтрацию, а не вызывает BuildCellRenderData()
+	 *  напрямую: та ещё и красит клетки, и обновляет учёт для перестройки
+	 *  среза (LastViewSliceCameraLocation/...) - ничего из этого кадрированию
+	 *  не нужно. Если меняете один из трёх фильтров - поменяйте оба места.
+	 *
+	 *  false, если сетка пуста или фильтры не оставили ни одной клетки.
+	 *
+	 *  Не const, в отличие от ComputeAliveCellsBounds() выше - GetActiveCullVolume()
+	 *  лениво кэширует найденный ARenderCullVolume (CachedRenderCullVolume),
+	 *  той же причиной не const и BuildCellRenderData(). */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	bool ComputeVisibleCellsBounds(FVector& OutCenter, float& OutRadius);
+
+	/** То же, но вокруг ВЫДЕЛЕННЫХ клеток (и только ещё живых - выделение
+	 *  переживает шаги симуляции, а мёртвая клетка не должна тянуть кадр на
+	 *  себя) - нужно AGamePlayerController::OnFrameSelection() (NumPad .).
+	 *  false, если выделение пусто или в нём не осталось живых клеток. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	bool ComputeSelectedCellsBounds(FVector& OutCenter, float& OutRadius) const;
+
+	/** Показать сообщение поверх картинки на несколько секунд. Нужно там, где
+	 *  хоткей меняет что-то, чего на экране может быть сразу и не видно: строка
+	 *  в логе во время PIE не видна вовсе, и понять, дошло ли нажатие,
+	 *  нельзя - ровно эта жалоба и была про срез вдоль взгляда.
+	 *
+	 *  Key - постоянный идентификатор сообщения, а не -1: хоткеи [ и ]
+	 *  привязаны к Triggered и на удержании срабатывают каждый кадр, так что
+	 *  с -1 экран за секунду забился бы сотней строк. С постоянным ключом
+	 *  новое сообщение заменяет предыдущее на месте. Значения ключей
+	 *  перечислены в EStatusMessageKey.
+	 *
+	 *  Публичный (а не приватный, как раньше) ради хоткеев КАМЕРЫ: они живут на
+	 *  контроллере (AGamePlayerController::OnAlignCamera() и соседи), а
+	 *  сообщать о себе должны в тот же канал. Свой AddOnScreenDebugMessage() на
+	 *  стороне контроллера развилил бы соглашение: ключи у движка глобальные, и
+	 *  нумерация должна оставаться в одном месте, иначе сообщения начнут
+	 *  затирать друг друга. */
+	void ShowStatusMessage(int32 Key, const FString& Message) const;
+
+	/** Идентификаторы сообщений для ShowStatusMessage() - каждому виду свой,
+	 *  чтобы повторные нажатия заменяли строку, а разные сообщения не
+	 *  затирали друг друга. */
+	enum EStatusMessageKey : int32
+	{
+		StatusKey_ViewSlice = 1001,
+		StatusKey_CullVolume = 1002,
+		StatusKey_Bake = 1003,
+		StatusKey_AgeFilter = 1004,
+		StatusKey_Camera = 1005,
+	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
 	 *  поколений подряд (то же значение, что крутится хоткеями T/G) и
@@ -1882,28 +1952,10 @@ private:
 	 *  (до BeginPlay/вне PIE). */
 	bool GetCameraView(FVector& OutLocation, FVector& OutForward) const;
 
-	/** Показать сообщение поверх картинки на несколько секунд. Нужно там, где
-	 *  хоткей меняет что-то, чего на экране может быть сразу и не видно: строка
-	 *  в логе во время PIE не видна вовсе, и понять, дошло ли нажатие,
-	 *  нельзя - ровно эта жалоба и была про срез вдоль взгляда.
-	 *
-	 *  Key - постоянный идентификатор сообщения, а не -1: хоткеи [ и ]
-	 *  привязаны к Triggered и на удержании срабатывают каждый кадр, так что
-	 *  с -1 экран за секунду забился бы сотней строк. С постоянным ключом
-	 *  новое сообщение заменяет предыдущее на месте. Значения ключей
-	 *  перечислены в EStatusMessageKey. */
-	void ShowStatusMessage(int32 Key, const FString& Message) const;
-
-	/** Идентификаторы сообщений для ShowStatusMessage() - каждому виду свой,
-	 *  чтобы повторные нажатия заменяли строку, а разные сообщения не
-	 *  затирали друг друга. */
-	enum EStatusMessageKey : int32
-	{
-		StatusKey_ViewSlice = 1001,
-		StatusKey_CullVolume = 1002,
-		StatusKey_Bake = 1003,
-		StatusKey_AgeFilter = 1004,
-	};
+	/** Приближённая минимальная описанная сфера вокруг переданных клеток -
+	 *  общая часть ComputeAliveCellsBounds()/ComputeSelectedCellsBounds(),
+	 *  которые отличаются только тем, какой набор клеток в неё передают. */
+	bool ComputeCellsBounds(const TArray<FIntVector>& Cells, FVector& OutCenter, float& OutRadius) const;
 
 	/** Сдвинулась ли камера настолько, что срез пора перестроить. Всегда
 	 *  false, если срез выключен. */
