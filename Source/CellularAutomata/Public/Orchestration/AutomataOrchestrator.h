@@ -1015,7 +1015,8 @@ public:
 	 *
 	 *  Ровно возраст, а не полоса возрастов: полоса ближе к тому, что делали
 	 *  прежние AgeMaterials со своими бакетами, но точное равенство
-	 *  предсказуемее - видно ровно один слой, и понятно, какой.
+	 *  предсказуемее - видно ровно один слой, и понятно, какой. Единственное
+	 *  исключение - последняя цифра, см. bAgeFilterIncludesOlder.
 	 *
 	 *  Угасающие клетки (Generations) при активном фильтре не рисуются вовсе:
 	 *  возраст у них не определён - это отдельный канал состояния, а не
@@ -1024,14 +1025,38 @@ public:
 			  meta = (ClampMin = "-1", ClampMax = "255"))
 	int32 AgeFilter = -1;
 
+	/** Показывать не ровно AgeFilter, а AgeFilter и всё, что старше.
+	 *
+	 *  Нужно потому, что цифр десять, а возрастов 256: без этого клетки старше
+	 *  девяти поколений не были бы видны ни под какой цифрой - самая старая,
+	 *  обычно самая большая часть структуры оказывалась недоступна фильтру
+	 *  целиком. Поэтому последняя цифра (9) включает этот флаг, а остальные
+	 *  снимают - см. AGamePlayerController::OnSetAgeFilter().
+	 *
+	 *  Отдельный флаг, а не "9 всегда значит хвост" внутри проверки: AgeFilter
+	 *  правится и из Details-панели, где 9 - такой же возраст, как 42, и должен
+	 *  значить ровно себя. Условия "а есть ли клетки старше" нет намеренно -
+	 *  когда их нет, ">= 9" совпадает с "== 9" и флаг ничего не меняет. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (EditCondition = "AgeFilter >= 0"))
+	bool bAgeFilterIncludesOlder = false;
+
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	int32 GetAgeFilter() const { return AgeFilter; }
 
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsAgeFilterIncludingOlder() const { return bAgeFilterIncludesOlder; }
+
 	/** Ставит фильтр и сразу перерисовывает - ждать следующего поколения
 	 *  незачем, а на паузе его и не будет (та же причина, что у
-	 *  SetViewSliceEnabled()). */
+	 *  SetViewSliceEnabled()).
+	 *
+	 *  bIncludeOlder ставится тем же вызовом, а не отдельным сеттером: иначе
+	 *  между двумя вызовами существовало бы промежуточное состояние (нужный
+	 *  возраст со старым флагом), каждое из которых успевало бы перерисовать
+	 *  сетку - двойной рендер на одно нажатие цифры. */
 	UFUNCTION(BlueprintCallable, Category = "Automata")
-	void SetAgeFilter(int32 NewAgeFilter);
+	void SetAgeFilter(int32 NewAgeFilter, bool bIncludeOlder = false);
 
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	bool IsViewSliceEnabled() const { return bEnableViewSlice; }

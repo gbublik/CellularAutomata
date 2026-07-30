@@ -308,7 +308,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnNewSeed();
 	}
 
-	// Цифры 0-9 - фильтр по возрасту (0 снимает). Здесь, а не через Enhanced
+	// Цифры 0-9 - фильтр по возрасту (9 - ещё и всё, что старше). Здесь, а не через Enhanced
 	// Input, по причине, не связанной с лагом: десять клавиш одного вида - это
 	// десять UInputAction, десять MapKey и десять обработчиков ради одного
 	// switch. Читаемость дороже единообразия, а задержки эти клавиши не
@@ -734,11 +734,28 @@ void AGamePlayerController::OnSetAgeFilter(int32 Age)
 		return;
 	}
 
+	// Последняя цифра значит не только возраст 9, но и всё, что старше: цифр
+	// десять, а возрастов 256, и без этого хвост рампы - самая старая и обычно
+	// самая крупная часть структуры - не показывался бы ни под какой цифрой.
+	// Условия "а есть ли клетки старше" нет намеренно: когда их нет, ">= 9"
+	// совпадает с "== 9" и ничего не меняет (см.
+	// AAutomataOrchestrator::bAgeFilterIncludesOlder).
+	const bool bIncludeOlder = (Age == 9);
+
 	// Та же цифра ещё раз - снять фильтр. Отдельной клавиши "показать все" нет
 	// намеренно: ноль отдан НУЛЕВОМУ возрасту (только что родившиеся клетки,
 	// первый цвет рампы и самый интересный слой), а какая цифра сейчас
-	// активна, видно из сообщения на экране.
-	Orchestrator->SetAgeFilter(Orchestrator->GetAgeFilter() == Age ? -1 : Age);
+	// активна, видно из сообщения на экране. Флаг сравнивается наравне с
+	// возрастом, чтобы нажатие цифры всегда приводило фильтр ровно к тому, что
+	// эта цифра значит, даже если флаг перед тем правили из Details-панели.
+	if (Orchestrator->GetAgeFilter() == Age
+		&& Orchestrator->IsAgeFilterIncludingOlder() == bIncludeOlder)
+	{
+		Orchestrator->SetAgeFilter(-1);
+		return;
+	}
+
+	Orchestrator->SetAgeFilter(Age, bIncludeOlder);
 }
 
 void AGamePlayerController::OnToggleViewSlice()

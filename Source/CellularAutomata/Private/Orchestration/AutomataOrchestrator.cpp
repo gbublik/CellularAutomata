@@ -671,15 +671,34 @@ void AAutomataOrchestrator::SetViewSliceEnabled(bool bEnabled)
 	RefreshRenderCullVolume();
 }
 
-void AAutomataOrchestrator::SetAgeFilter(int32 NewAgeFilter)
+void AAutomataOrchestrator::SetAgeFilter(int32 NewAgeFilter, bool bIncludeOlder)
 {
 	AgeFilter = FMath::Clamp(NewAgeFilter, -1, 255);
-	UE_LOG(LogTemp, Log, TEXT("SetAgeFilter: %s"), AgeFilter >= 0
-		? *FString::Printf(TEXT("показываются только клетки возраста %d"), AgeFilter)
-		: TEXT("фильтр снят, показываются все клетки"));
-	ShowStatusMessage(StatusKey_AgeFilter, AgeFilter >= 0
-		? FString::Printf(TEXT("[%d] Только возраст %d  (та же цифра ещё раз - показать все)"), AgeFilter, AgeFilter)
-		: FString(TEXT("Фильтр по возрасту снят")));
+	// При снятом фильтре флаг бессмыслен, и оставленный включённым он путал бы
+	// и Details-панель, и следующее нажатие цифры.
+	bAgeFilterIncludesOlder = AgeFilter >= 0 && bIncludeOlder;
+
+	// Строки собираются заранее, а не тернарником внутри Printf(): формат-строка
+	// проверяется на этапе компиляции (consteval TCheckedFormatString) и обязана
+	// быть литералом, а не выбранным во время исполнения указателем.
+	FString LogText(TEXT("фильтр снят, показываются все клетки"));
+	FString StatusText(TEXT("Фильтр по возрасту снят"));
+	if (AgeFilter >= 0)
+	{
+		if (bAgeFilterIncludesOlder)
+		{
+			LogText = FString::Printf(TEXT("показываются только клетки возраста %d и старше"), AgeFilter);
+			StatusText = FString::Printf(TEXT("[%d] Возраст %d и старше  (та же цифра ещё раз - показать все)"), AgeFilter, AgeFilter);
+		}
+		else
+		{
+			LogText = FString::Printf(TEXT("показываются только клетки возраста %d"), AgeFilter);
+			StatusText = FString::Printf(TEXT("[%d] Только возраст %d  (та же цифра ещё раз - показать все)"), AgeFilter, AgeFilter);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("SetAgeFilter: %s"), *LogText);
+	ShowStatusMessage(StatusKey_AgeFilter, StatusText);
 	RefreshRenderCullVolume();
 }
 
@@ -2740,15 +2759,21 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 		bHasViewSliceCameraState = true;
 	}
 
+	// Фильтр по возрасту (см. AgeFilter) разворачивается в диапазон ДО цикла:
+	// внутри тогда остаётся одна проверка попадания в границы, без ветки на
+	// bAgeFilterIncludesOlder на каждой из миллионов клеток. Верхняя граница
+	// 255 - это весь диапазон uint8, т.е. "и всё, что старше".
+	const int32 AgeFilterMin = AgeFilter;
+	const int32 AgeFilterMax = bAgeFilterIncludesOlder ? 255 : AgeFilter;
+
 	OutInstances.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
 		const uint8 Age = Grid->GetAge(Cell);
-		// Фильтр по возрасту (см. AgeFilter) - раньше остальных проверок:
-		// он отсекает больше всего и обходится одним сравнением. Сравнение
-		// с нулём, а не с единицей: возраст 0 - законный слой, выключенному
-		// фильтру соответствует -1.
-		if (AgeFilter >= 0 && Age != (uint8)AgeFilter)
+		// Раньше остальных проверок: отсекает больше всего и обходится парой
+		// сравнений. Сравнение с нулём, а не с единицей: возраст 0 - законный
+		// слой, выключенному фильтру соответствует -1.
+		if (AgeFilter >= 0 && ((int32)Age < AgeFilterMin || (int32)Age > AgeFilterMax))
 		{
 			continue;
 		}
