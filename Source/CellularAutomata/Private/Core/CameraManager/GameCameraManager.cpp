@@ -41,3 +41,14 @@ void AGameCameraManager::SetOrthoWidth(float NewOrthoWidth)
 {
 	OrthoWidth = FMath::Clamp(NewOrthoWidth, MinOrthoWidth, MaxOrthoWidth);
 }
+
+void AGameCameraManager::ScaleOrthoWidth(float Multiplier)
+{
+	SetOrthoWidth(OrthoWidth * Multiplier);
+
+	// Флаг поднимается ЗДЕСЬ, а не в SetOrthoWidth(): через сеттер идёт и
+	// подгонка под сетку при кадрировании, а она как раз не должна означать
+	// "пользователь выбрал масштаб сам" - иначе первое же кадрирование
+	// заблокировало бы все последующие (см. HasUserOrthoWidth()).
+	bOrthoWidthUserSet = true;
+}

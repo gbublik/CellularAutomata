@@ -735,6 +735,16 @@ bool AGamePlayerController::FrameAllCells(AAutomataOrchestrator* Orchestrator, b
 		return false;
 	}
 
+	// Явная просьба вписать в кадр - значит и масштаб ортопроекции пересчитать,
+	// даже если он был накручен руками (иначе в ортопроекции Home не делал бы
+	// ничего вовсе: расстояние на картинку там не влияет). Смена ракурса, в
+	// отличие от этого, ручной зум сохраняет - см.
+	// AGameCameraManager::HasUserOrthoWidth().
+	if (AGameCameraManager* CameraManager = GetGameCameraManager())
+	{
+		CameraManager->ClearUserOrthoWidth();
+	}
+
 	FVector Center;
 	float Radius;
 	// bVisibleOnly - кадрировать по тому, что кубом/срезом/фильтром реально
@@ -822,9 +832,15 @@ bool AGamePlayerController::FrameBounds(const FVector& Center, float Radius, con
 	// В ортопроекции расстояние на видимый размер не влияет вовсе - кадрирует
 	// ширина кадра, её и подгоняем. Камеру при этом всё равно отодвигаем на то
 	// же расстояние, чтобы переключение проекции туда-обратно не меняло кадр.
+	//
+	// Кроме случая, когда масштаб выбран руками (клавишами * / /): тогда его не
+	// трогаем - см. AGameCameraManager::HasUserOrthoWidth(). Снимают этот флаг
+	// только явные "вписать в кадр" (FrameAllCells()/OnFrameSelection()/
+	// включение ортопроекции), а смена ракурса - нет, поэтому обойти структуру
+	// по осям, не потеряв подобранный зум, теперь можно.
 	if (AGameCameraManager* CameraManager = GetGameCameraManager())
 	{
-		if (CameraManager->IsOrthographic())
+		if (CameraManager->IsOrthographic() && !CameraManager->HasUserOrthoWidth())
 		{
 			CameraManager->SetOrthoWidth(ComputeOrthoWidthForRadius(Radius));
 		}
@@ -922,6 +938,11 @@ void AGamePlayerController::OnToggleOrthographic()
 	// структуры) первое включение выглядело бы как поломка.
 	if (bEnable)
 	{
+		// Ручной зум от прошлого включения не сохраняем: структура за это время
+		// могла вырасти на порядок, и подобранная тогда ширина показала бы
+		// ровно ту пустоту, от которой эта подгонка и защищает.
+		CameraManager->ClearUserOrthoWidth();
+
 		AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 		FVector Center;
 		float Radius;
@@ -978,6 +999,12 @@ void AGamePlayerController::OnFrameSelection()
 	{
 		ShowCameraStatusMessage(TEXT("[NumPad .] Выделение пусто - сначала Tab, затем ЛКМ по клетке"));
 		return;
+	}
+
+	// Тоже явная просьба вписать в кадр - см. FrameAllCells().
+	if (AGameCameraManager* CameraManager = GetGameCameraManager())
+	{
+		CameraManager->ClearUserOrthoWidth();
 	}
 
 	// Ракурс сохраняем: выделение уже нашли глазами с текущей стороны,
