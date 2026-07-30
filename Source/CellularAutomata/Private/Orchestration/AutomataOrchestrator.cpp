@@ -2929,6 +2929,16 @@ bool AAutomataOrchestrator::BuildSliceCapture(TArray<FColor>& OutPixels, int32& 
 		return false;
 	}
 
+	// Отражение - постобработка над готовым снимком, а не отдельный путь
+	// растеризации: тайл это то же изображение плюс его зеркала, и знать про
+	// клетки для этого не нужно.
+	if (SliceCaptureParams.TileMode != ESliceTileMode::None)
+	{
+		const bool bMirrorX = (SliceCaptureParams.TileMode == ESliceTileMode::MirrorX || SliceCaptureParams.TileMode == ESliceTileMode::MirrorBoth);
+		const bool bMirrorY = (SliceCaptureParams.TileMode == ESliceTileMode::MirrorY || SliceCaptureParams.TileMode == ESliceTileMode::MirrorBoth);
+		CellRasterizer::MakeTile(Image, bMirrorX, bMirrorY);
+	}
+
 	OutWidth = Image.Width;
 	OutHeight = Image.Height;
 	OutPixels = MoveTemp(Image.Pixels);

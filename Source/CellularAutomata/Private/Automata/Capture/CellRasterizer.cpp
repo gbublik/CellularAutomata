@@ -110,6 +110,64 @@ namespace CellRasterizer
 		OutParams.RightAxis = FVector::CrossProduct(OutParams.UpAxis, OutParams.ForwardAxis);
 	}
 
+	void MakeTile(FRasterImage& Image, bool bMirrorX, bool bMirrorY)
+	{
+		if (Image.Width <= 0 || Image.Height <= 0)
+		{
+			return;
+		}
+
+		// Отражение по горизонтали: строка [0..W-1] дополняется столбцами
+		// W-2..1. Именно W-2, а не W-1: повтор крайнего столбца дал бы на шве
+		// двойную линию.
+		if (bMirrorX && Image.Width > 1)
+		{
+			const int32 OldWidth = Image.Width;
+			const int32 NewWidth = OldWidth * 2 - 2;
+
+			TArray<FColor> Tiled;
+			Tiled.SetNumUninitialized(NewWidth * Image.Height);
+
+			for (int32 Y = 0; Y < Image.Height; ++Y)
+			{
+				const FColor* SourceRow = Image.Pixels.GetData() + Y * OldWidth;
+				FColor* TargetRow = Tiled.GetData() + Y * NewWidth;
+
+				FMemory::Memcpy(TargetRow, SourceRow, OldWidth * sizeof(FColor));
+				for (int32 X = 0; X < OldWidth - 2; ++X)
+				{
+					TargetRow[OldWidth + X] = SourceRow[OldWidth - 2 - X];
+				}
+			}
+
+			Image.Width = NewWidth;
+			Image.Pixels = MoveTemp(Tiled);
+		}
+
+		// По вертикали то же самое, но целыми строками - копировать можно
+		// одним Memcpy на строку.
+		if (bMirrorY && Image.Height > 1)
+		{
+			const int32 OldHeight = Image.Height;
+			const int32 NewHeight = OldHeight * 2 - 2;
+			const int32 RowBytes = Image.Width * sizeof(FColor);
+
+			TArray<FColor> Tiled;
+			Tiled.SetNumUninitialized(Image.Width * NewHeight);
+
+			FMemory::Memcpy(Tiled.GetData(), Image.Pixels.GetData(), RowBytes * OldHeight);
+			for (int32 Y = 0; Y < OldHeight - 2; ++Y)
+			{
+				FMemory::Memcpy(Tiled.GetData() + (OldHeight + Y) * Image.Width,
+								Image.Pixels.GetData() + (OldHeight - 2 - Y) * Image.Width,
+								RowBytes);
+			}
+
+			Image.Height = NewHeight;
+			Image.Pixels = MoveTemp(Tiled);
+		}
+	}
+
 	bool ComputeImageSize(const TArray<FCellRenderInstance>& Cells, const FRasterParams& Params,
 						  int32& OutWidth, int32& OutHeight)
 	{

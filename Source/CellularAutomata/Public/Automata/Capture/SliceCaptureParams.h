@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Automata/Capture/CellRasterMode.h"
+#include "Automata/Capture/SliceTileMode.h"
 #include "SliceCaptureParams.generated.h"
 
 /** Настройки съёмки текстурного среза - AAutomataOrchestrator::SliceCaptureParams.
@@ -42,6 +43,14 @@ struct FSliceCaptureParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture",
 			  meta = (EditCondition = "Mode == ECellRasterMode::Silhouette"))
 	FColor ForegroundColor = FColor::White;
+
+	/** Достроить снимок до бесшовного тайла отражением - см. ESliceTileMode.
+	 *
+	 *  Учтите, что тайл почти вдвое больше по каждой стороне, то есть вчетверо
+	 *  по площади: предел MaxCapturePixels проверяется по ИСХОДНОМУ снимку, до
+	 *  отражения, поэтому при больших срезах его может потребоваться поднять. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Capture")
+	ESliceTileMode TileMode = ESliceTileMode::None;
 
 	/** Кодировать цвета в sRGB.
 	 *

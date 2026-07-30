@@ -907,4 +907,85 @@ bool FSliceCaptureRasterTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSliceTileTest,
+	"CellularAutomata.Slice.Tile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FSliceTileTest::RunTest(const FString& Parameters)
+{
+	// Полоса из четырёх различимых цветов: на однотонной картинке отражение
+	// выглядит правильным всегда, даже когда оно неправильное.
+	auto MakeStrip = [](int32 Width) -> CellRasterizer::FRasterImage
+	{
+		CellRasterizer::FRasterImage Image;
+		Image.Width = Width;
+		Image.Height = 1;
+		Image.Pixels.SetNumUninitialized(Width);
+		for (int32 X = 0; X < Width; ++X)
+		{
+			Image.Pixels[X] = FColor(static_cast<uint8>(X * 40 + 10), 0, 0, 255);
+		}
+		return Image;
+	};
+
+	// Отражение по горизонтали: [0 1 2 3] -> [0 1 2 3 2 1], ширина 2W-2.
+	{
+		CellRasterizer::FRasterImage Image = MakeStrip(4);
+		const FColor C0 = Image.Pixels[0];
+		const FColor C1 = Image.Pixels[1];
+		const FColor C2 = Image.Pixels[2];
+		const FColor C3 = Image.Pixels[3];
+
+		CellRasterizer::MakeTile(Image, /*bMirrorX=*/true, /*bMirrorY=*/false);
+
+		TestEqual(TEXT("ширина тайла 2W-2"), Image.Width, 6);
+
+		TestEqual(TEXT("столбец 0"), Image.Pixels[0].ToPackedARGB(), C0.ToPackedARGB());
+		TestEqual(TEXT("столбец 3"), Image.Pixels[3].ToPackedARGB(), C3.ToPackedARGB());
+		// Ключевое: сразу за крайним столбцом идёт ПРЕДпоследний, а не его
+		// повтор - иначе на каждом шве была бы двойная линия.
+		TestEqual(TEXT("за краем идёт предпоследний, а не повтор края"),
+			Image.Pixels[4].ToPackedARGB(), C2.ToPackedARGB());
+		TestEqual(TEXT("последний столбец"), Image.Pixels[5].ToPackedARGB(), C1.ToPackedARGB());
+
+		// Замыкание тайла на себя: за последним столбцом следует столбец 0
+		// следующей копии, и эта пара обязана быть так же симметрична, как
+		// внутри тайла - то есть сосед края с обеих сторон один и тот же.
+		TestEqual(TEXT("тайл замкнут: соседи столбца 0 совпадают"),
+			Image.Pixels[Image.Width - 1].ToPackedARGB(), Image.Pixels[1].ToPackedARGB());
+	}
+
+	// По вертикали - то же самое на транспонированной картинке.
+	{
+		CellRasterizer::FRasterImage Image;
+		Image.Width = 1;
+		Image.Height = 4;
+		Image.Pixels.SetNumUninitialized(4);
+		for (int32 Y = 0; Y < 4; ++Y)
+		{
+			Image.Pixels[Y] = FColor(0, static_cast<uint8>(Y * 40 + 10), 0, 255);
+		}
+		const FColor R1 = Image.Pixels[1];
+		const FColor R2 = Image.Pixels[2];
+
+		CellRasterizer::MakeTile(Image, /*bMirrorX=*/false, /*bMirrorY=*/true);
+
+		TestEqual(TEXT("высота тайла 2H-2"), Image.Height, 6);
+		TestEqual(TEXT("строка за краем"), Image.Pixels[4].ToPackedARGB(), R2.ToPackedARGB());
+		TestEqual(TEXT("последняя строка"), Image.Pixels[5].ToPackedARGB(), R1.ToPackedARGB());
+	}
+
+	// Отражать нечего - картинка в один пиксель по оси обязана остаться собой,
+	// а не выродиться в нулевой размер (2*1-2 == 0).
+	{
+		CellRasterizer::FRasterImage Image = MakeStrip(1);
+		CellRasterizer::MakeTile(Image, /*bMirrorX=*/true, /*bMirrorY=*/true);
+		TestEqual(TEXT("ширина не выродилась"), Image.Width, 1);
+		TestEqual(TEXT("высота не выродилась"), Image.Height, 1);
+		TestEqual(TEXT("пиксель на месте"), Image.Pixels.Num(), 1);
+	}
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
