@@ -194,7 +194,9 @@ protected:
 	void OnCaptureTextureSlice();
 
 	/** Хоткей (F7) - начать съёмку серии кадров по ходу симуляции, а если она
-	 *  уже идёт, оборвать её (AAutomataOrchestrator::StartSeriesCapture()). */
+	 *  уже идёт, оборвать её (AAutomataOrchestrator::StartSeriesCapture()).
+	 *  С зажатым Shift - не снимает, а выбирает следующий набор настроек съёмки
+	 *  по кругу (CycleCapturePreset()), как Shift+Y к Y. */
 	void OnToggleSeriesCapture();
 
 	/** Общий обработчик хоткеев профилей рендера F1-F4 - просто находит

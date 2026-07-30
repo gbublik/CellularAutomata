@@ -592,6 +592,17 @@ void AGamePlayerController::OnToggleSeriesCapture()
 		return;
 	}
 
+	// Shift+F7 - выбрать, ЧЕМ снимать (следующий набор настроек по кругу), а не
+	// снимать. Пара к F7 ровно как Shift+Y к Y: модификатор выбирает режим,
+	// чистое нажатие запускает. Модификатор проверяется здесь, а не маппингом -
+	// Enhanced Input не умеет требовать его в привязке клавиши (та же идиома,
+	// что у Shift+F6/Ctrl+S).
+	if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+	{
+		Orchestrator->CycleCapturePreset();
+		return;
+	}
+
 	// Одна клавиша на начало и на обрыв - StartSeriesCapture() сам решает, что
 	// значит нажатие в текущем состоянии.
 	Orchestrator->StartSeriesCapture();

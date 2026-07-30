@@ -40,6 +40,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
 #include "Automata/Rendering/RenderPresets.h"
+#include "Automata/Capture/CapturePresets.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/VolumetricCloudComponent.h"
@@ -3024,6 +3025,73 @@ void AAutomataOrchestrator::CaptureTextureSlice()
 	// нажатие ничего не спрашивает. Полный путь уходит в лог.
 	const FString FileName = FString::Printf(TEXT("Slice_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
 	WriteSliceCaptureToFile(EnsureSliceDirectory() / FileName);
+}
+
+TArray<FCapturePreset> AAutomataOrchestrator::GetCapturePresets() const
+{
+	return CapturePresets::GetAll();
+}
+
+FString AAutomataOrchestrator::GetActiveCapturePresetName() const
+{
+	const TArray<FCapturePreset>& Presets = CapturePresets::GetAll();
+	return Presets.IsValidIndex(ActiveCapturePresetIndex) ? Presets[ActiveCapturePresetIndex].Name : FString();
+}
+
+void AAutomataOrchestrator::ApplyCapturePreset(int32 PresetIndex)
+{
+	const TArray<FCapturePreset>& Presets = CapturePresets::GetAll();
+	if (!Presets.IsValidIndex(PresetIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyCapturePreset: индекс %d вне диапазона (наборов: %d)"), PresetIndex, Presets.Num());
+		return;
+	}
+
+	const FCapturePreset& Preset = Presets[PresetIndex];
+
+	// Присваивание целиком, а не поле за полем: в этом и смысл того, что пресет
+	// хранит всю структуру - хвостов от предыдущего набора не остаётся по
+	// построению, а не потому, что кто-то не забыл их сбросить.
+	SliceCaptureParams = Preset.Params;
+	ActiveCapturePresetIndex = PresetIndex;
+
+	// Идущую серию НЕ трогаем: её длина и шаг зафиксированы на старте
+	// (SeriesFramesRemaining), а размер кадра поменялся бы прямо посреди неё -
+	// получилась бы серия из кадров разного размера, непригодная ни для
+	// анимации, ни для перебора.
+	if (bSeriesCaptureActive)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyCapturePreset: серия ещё идёт - новый набор вступит в силу со следующего запуска F7"));
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ApplyCapturePreset: '%s' (режим %d, плитка %d, %d пикс/клетка, серия %d x %d поколений)"),
+		*Preset.Name,
+		static_cast<int32>(SliceCaptureParams.Mode),
+		static_cast<int32>(SliceCaptureParams.TileMode),
+		SliceCaptureParams.PixelsPerCell,
+		SliceCaptureParams.SeriesFrameCount,
+		SliceCaptureParams.SeriesGenerationsPerFrame);
+
+	ShowStatusMessage(StatusKey_SliceCapture,
+		FString::Printf(TEXT("Съёмка: %s - %s"), *Preset.Name, *Preset.Description));
+}
+
+void AAutomataOrchestrator::CycleCapturePreset()
+{
+	const TArray<FCapturePreset>& Presets = CapturePresets::GetAll();
+	if (Presets.Num() == 0)
+	{
+		return;
+	}
+
+	// INDEX_NONE (ни одного набора ещё не применяли) даёт 0 - первый набор, а не
+	// второй: настройки правили руками, и логичный первый шаг перебора - начало
+	// списка.
+	const int32 NextIndex = Presets.IsValidIndex(ActiveCapturePresetIndex)
+		? (ActiveCapturePresetIndex + 1) % Presets.Num()
+		: 0;
+
+	ApplyCapturePreset(NextIndex);
 }
 
 void AAutomataOrchestrator::StartSeriesCapture()

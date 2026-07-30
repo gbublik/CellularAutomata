@@ -13,6 +13,7 @@
 #include "Automata/Rendering/RenderPresets.h"
 #include "Automata/Persistence/AutomatonSaveHeader.h"
 #include "Automata/Capture/SliceCaptureParams.h"
+#include "Automata/Capture/CapturePresets.h"
 #include "Automata/Generation/StateGeneratorPresets.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
@@ -590,6 +591,44 @@ public:
 	/** Сколько кадров серии ещё осталось снять - для подписи в HUD. */
 	UFUNCTION(BlueprintPure, Category = "Automata|Capture")
 	int32 GetSeriesFramesRemaining() const { return SeriesFramesRemaining; }
+
+	/** Таблица готовых наборов настроек съёмки (см. FCapturePreset). Отдаёт
+	 *  копию, как GetRulePresets()/GetRenderPresets(): вызывается на построение
+	 *  списка в HUD, не в горячем цикле. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Capture")
+	TArray<FCapturePreset> GetCapturePresets() const;
+
+	/** Применяет набор по индексу в GetCapturePresets() - присваивает
+	 *  SliceCaptureParams целиком.
+	 *
+	 *  Ничего не снимает и симуляцию не трогает: это настройки того, КАК
+	 *  снимать, а не команда снять. После применения жмите F6 (одиночный
+	 *  снимок) или F7 (серия). Идущую серию тоже не трогает - её параметры
+	 *  зафиксированы на старте, и менять их на ходу означало бы серию из кадров
+	 *  разного размера. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Capture")
+	void ApplyCapturePreset(int32 PresetIndex);
+
+	/** Следующий набор по кругу - хоткей Shift+F7.
+	 *
+	 *  Та же идиома, что CycleChunkedRenderOrder()/CycleStateGeneratorType():
+	 *  (Индекс + 1) % Num, после последнего снова первый. Пара к F7 ровно как
+	 *  Shift+Y к Y: та же клавиша выбирает, чем снимать, сама съёмка - без
+	 *  модификатора. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Capture")
+	void CycleCapturePreset();
+
+	/** Индекс последнего применённого набора, либо INDEX_NONE (настройки правили
+	 *  руками в панели, ни один набор не применяли). */
+	UFUNCTION(BlueprintPure, Category = "Automata|Capture")
+	int32 GetActiveCapturePresetIndex() const { return ActiveCapturePresetIndex; }
+
+	/** Имя последнего применённого набора, либо пустая строка - для подписи в
+	 *  HUD. Признака "после набора что-то поменяли руками" здесь намеренно нет,
+	 *  в отличие от bRenderPresetModified: SliceCaptureParams редактируется в
+	 *  панели напрямую, без сеттеров, и ставить такой признак было бы негде. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Capture")
+	FString GetActiveCapturePresetName() const;
 
 	/** Отладочная проверка корректности правила - сажает три классических
 	 *  плоских 2D-паттерна (блок-неподвижку, мигалку-осциллятор, планер) в
@@ -2039,6 +2078,11 @@ private:
 	 *  показал бы "профиль не выбран" на неизменившейся картинке. */
 	UPROPERTY(Transient)
 	int32 ActiveRenderPresetIndex = INDEX_NONE;
+	/** Индекс последнего применённого набора настроек съёмки (см.
+	 *  ApplyCapturePreset()). UPROPERTY по той же причине, что
+	 *  ActiveRenderPresetIndex: должен пережить реинстансинг Live Coding. */
+	UPROPERTY(Transient)
+	int32 ActiveCapturePresetIndex = INDEX_NONE;
 	/** После применения профиля что-то из его настроек поменяли вручную - см.
 	 *  FHudStats::bRenderPresetModified. Ставится в самих сеттерах настроек,
 	 *  которыми профиль владеет, и сбрасывается в конце ApplyRenderPreset(). */
