@@ -3095,13 +3095,13 @@ void AAutomataOrchestrator::StopSeriesCapture()
 		}
 	}
 
-	// В быстром режиме промежуточные поколения на экран не выводились, и на нём
-	// осталась картинка того состояния, с которого серия началась. Догоняем
-	// одним рендером - иначе выглядело бы как зависшая симуляция.
-	if (SliceCaptureParams.bSeriesFastMode && Grid.IsValid())
-	{
-		RenderGridImmediate();
-	}
+	// Догоняющего рендера здесь нет намеренно. В быстром режиме промежуточные
+	// поколения на экран не выводились, и на нём осталась картинка того
+	// состояния, с которого серию запустили (F7) - именно она и должна
+	// остаться. Финальное поколение уже лежит в последнем PNG, а рендер
+	// многомиллионной сетки - самая дорогая операция кадра, и платить за неё
+	// ради картинки, которую всё равно смотрят в файлах, незачем. Экран
+	// обновится сам при следующем рендере (P, F, R, N).
 
 	UE_LOG(LogTemp, Log, TEXT("StopSeriesCapture: снято %d кадров -> %s"), Captured, *SeriesDirectory);
 	ShowStatusMessage(StatusKey_SliceCapture,
@@ -3854,6 +3854,14 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// от скорости отрисовки. Съёмка не смотрит на StepsSinceLastRender: она
 	// растеризует сетку сама и не нуждается в том, чтобы поколение попало на
 	// экран.
+	//
+	// Решение "рисовать ли это поколение" снимается ЗДЕСЬ, до съёмки, а не в
+	// самой проверке ниже: последний кадр серии заканчивается вызовом
+	// StopSeriesCapture() прямо из CaptureSeriesFrame(), и тот сбрасывает
+	// bSeriesCaptureActive. Прочитанный после этого флаг сказал бы "серии нет",
+	// и финальное поколение - единственное из всех - уехало бы в AddInstances,
+	// хотя оно уже лежит в последнем PNG.
+	const bool bSeriesSkipsRender = bSeriesCaptureActive && SliceCaptureParams.bSeriesFastMode;
 	if (bSeriesCaptureActive)
 	{
 		SeriesGenerationsSinceFrame += Generations;
@@ -3879,8 +3887,11 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// Серия в быстром режиме не рисует промежуточные поколения вовсе: снимок
 	// растеризуется прямо из сетки, и поколению незачем попадать на экран,
 	// чтобы попасть в файл, а рендер клеток - самая дорогая часть кадра.
-	// Экран догонит одним рендером в StopSeriesCapture().
-	if (bSeriesCaptureActive && SliceCaptureParams.bSeriesFastMode)
+	// Экран так и остаётся на состоянии, с которого серию запустили, - в том
+	// числе после её окончания (см. StopSeriesCapture() и bSeriesSkipsRender
+	// выше: флаг снят до съёмки, поэтому последнее поколение серии тоже сюда
+	// не проходит).
+	if (bSeriesSkipsRender)
 	{
 		return;
 	}
