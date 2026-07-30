@@ -691,33 +691,158 @@ void AAutomataOrchestrator::SetViewSliceEnabled(bool bEnabled)
 
 void AAutomataOrchestrator::SetAgeFilter(int32 NewAgeFilter, bool bIncludeOlder)
 {
-	AgeFilter = FMath::Clamp(NewAgeFilter, -1, 255);
+	AgeFilterValues.Reset();
+	if (NewAgeFilter >= 0)
+	{
+		AgeFilterValues.Add(FMath::Clamp(NewAgeFilter, 0, 255));
+	}
+
 	// При снятом фильтре флаг бессмыслен, и оставленный включённым он путал бы
 	// и Details-панель, и следующее нажатие цифры.
-	bAgeFilterIncludesOlder = AgeFilter >= 0 && bIncludeOlder;
+	bAgeFilterIncludesOlder = AgeFilterValues.Num() > 0 && bIncludeOlder;
+
+	ApplyAgeFilterChange();
+}
+
+void AAutomataOrchestrator::ToggleAgeFilterValue(int32 Age, bool bIncludeOlder)
+{
+	if (Age < 0 || Age > 255)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ToggleAgeFilterValue: возраст %d вне диапазона 0..255"), Age);
+		return;
+	}
+
+	if (AgeFilterValues.Remove(Age) > 0)
+	{
+		// Флаг "и всё, что старше" принадлежит той цифре, которая его подняла,
+		// и уходит вместе с ней - иначе Shift+9 убрал бы девятку, но оставил
+		// висеть весь хвост рампы, что выглядит как "не сработало".
+		if (bIncludeOlder)
+		{
+			bAgeFilterIncludesOlder = false;
+		}
+	}
+	else
+	{
+		AgeFilterValues.Add(Age);
+		if (bIncludeOlder)
+		{
+			bAgeFilterIncludesOlder = true;
+		}
+	}
+
+	// Убрали последний выбранный возраст - фильтра больше нет, а значит нет и
+	// хвоста: пустой список и "показывать все" - одно состояние, а не два.
+	if (AgeFilterValues.Num() == 0)
+	{
+		bAgeFilterIncludesOlder = false;
+	}
+
+	ApplyAgeFilterChange();
+}
+
+void AAutomataOrchestrator::ApplyAgeFilterChange()
+{
+	// Канонизация нужна не только после ручной правки списка в Details-панели:
+	// от неё зависит и порядок в сообщении на экране, и то, что повторное
+	// Shift+цифра действительно находит уже добавленный возраст.
+	for (int32 Index = AgeFilterValues.Num() - 1; Index >= 0; --Index)
+	{
+		const int32 Value = AgeFilterValues[Index];
+		if (Value < 0 || Value > 255)
+		{
+			AgeFilterValues.RemoveAt(Index);
+		}
+	}
+
+	AgeFilterValues.Sort();
+
+	for (int32 Index = AgeFilterValues.Num() - 1; Index > 0; --Index)
+	{
+		if (AgeFilterValues[Index] == AgeFilterValues[Index - 1])
+		{
+			AgeFilterValues.RemoveAt(Index);
+		}
+	}
+
+	const FString Description = DescribeAgeFilter();
 
 	// Строки собираются заранее, а не тернарником внутри Printf(): формат-строка
 	// проверяется на этапе компиляции (consteval TCheckedFormatString) и обязана
 	// быть литералом, а не выбранным во время исполнения указателем.
 	FString LogText(TEXT("фильтр снят, показываются все клетки"));
 	FString StatusText(TEXT("Фильтр по возрасту снят"));
-	if (AgeFilter >= 0)
+	if (AgeFilterValues.Num() > 0)
 	{
-		if (bAgeFilterIncludesOlder)
-		{
-			LogText = FString::Printf(TEXT("показываются только клетки возраста %d и старше"), AgeFilter);
-			StatusText = FString::Printf(TEXT("[%d] Возраст %d и старше  (та же цифра ещё раз - показать все)"), AgeFilter, AgeFilter);
-		}
-		else
-		{
-			LogText = FString::Printf(TEXT("показываются только клетки возраста %d"), AgeFilter);
-			StatusText = FString::Printf(TEXT("[%d] Только возраст %d  (та же цифра ещё раз - показать все)"), AgeFilter, AgeFilter);
-		}
+		LogText = FString::Printf(TEXT("показываются только клетки: %s"), *Description);
+		StatusText = FString::Printf(TEXT("Возраст: %s  (Shift+цифра - добавить/убрать, та же цифра - показать все)"), *Description);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("SetAgeFilter: %s"), *LogText);
 	ShowStatusMessage(StatusKey_AgeFilter, StatusText);
 	RefreshRenderCullVolume();
+}
+
+FString AAutomataOrchestrator::DescribeAgeFilter() const
+{
+	if (AgeFilterValues.Num() == 0)
+	{
+		return TEXT("все возрасты");
+	}
+
+	FString Result;
+	for (int32 Index = 0; Index < AgeFilterValues.Num(); ++Index)
+	{
+		if (Index > 0)
+		{
+			Result += TEXT(", ");
+		}
+		Result += FString::FromInt(AgeFilterValues[Index]);
+	}
+
+	// Хвост относится к самому старому из выбранных - только он и может быть
+	// открытым сверху.
+	if (bAgeFilterIncludesOlder)
+	{
+		Result += TEXT(" и старше");
+	}
+
+	return Result;
+}
+
+bool AAutomataOrchestrator::BuildAgeFilterMask(TArray<bool>& OutMask) const
+{
+	if (AgeFilterValues.Num() == 0)
+	{
+		return false;
+	}
+
+	OutMask.Init(false, 256);
+
+	int32 MaxSelected = 0;
+	for (const int32 Value : AgeFilterValues)
+	{
+		if (Value < 0 || Value > 255)
+		{
+			continue;
+		}
+
+		OutMask[Value] = true;
+		MaxSelected = FMath::Max(MaxSelected, Value);
+	}
+
+	// "И всё, что старше" открывает диапазон вверх от самого старого из
+	// выбранных: цифр десять, а возрастов 256, и без этого хвост рампы не
+	// показывался бы ни под какой цифрой.
+	if (bAgeFilterIncludesOlder)
+	{
+		for (int32 Age = MaxSelected; Age < 256; ++Age)
+		{
+			OutMask[Age] = true;
+		}
+	}
+
+	return true;
 }
 
 void AAutomataOrchestrator::AdjustViewSliceDistance(float Delta)
@@ -2271,20 +2396,16 @@ bool AAutomataOrchestrator::ComputeVisibleCellsBounds(FVector& OutCenter, float&
 	const float SliceMinDepth = ViewSliceDistance - ViewSliceThickness * 0.5f;
 	const float SliceMaxDepth = ViewSliceDistance + ViewSliceThickness * 0.5f;
 
-	const int32 AgeFilterMin = AgeFilter;
-	const int32 AgeFilterMax = bAgeFilterIncludesOlder ? 255 : AgeFilter;
+	TArray<bool> AgeFilterMask;
+	const bool bAgeFilterActive = BuildAgeFilterMask(AgeFilterMask);
 
 	TArray<FIntVector> VisibleCells;
 	VisibleCells.Reserve(Cells.Num());
 	for (const FIntVector& Cell : Cells)
 	{
-		if (AgeFilter >= 0)
+		if (bAgeFilterActive && !AgeFilterMask[Grid->GetAge(Cell)])
 		{
-			const int32 Age = static_cast<int32>(Grid->GetAge(Cell));
-			if (Age < AgeFilterMin || Age > AgeFilterMax)
-			{
-				continue;
-			}
+			continue;
 		}
 
 		if (bSliceActive)
@@ -3039,21 +3160,20 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 		bHasViewSliceCameraState = true;
 	}
 
-	// Фильтр по возрасту (см. AgeFilter) разворачивается в диапазон ДО цикла:
-	// внутри тогда остаётся одна проверка попадания в границы, без ветки на
-	// bAgeFilterIncludesOlder на каждой из миллионов клеток. Верхняя граница
-	// 255 - это весь диапазон uint8, т.е. "и всё, что старше".
-	const int32 AgeFilterMin = AgeFilter;
-	const int32 AgeFilterMax = bAgeFilterIncludesOlder ? 255 : AgeFilter;
+	// Фильтр по возрасту (см. AgeFilterValues) разворачивается в маску ДО
+	// цикла: внутри тогда остаётся одно чтение из таблицы, без перебора
+	// выбранных возрастов на каждой из миллионов клеток.
+	TArray<bool> AgeFilterMask;
+	const bool bAgeFilterActive = BuildAgeFilterMask(AgeFilterMask);
 
 	OutInstances.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
 		const uint8 Age = Grid->GetAge(Cell);
-		// Раньше остальных проверок: отсекает больше всего и обходится парой
-		// сравнений. Сравнение с нулём, а не с единицей: возраст 0 - законный
-		// слой, выключенному фильтру соответствует -1.
-		if (AgeFilter >= 0 && ((int32)Age < AgeFilterMin || (int32)Age > AgeFilterMax))
+		// Раньше остальных проверок: отсекает больше всего и обходится одним
+		// чтением. Возраст 0 - законный слой, выключенному фильтру
+		// соответствует пустой список, а не нулевой возраст.
+		if (bAgeFilterActive && !AgeFilterMask[Age])
 		{
 			continue;
 		}
@@ -3081,8 +3201,8 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	// GetDecayingCellsInBounds(), ни лишний проход, ни построение таблицы.
 	// Фильтр по возрасту прячет угасающие клетки целиком: возраст у них не
 	// определён - это отдельный канал состояния, а не возраст, и приписать им
-	// какой-то возраст значило бы соврать (см. AgeFilter).
-	if (States > 2 && AgeFilter < 0)
+	// какой-то возраст значило бы соврать (см. AgeFilterValues).
+	if (States > 2 && !IsAgeFilterActive())
 	{
 		TArray<FColor> DecayLut;
 		BuildDecayColorLut(DecayLut);
