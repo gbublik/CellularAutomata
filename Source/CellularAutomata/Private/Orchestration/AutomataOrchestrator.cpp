@@ -2174,7 +2174,7 @@ bool AAutomataOrchestrator::CaptureThumbnailPng(TArray64<uint8>& OutPngBytes) co
 	return true;
 }
 
-bool AAutomataOrchestrator::WriteStateToFile(const FString& FilePath)
+bool AAutomataOrchestrator::WriteStateToFile(const FString& FilePath, bool bUpdateLastSavePath)
 {
 	// Сохраняем ИЗНАЧАЛЬНЫЙ паттерн (InitialStateCells) - НЕ трогая Grid:
 	// ни сброса, ни перерисовки, ни движения камеры. InitialStateCells
@@ -2241,7 +2241,12 @@ bool AAutomataOrchestrator::WriteStateToFile(const FString& FilePath)
 		}
 	}
 
-	LastSaveFilePath = FilePath;
+	// Паспорт серии лежит в папке снимков и целью для следующего тихого Ctrl+S
+	// быть не должен - см. doc-comment параметра.
+	if (bUpdateLastSavePath)
+	{
+		LastSaveFilePath = FilePath;
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("WriteStateToFile: %d клеток (миниатюра: %lld байт) -> %s (%.1f КБ; скриншот: %.2f мс, запись: %.2f мс)"),
 		Cells.Num(), ThumbnailPng.Num(), *FilePath, Bytes.Num() / 1024.0, CaptureSeconds * 1000.0, WriteSeconds * 1000.0);
@@ -3094,6 +3099,76 @@ void AAutomataOrchestrator::CycleCapturePreset()
 	ApplyCapturePreset(NextIndex);
 }
 
+void AAutomataOrchestrator::WriteSeriesManifest()
+{
+	if (SeriesDirectory.IsEmpty())
+	{
+		return;
+	}
+
+	const int32 PerFrame = FMath::Max(SliceCaptureParams.SeriesGenerationsPerFrame, 1);
+	// Поколение, на котором серия начинается. Кадр N снят на
+	// StartGeneration + N * PerFrame - это и есть та единственная координата,
+	// которой не хватает в самом PNG.
+	const int64 StartGeneration = GenerationCount;
+
+	// .casave - тем же путём, что Ctrl+S, вплоть до миниатюры: отдельный
+	// формат "почти как сохранение" разъехался бы с настоящим при первой же
+	// правке шапки. LastSaveFilePath при этом не трогаем.
+	const FString SavePath = SeriesDirectory / TEXT("Series.casave");
+	const bool bSaved = WriteStateToFile(SavePath, /*bUpdateLastSavePath=*/false);
+	if (!bSaved)
+	{
+		// Причина уже в логе. Серию не прерываем - кадры важнее паспорта.
+		UE_LOG(LogTemp, Warning, TEXT("WriteSeriesManifest: состояние не сохранено, кадры серии останутся без точки возврата"));
+	}
+
+	// Текстовая записка рядом с бинарником: .casave не прочитать в Проводнике,
+	// а понять, что за папка, нужно бывает без запуска редактора вовсе.
+	TArray<FString> Lines;
+	Lines.Add(FString::Printf(TEXT("Серия снимков клеточного автомата")));
+	Lines.Add(FString::Printf(TEXT("Снято: %s"), *FDateTime::Now().ToString()));
+	Lines.Add(TEXT(""));
+	Lines.Add(FString::Printf(TEXT("Правило:              %s"), *GetActiveRuleString()));
+	Lines.Add(FString::Printf(TEXT("Seed:                 %d"), Seed));
+	Lines.Add(FString::Printf(TEXT("SpawnRadius / Amount: %d / %d"), SpawnRadius, Amount));
+	Lines.Add(FString::Printf(TEXT("CellSize / ChunkSize: %.1f / %d"), CellSize, ChunkSize));
+	Lines.Add(TEXT(""));
+	Lines.Add(FString::Printf(TEXT("Поколение на старте:  %lld"), StartGeneration));
+	Lines.Add(FString::Printf(TEXT("Поколений на кадр:    %d"), PerFrame));
+	Lines.Add(FString::Printf(TEXT("Кадров запрошено:     %d"), SeriesFramesRemaining));
+	Lines.Add(TEXT(""));
+	Lines.Add(FString::Printf(TEXT("Набор съёмки:         %s"), *GetActiveCapturePresetName()));
+	Lines.Add(FString::Printf(TEXT("Режим растеризации:   %d (0=NearestToCamera, 1=Silhouette, 2=Thickness)"),
+		static_cast<int32>(SliceCaptureParams.Mode)));
+	Lines.Add(FString::Printf(TEXT("Плитка:               %d (0=None, 1=MirrorX, 2=MirrorY, 3=MirrorBoth)"),
+		static_cast<int32>(SliceCaptureParams.TileMode)));
+	Lines.Add(FString::Printf(TEXT("Пикселей на клетку:   %d"), SliceCaptureParams.PixelsPerCell));
+	Lines.Add(TEXT(""));
+	Lines.Add(TEXT("Как переснять кадр Frame_NNNN крупнее или в другом цвете:"));
+	Lines.Add(TEXT("  1. Ctrl+O -> Series.casave из этой папки."));
+	Lines.Add(FString::Printf(TEXT("  2. Выставить StepsPerRender = %d (клавиши T/G)."), PerFrame));
+	Lines.Add(TEXT("  3. Нажать F ровно NNNN раз (счётчик поколений в HUD - ориентир)."));
+	Lines.Add(TEXT("  4. Shift+F7 до нужного набора, затем F6."));
+	Lines.Add(TEXT(""));
+	Lines.Add(TEXT("Цвет пересъёмке не мешает: снимок растеризуется из сетки, поэтому"));
+	Lines.Add(TEXT("то же правило + тот же сид + то же поколение дают тот же кадр"));
+	Lines.Add(TEXT("бит в бит при любой палитре AgeColors."));
+
+	const FString ManifestPath = SeriesDirectory / TEXT("Series.txt");
+	// ForceUTF8 - это UTF-8 ИМЕННО с BOM (без него - отдельное значение
+	// ForceUTF8WithoutBOM). BOM здесь обязателен: без него Блокнот прочитает
+	// кириллицу как мусор.
+	if (!FFileHelper::SaveStringArrayToFile(Lines, *ManifestPath, FFileHelper::EEncodingOptions::ForceUTF8))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WriteSeriesManifest: не удалось записать %s"), *ManifestPath);
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("WriteSeriesManifest: паспорт серии записан (%s), поколение на старте %lld, %d поколений на кадр"),
+		bSaved ? TEXT("Series.casave + Series.txt") : TEXT("только Series.txt"), StartGeneration, PerFrame);
+}
+
 void AAutomataOrchestrator::StartSeriesCapture()
 {
 	if (bSeriesCaptureActive)
@@ -3123,6 +3198,10 @@ void AAutomataOrchestrator::StartSeriesCapture()
 
 	UE_LOG(LogTemp, Log, TEXT("StartSeriesCapture: %d кадров через каждые %d поколений -> %s"),
 		SeriesFramesRemaining, FMath::Max(SliceCaptureParams.SeriesGenerationsPerFrame, 1), *SeriesDirectory);
+
+	// Паспорт серии пишется ДО первого кадра: даже оборванная на первом же
+	// снимке серия оставляет папку, по которой понятно, что это было.
+	WriteSeriesManifest();
 
 	// Текущее состояние - это тоже кадр серии, и притом единственный, который
 	// пользователь видел глазами, когда решил снимать.
