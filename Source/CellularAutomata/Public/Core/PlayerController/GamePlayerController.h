@@ -94,7 +94,8 @@ public:
 	/** Пока активен режим взаимодействия мышью, каждый кадр подгоняет экранный
 	 *  размер манипулятора куба и, если ручку тянут, продолжает драг (у ЛКМ
 	 *  есть только события нажатия/отпускания, само движение мыши между ними
-	 *  надо опрашивать самим). */
+	 *  надо опрашивать самим). Плюс разовая (на пешку) пересборка вертикальных
+	 *  биндингов движения - см. RebindPawnVerticalMovement(). */
 	virtual void Tick(float DeltaTime) override;
 
 	/** Перехватывает P на уровне сырых оконных событий, в обход Enhanced
@@ -108,6 +109,34 @@ protected:
 	bool bCanLookAround = false;
 
 	virtual void SetupInputComponent() override;
+
+	/** Заменяет движковый биндинг вертикального движения ADefaultPawn своим, без
+	 *  клавиш, конфликтующих с хоткеями проекта.
+	 *
+	 *  ADefaultPawn вешает "вверх/вниз" (ось DefaultPawn_MoveUp) на шесть
+	 *  клавиш, и две из них тут заняты: LeftControl роняет камеру на каждом
+	 *  Ctrl+S/Ctrl+Shift+S/Ctrl+O/Ctrl+C, а C - на переключении отсечения
+	 *  кубом, то есть камера уезжала вниз ровно в момент, когда смотришь, что
+	 *  изменилось на экране.
+	 *
+	 *  Точечно выкинуть две клавиши нельзя: они лежат в приватном статическом
+	 *  UPlayerInput::EngineDefinedAxisMappings, наружу отдан только const-
+	 *  геттер. Поэтому снимаем биндинг оси целиком с InputComponent'а пешки и
+	 *  вешаем свою ось на тот же ADefaultPawn::MoveUp_World - остаются Space/E
+	 *  вверх и Q вниз, т.е. движковый набор минус два конфликта.
+	 *
+	 *  Зовётся из Tick(), а не из SetupInputComponent()/AcknowledgePossession():
+	 *  InputComponent пешки создаётся позже них обоих, в PawnClientRestart()
+	 *  (см. ClientRestart_Implementation - там AcknowledgePossession() стоит ДО
+	 *  DispatchRestart()). Сравнение с VerticalMovementBoundPawn делает вызов
+	 *  идемпотентным и заодно переигрывает пересборку, если сменится пешка. */
+	void RebindPawnVerticalMovement();
+
+	/** Пешка, для которой RebindPawnVerticalMovement() уже отработала.
+	 *  UPROPERTY - иначе после реинстансинга Live Coding здесь остался бы мусор
+	 *  (та же причина, что у AAutomataOrchestrator::GamePC). */
+	UPROPERTY(Transient)
+	TObjectPtr<APawn> VerticalMovementBoundPawn = nullptr;
 
 	void RestoreGameInputMode();
 	void DisableGameInputMode();

@@ -325,9 +325,10 @@ void AAutomataOrchestrator::UpdateHudStats()
 	}
 
 	// Куб: "включено" и "работает" - разные вещи (актёра может не быть на
-	// уровне, куб может быть спрятан), поэтому три отдельных поля, и итоговое
-	// берётся из того же GetActiveCullVolume(), что и весь рендер - HUD не
-	// повторяет условие своей копией, иначе они могли бы разойтись.
+	// уровне вовсе), поэтому итоговое берётся из того же GetActiveCullVolume(),
+	// что и весь рендер - HUD не повторяет условие своей копией, иначе они
+	// могли бы разойтись. Видимость куба - третье, независимое поле: на
+	// отсечение она не влияет.
 	const ARenderCullVolume* AnyCullVolume = EnsureRenderCullVolume();
 	LastHudStats.bRenderCullVolumeVisible = AnyCullVolume && AnyCullVolume->IsVolumeVisible();
 	LastHudStats.bCullVolumeActive = GetActiveCullVolume() != nullptr;
@@ -1701,7 +1702,7 @@ void AAutomataOrchestrator::RefreshGhostShape()
 	// Куб отсечения активен (см. GetActiveCullVolume()) - оставляем только
 	// чанки СНАРУЖИ куба, внутри уже рисует обычный детальный путь
 	// (BuildCellRenderData()), силуэт здесь чистое дополнение.
-	// Иначе (куб выключен хоткеем C, спрятан Ctrl+C, либо его вообще нет) -
+	// Иначе (куб выключен хоткеем C либо его вообще нет на уровне) -
 	// границы отсечения нет, "снаружи" значит "везде": силуэт покрывает всю
 	// сетку целиком и заменяет детальный рендер (см.
 	// ShouldGhostShapeReplaceDetailedRender(), RenderGridImmediate()/
@@ -1773,8 +1774,8 @@ bool AAutomataOrchestrator::ShouldGhostShapeReplaceDetailedRender()
 		return false;
 	}
 
-	// Нет активной границы отсечения (куб выключен, спрятан, либо на уровне
-	// его вообще нет - см. GetActiveCullVolume()) - RefreshGhostShape() в
+	// Нет активной границы отсечения (куб выключен либо на уровне его вообще
+	// нет - см. GetActiveCullVolume()) - RefreshGhostShape() в
 	// этом случае строит силуэт по ВСЕМ занятым чанкам (см. её doc-comment),
 	// т.е. он уже покрывает всю сетку целиком, и детальный поклеточный
 	// рендер (BuildCellRenderData()+AddInstances по каждой живой клетке) здесь
@@ -3828,9 +3829,8 @@ ARenderCullVolume* AAutomataOrchestrator::GetActiveCullVolume()
 		return nullptr;
 	}
 
-	ARenderCullVolume* CullVolume = EnsureRenderCullVolume();
-	// Спрятанный куб не режет - см. doc-comment в заголовке.
-	return (CullVolume && CullVolume->IsVolumeVisible()) ? CullVolume : nullptr;
+	// Видимость куба на отсечение НЕ влияет - см. doc-comment в заголовке.
+	return EnsureRenderCullVolume();
 }
 
 void AAutomataOrchestrator::RenderGridImmediate()
@@ -4457,7 +4457,7 @@ void AAutomataOrchestrator::MoveCullVolumeToSelection()
 	const bool bCullingActive = GetActiveCullVolume() != nullptr;
 	ShowStatusMessage(StatusKey_CullVolume, FString::Printf(TEXT("[K] Куб отсечения по центру клетки %s%s"),
 		*TargetCell.ToString(),
-		bCullingActive ? TEXT("") : TEXT("   (отсечение НЕ активно - C включить, Ctrl+C показать куб)")));
+		bCullingActive ? TEXT("") : TEXT("   (отсечение НЕ активно - включить на C)")));
 
 	// SetActorLocation() программно не триггерит ARenderCullVolume::
 	// PostEditMove() (WITH_EDITOR-only, реагирует только на ручное
@@ -4492,7 +4492,7 @@ void AAutomataOrchestrator::MoveCullVolumeByCells(const FIntVector& CellDelta)
 	const bool bCullingActive = GetActiveCullVolume() != nullptr;
 	ShowStatusMessage(StatusKey_CullVolume, FString::Printf(TEXT("Куб отсечения: %s%s"),
 		*NewLocation.ToCompactString(),
-		bCullingActive ? TEXT("") : TEXT("   (отсечение НЕ активно - C включить, Ctrl+C показать куб)")));
+		bCullingActive ? TEXT("") : TEXT("   (отсечение НЕ активно - включить на C)")));
 
 	RefreshRenderCullVolume();
 }

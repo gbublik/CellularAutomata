@@ -783,11 +783,9 @@ void AGamePlayerController::OnToggleRenderCullVolumeVisibility()
 	// именно меняешь.
 	CullVolume->SetGizmoVisible(bNewVisible && bSelectionModeActive);
 
-	// Спрятанный куб не режет (см. AAutomataOrchestrator::GetActiveCullVolume()),
-	// так что Ctrl+C заодно приостанавливает/возвращает отсечение - но
-	// bEnableRenderCullVolume при этом не перезаписывается, поэтому показ
-	// возвращает ровно то состояние, в котором его оставил C.
-	UE_LOG(LogTemp, Log, TEXT("Куб отсечения: %s (пока скрыт, клетки не отсекаются)"), bNewVisible ? TEXT("показан") : TEXT("скрыт"));
+	// Только видимость самой коробки - отсечение живёт на C и этой клавишей не
+	// трогается вовсе (см. AAutomataOrchestrator::GetActiveCullVolume()).
+	UE_LOG(LogTemp, Log, TEXT("Куб отсечения: %s (отсечение не затронуто)"), bNewVisible ? TEXT("показан") : TEXT("скрыт"));
 }
 
 void AGamePlayerController::OnToggleGhostShape()
@@ -1422,9 +1420,52 @@ bool AGamePlayerController::ComputeGizmoAxisParam(const FVector& AxisOrigin, con
 	return true;
 }
 
+void AGamePlayerController::RebindPawnVerticalMovement()
+{
+	ADefaultPawn* FlyingPawn = Cast<ADefaultPawn>(GetPawn());
+	if (!FlyingPawn || !FlyingPawn->InputComponent)
+	{
+		// Пешки или её InputComponent'а ещё нет - попробуем на следующем кадре.
+		return;
+	}
+
+	if (VerticalMovementBoundPawn == FlyingPawn)
+	{
+		return;
+	}
+	VerticalMovementBoundPawn = FlyingPawn;
+
+	UInputComponent* PawnInput = FlyingPawn->InputComponent;
+
+	// Снимаем движковый биндинг целиком: точечно убрать из него LeftControl и C
+	// нельзя, сами клавиши лежат в приватном статическом реестре UPlayerInput.
+	static const FName EngineMoveUpAxis(TEXT("DefaultPawn_MoveUp"));
+	const int32 RemovedCount = PawnInput->AxisBindings.RemoveAll(
+		[](const FInputAxisBinding& Binding) { return Binding.AxisName == EngineMoveUpAxis; });
+
+	// Своя ось с тем же поведением, но без конфликтующих клавиш. Имя своё, а не
+	// движковое: движковые привязки клавиш к DefaultPawn_MoveUp никуда не
+	// делись, и переиспользование имени вернуло бы Ctrl и C обратно.
+	static const FName OwnMoveUpAxis(TEXT("CellularAutomata_MoveUp"));
+	if (PlayerInput)
+	{
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::SpaceBar, 1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::E, 1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::Q, -1.0f));
+	}
+	PawnInput->BindAxis(OwnMoveUpAxis, FlyingPawn, &ADefaultPawn::MoveUp_World);
+
+	UE_LOG(LogTemp, Log, TEXT("RebindPawnVerticalMovement: снято движковых биндингов оси %s: %d; вертикаль теперь Space/E вверх, Q вниз (Ctrl и C освобождены под хоткеи)"),
+		*EngineMoveUpAxis.ToString(), RemovedCount);
+}
+
 void AGamePlayerController::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// Разовая (на пешку) пересборка - до раннего выхода ниже, иначе она бы
+	// не случилась вовсе, пока в мире нет куба отсечения.
+	RebindPawnVerticalMovement();
 
 	ARenderCullVolume* CullVolume = FindCullVolume();
 	if (!CullVolume || !CullVolume->IsGizmoVisible())
