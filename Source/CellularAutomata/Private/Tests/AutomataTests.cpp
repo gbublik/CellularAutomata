@@ -12,6 +12,7 @@
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
 #include "Math/RandomStream.h"
+#include "Orchestration/GenerationHistory.h"
 #include "RHI.h"
 
 /**
@@ -38,7 +39,12 @@
  *  - паритет CPU и GPU на одном и том же состоянии;
  *  - паритет "пачка из N поколений" против "N одиночных шагов" - прямая
  *    страховка для гало, возрастной плоскости и плоскости угасания
- *    (см. FGpuComputeStrategy::StepBatch()).
+ *    (см. FGpuComputeStrategy::StepBatch());
+ *  - скользящее окно графика поколений (namespace GenerationHistory) - ради
+ *    него вся эта логика и вынесена из оркестратора свободными функциями:
+ *    актора, тика и рендера она не требует, а ловушек в ней хватает
+ *    (правка последнего замера на месте, перенос значения вперёд, раскладка
+ *    по значению поколения вместо индекса).
  */
 namespace AutomataTestUtils
 {
@@ -983,6 +989,153 @@ bool FSliceTileTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("ширина не выродилась"), Image.Width, 1);
 		TestEqual(TEXT("высота не выродилась"), Image.Height, 1);
 		TestEqual(TEXT("пиксель на месте"), Image.Pixels.Num(), 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGenerationHistoryTest,
+	"CellularAutomata.GenerationHistory",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FGenerationHistoryTest::RunTest(const FString& Parameters)
+{
+	// Засев после ResetGenerationCounter(): история пуста, а рендер уже
+	// случился - замер обязан появиться, иначе поколение 0 (самое интересное:
+	// исходный паттерн) не попадёт на график вовсе.
+	{
+		TArray<FGenerationSample> History;
+		GenerationHistory::NoteRendered(History, 0, 1000, 800, 8);
+		TestEqual(TEXT("рендер на пустой истории засевает замер"), History.Num(), 1);
+		TestEqual(TEXT("живые"), History.Last().AliveCount, 1000);
+		TestEqual(TEXT("видимые"), History.Last().RenderedCount, 800);
+	}
+
+	// Главная защита всей схемы: RefreshRenderCullVolume() дёргает рендер из
+	// Tick() на каждое движение камеры при включённом срезе, поколение при этом
+	// не меняется. Без правки последнего замера на месте один полёт камеры
+	// размазал бы одно поколение на сотни точек и выдавил бы из окна всё
+	// остальное.
+	{
+		TArray<FGenerationSample> History;
+		GenerationHistory::NoteRendered(History, 7, 1000, 500, 512);
+		for (int32 Index = 0; Index < 1000; ++Index)
+		{
+			GenerationHistory::NoteRendered(History, 7, 1000 + Index, 600 + Index, 512);
+		}
+		TestEqual(TEXT("рендер без смены поколения не плодит замеры"), History.Num(), 1);
+		TestEqual(TEXT("замер поправлен на месте"), History.Last().RenderedCount, 1599);
+		// DeleteSelectedCells() правит сетку прямо на паузе - число живых
+		// обязано поехать в той же точке, без нового поколения.
+		TestEqual(TEXT("живые тоже обновились"), History.Last().AliveCount, 1999);
+
+		GenerationHistory::NoteRendered(History, 8, 2000, 700, 512);
+		TestEqual(TEXT("новое поколение добавляет замер"), History.Num(), 2);
+	}
+
+	// Перенос "видимо" вперёд: при StepsPerRender > 1 большинство поколений на
+	// экран не попадают, и линия обязана держать последнее известное значение
+	// ступенькой, а не падать в ноль.
+	{
+		TArray<FGenerationSample> History;
+		GenerationHistory::Append(History, 0, 100, 512);
+		TestEqual(TEXT("первый замер без истории даёт 0"), History.Last().RenderedCount, 0);
+
+		GenerationHistory::NoteRendered(History, 0, 100, 90, 512);
+		GenerationHistory::Append(History, 1, 120, 512);
+		TestEqual(TEXT("поколение без рендера наследует прошлое значение"), History.Last().RenderedCount, 90);
+
+		GenerationHistory::Append(History, 2, 140, 512);
+		TestEqual(TEXT("перенос идёт дальше по цепочке"), History.Last().RenderedCount, 90);
+	}
+
+	// Срез по ёмкости: окно скользит, память не растёт.
+	{
+		TArray<FGenerationSample> History;
+		for (int64 Generation = 0; Generation <= 10; ++Generation)
+		{
+			GenerationHistory::Append(History, Generation, 10, 4);
+		}
+		TestEqual(TEXT("ёмкость соблюдена"), History.Num(), 4);
+		TestEqual(TEXT("выброшено самое старое"), History[0].Generation, (int64)7);
+		TestEqual(TEXT("самое свежее на месте"), History.Last().Generation, (int64)10);
+
+		// GenerationHistoryCapacity правится в Details panel на живом акторе -
+		// прийти сюда с уменьшенным значением можно, отстав на сотни замеров.
+		GenerationHistory::Append(History, 11, 10, 2);
+		TestEqual(TEXT("уменьшение ёмкости подрезает сразу"), History.Num(), 2);
+	}
+
+	// Границы окна. При States > 2 угасающие клетки рисуются, но живыми не
+	// считаются - "видимо" ЗАКОННО выше "всего", и масштаб по одному ряду
+	// срезал бы второй.
+	{
+		TArray<FGenerationSample> History;
+		int64 MinGeneration = -1;
+		int64 MaxGeneration = -1;
+		int32 MaxY = -1;
+
+		TestFalse(TEXT("на пустой истории границ нет"),
+			GenerationHistory::ComputeBounds(History, MinGeneration, MaxGeneration, MaxY));
+
+		GenerationHistory::NoteRendered(History, 5, 100, 900, 512);
+		TestTrue(TEXT("границы одного замера"),
+			GenerationHistory::ComputeBounds(History, MinGeneration, MaxGeneration, MaxY));
+		TestEqual(TEXT("вырожденное окно"), MinGeneration, MaxGeneration);
+		TestEqual(TEXT("потолок берётся по обоим рядам"), MaxY, 900);
+
+		GenerationHistory::Append(History, 9, 2000, 512);
+		TestTrue(TEXT("границы двух замеров"),
+			GenerationHistory::ComputeBounds(History, MinGeneration, MaxGeneration, MaxY));
+		TestEqual(TEXT("левый край"), MinGeneration, (int64)5);
+		TestEqual(TEXT("правый край"), MaxGeneration, (int64)9);
+		TestEqual(TEXT("потолок поднялся до живых"), MaxY, 2000);
+	}
+
+	// Раскладка по X идёт по ЗНАЧЕНИЮ поколения, а не по индексу: один заход
+	// GPU считает пачку переменного размера, замеры в окне стоят неравномерно,
+	// и раскладка по индексу врала бы о том, где что произошло.
+	{
+		TArray<FGenerationSample> History;
+		GenerationHistory::NoteRendered(History, 0, 50, 50, 512);
+		GenerationHistory::NoteRendered(History, 10, 100, 100, 512);  // шаг 10
+		GenerationHistory::NoteRendered(History, 11, 100, 100, 512);  // шаг 1
+
+		TArray<FVector2f> Alive, Rendered;
+		GenerationHistory::MapToPoints(History, FVector2f(110.0f, 100.0f), FVector2f::ZeroVector,
+			0, 11, 100.0, /*bLogScale=*/false, Alive, Rendered);
+
+		TestEqual(TEXT("точек столько же, сколько замеров"), Alive.Num(), 3);
+		TestEqual(TEXT("левый край"), Alive[0].X, 0.0f);
+		// 10/11 от ширины, а не 1/2: индекс тут дал бы 55.
+		TestTrue(TEXT("X пропорционален поколению, а не индексу"), FMath::IsNearlyEqual(Alive[1].X, 100.0f, 0.01f));
+		TestTrue(TEXT("правый край"), FMath::IsNearlyEqual(Alive[2].X, 110.0f, 0.01f));
+		// Y инвертирован: значение вверх, координата вниз.
+		TestTrue(TEXT("полное значение - верх области"), FMath::IsNearlyEqual(Alive[1].Y, 0.0f, 0.01f));
+		TestTrue(TEXT("половина значения - середина"), FMath::IsNearlyEqual(Alive[0].Y, 50.0f, 0.01f));
+	}
+
+	// Вырожденное окно (все замеры на одном поколении) не должно делить на ноль.
+	{
+		TArray<FGenerationSample> History;
+		GenerationHistory::Append(History, 3, 10, 512);
+		GenerationHistory::Append(History, 3, 20, 512);
+
+		TArray<FVector2f> Alive, Rendered;
+		GenerationHistory::MapToPoints(History, FVector2f(100.0f, 100.0f), FVector2f::ZeroVector,
+			3, 3, 20.0, /*bLogScale=*/false, Alive, Rendered);
+
+		TestEqual(TEXT("точки построены"), Alive.Num(), 2);
+		TestTrue(TEXT("X конечен"), FMath::IsFinite(Alive[0].X) && FMath::IsFinite(Alive[1].X));
+		TestTrue(TEXT("Y конечен"), FMath::IsFinite(Alive[0].Y) && FMath::IsFinite(Alive[1].Y));
+	}
+
+	// "Красивый" потолок: 1/2/5 * 10^k, и ноль не роняет масштаб в ноль.
+	{
+		TestEqual(TEXT("ноль даёт единицу"), GenerationHistory::NiceCeiling(0.0), 1.0);
+		TestEqual(TEXT("1234 -> 2000"), GenerationHistory::NiceCeiling(1234.0), 2000.0);
+		TestEqual(TEXT("6000 -> 10000"), GenerationHistory::NiceCeiling(6000.0), 10000.0);
+		TestEqual(TEXT("ровное значение не поднимается"), GenerationHistory::NiceCeiling(2000.0), 2000.0);
 	}
 
 	return true;

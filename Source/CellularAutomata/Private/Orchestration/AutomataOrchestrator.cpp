@@ -364,6 +364,23 @@ void AAutomataOrchestrator::ResetGenerationCounter()
 	LastHudStats.GenerationsPerSecond = 0.0f;
 	LastGpuComputeUploadBytes = 0;
 	LastHudStats.EstimatedGpuComputeUploadMB = 0.0;
+
+	// Новый прогон - новый график. Единственная воронка всех пяти путей
+	// "начать заново", см. doc-comment функции.
+	GenerationSamples.Reset();
+}
+
+void AAutomataOrchestrator::AppendGenerationSample()
+{
+	// Grid может не быть вовсе - BakeCellsToMesh() его освобождает.
+	GenerationHistory::Append(GenerationSamples, GenerationCount,
+		Grid.IsValid() ? Grid->Num() : 0, GenerationHistoryCapacity);
+}
+
+void AAutomataOrchestrator::NoteRenderedCells(int32 RenderedCount)
+{
+	GenerationHistory::NoteRendered(GenerationSamples, GenerationCount,
+		Grid.IsValid() ? Grid->Num() : 0, RenderedCount, GenerationHistoryCapacity);
 }
 
 void AAutomataOrchestrator::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -3463,6 +3480,13 @@ void AAutomataOrchestrator::Next()
 				StrongThis->GenerationCount += NumSteps;
 				StrongThis->LastGpuComputeUploadBytes = ComputeUploadBytes;
 
+				// Точка графика. Ручной шаг всегда рисует (ниже), так что
+				// перенесённое сюда значение "видимо" тут же исправится на
+				// фактическое - но появиться замер обязан здесь, рядом со
+				// счётчиком, а не в рендере: так одно и то же место отвечает
+				// за "поколение состоялось" в обеих ветках, ручной и Play.
+				StrongThis->AppendGenerationSample();
+
 				// Ghost Shape пересчитывается по своему отдельному интервалу
 				// поколений - см. ApplyStepResult() и план "Ghost Shape".
 				if (StrongThis->bEnableGhostShape)
@@ -3834,6 +3858,11 @@ void AAutomataOrchestrator::RenderGridImmediate()
 		// остаётся согласованной с самим компонентом, вместо того чтобы её
 		// обходить.
 		CellsRenderer->Render(*Grid, TArray<FCellRenderInstance>());
+		// Ноль - правда, а не отсутствие данных: детальных инстансов в
+		// AddInstances() ушло ровно столько. Провал линии "видимо" в ноль при
+		// включении Ghost Shape и есть та диагностика, ради которой график
+		// делается.
+		NoteRenderedCells(0);
 		RenderSelectionOverlay();
 		UE_LOG(LogTemp, Log, TEXT("RenderGridImmediate: детальный рендер пропущен - Ghost Shape покрывает всю сетку целиком (%d живых клеток)"),
 			Grid->Num());
@@ -3842,6 +3871,8 @@ void AAutomataOrchestrator::RenderGridImmediate()
 
 	TArray<FCellRenderInstance> Instances;
 	BuildCellRenderData(Instances);
+	// До Render() ниже: там Instances уже перемещён.
+	NoteRenderedCells(LastRenderStats.RenderedCellCount);
 
 	// Всегда одним снимком (не BeginRender()/чанкинг) - Next()/GenerateRandom()
 	// рендерят немедленно и целиком, независимо от bEnableChunkedRender
@@ -3893,6 +3924,8 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 		// PendingInstances/PendingCursor - bChunkedRenderInProgress
 		// сама подхватит это на следующем Tick()/AdvanceChunkedRender().
 		CellsRenderer->Render(*Grid, TArray<FCellRenderInstance>());
+		// См. ту же ветку в RenderGridImmediate() - ноль здесь фактический.
+		NoteRenderedCells(0);
 		RenderSelectionOverlay();
 		UE_LOG(LogTemp, Log, TEXT("RenderCurrentGrid: детальный рендер пропущен - Ghost Shape покрывает всю сетку целиком (%d живых клеток)"),
 			Grid->Num());
@@ -3901,6 +3934,10 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 
 	TArray<FCellRenderInstance> Instances;
 	BuildCellRenderData(Instances);
+	// До BeginRender()/Render() ниже: там Instances уже перемещён. Значение -
+	// это то, что уйдёт в AddInstances() целиком, даже если чанковый рендер
+	// размажет его по кадрам: график про объём работы, а не про текущий кадр.
+	NoteRenderedCells(LastRenderStats.RenderedCellCount);
 
 	const FVector CameraLocation = (GamePC && GamePC->PlayerCameraManager)
 		? GamePC->PlayerCameraManager->GetCameraLocation()
@@ -3994,6 +4031,14 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// пропустит ли StepsSinceLastRender ниже фактический рендер (см.
 	// GenerationCount/FHudStats).
 	GenerationCount += Generations;
+
+	// Точка графика - здесь же, ДО обеих проверок пропуска рендера ниже, по
+	// той же причине, по которой тут стоят серийная съёмка и Ghost Shape:
+	// линия "всего клеток" описывает симуляцию, а не экран, и обязана
+	// существовать для поколений, до AddInstances() не дошедших. Значение
+	// "видимо" переносится с прошлого замера и исправляется на фактическое
+	// в RenderCurrentGrid() ниже, если это поколение всё-таки рисуется.
+	AppendGenerationSample();
 
 	// Серия снимков идёт по своему счётчику ПОКОЛЕНИЙ - как и Ghost Shape
 	// ниже, и по той же причине: шагом заходов было бы неравномерно (один

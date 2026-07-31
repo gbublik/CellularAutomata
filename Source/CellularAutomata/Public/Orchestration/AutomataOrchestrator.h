@@ -18,6 +18,7 @@
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
 #include "Automata/Simulation/RulePresets.h"
+#include "Orchestration/GenerationHistory.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
 
@@ -1509,6 +1510,33 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
 	const FHudStats& GetHudStats() { UpdateHudStats(); return LastHudStats; }
 
+	/** Скользящее окно замеров для графика поколений (UGenerationGraphWidget) -
+	 *  см. doc-comment namespace GenerationHistory.
+	 *
+	 *  Намеренно НЕ UFUNCTION, в отличие от всего остального в этом блоке:
+	 *  Blueprint копирует массив на каждое чтение, а при ёмкости в тысячи
+	 *  замеров это килобайты на кадр впустую - и ради ничего, потому что
+	 *  единственный потребитель графика нативный. Подписям осей в Designer
+	 *  хватает скалярных геттеров ниже. */
+	const TArray<FGenerationSample>& GetGenerationSamples() const { return GenerationSamples; }
+
+	/** Первое/последнее поколение в окне - для подписей оси X в UMG. 0, если
+	 *  история пуста. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	int64 GetHistoryFirstGeneration() const { return GenerationSamples.Num() > 0 ? GenerationSamples[0].Generation : 0; }
+
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	int64 GetHistoryLastGeneration() const { return GenerationSamples.Num() > 0 ? GenerationSamples.Last().Generation : 0; }
+
+	/** Сколько замеров держать в окне графика.
+	 *
+	 *  Это именно ЗАМЕРЫ, а не поколения: один заход StepAsync() при
+	 *  GPU-батчинге считает сразу пачку (см. LastDispatchGenerations), так что
+	 *  в поколениях окно шире ровно на её размер - при StepsPerRender 256 эти
+	 *  512 замеров покрывают под 130 тысяч поколений. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|HUD", meta = (ClampMin = "2", UIMin = "64", UIMax = "4096"))
+	int32 GenerationHistoryCapacity = 512;
+
 	/** Включает/выключает разлитый по кадрам рендер целиком (см.
 	 *  ChunkedRenderCellsPerFrame) - если false, StepAsync() всегда рендерит
 	 *  новую сетку одним кадром, как до появления чанкинга. Никакого
@@ -2365,6 +2393,38 @@ private:
 	int64 LastGenerationCountSample = 0;
 	double LastGenerationCountSampleSeconds = 0.0;
 
+	/** История для графика поколений - см. namespace GenerationHistory за
+	 *  правилами работы с этим массивом и GetGenerationSamples() за чтением.
+	 *
+	 *  UPROPERTY(Transient), а не плайн-член как LastRenderStats, по той же
+	 *  причине, что и LastHudStats: историю невозможно пересчитать на следующем
+	 *  рендере, она копится, и реинстансинг Live Coding посреди прогона стёр бы
+	 *  её насовсем.
+	 *
+	 *  Имя Samples, а не History: внутри класса член перекрыл бы одноимённый
+	 *  namespace, и GenerationHistory::Append(...) перестал бы разрешаться. */
+	UPROPERTY(Transient)
+	TArray<FGenerationSample> GenerationSamples;
+
+	/** Замер на новое поколение - зовётся из ApplyStepResult() и из завершения
+	 *  Next(), т.е. ровно из тех двух мест, что двигают GenerationCount, и
+	 *  ПЕРЕД проверками пропуска рендера: линия "всего клеток" должна
+	 *  существовать и для поколений, которые на экран не попадут. */
+	void AppendGenerationSample();
+
+	/** Сколько инстансов реально ушло в AddInstances().
+	 *
+	 *  Число приходит ПАРАМЕТРОМ, а не читается здесь из LastRenderStats, и это
+	 *  осознанно: у BuildCellRenderData() четыре вызывающих, причём двое
+	 *  (BuildSliceCapture()/EstimateSliceCaptureSize()) сохраняют и
+	 *  восстанавливают статистику вокруг вызова и свежей не оставляют.
+	 *  Правило "меня зовут только те двое, что оставляют свежую" - неписаный
+	 *  контракт, который молча сломает пятый вызывающий. Параметр заодно
+	 *  позволяет ghost-веткам рендера записать честный 0: там в AddInstances()
+	 *  уходит пустой список, и провал линии в ноль при включении Ghost Shape -
+	 *  ровно та диагностика, ради которой график и делается. */
+	void NoteRenderedCells(int32 RenderedCount);
+
 	/** Раз в секунду (не каждый кадр) пересчитывает LastHudStats.
 	 *  GenerationsPerSecond из GenerationCount - вызывается из UpdateHudStats(). */
 	void UpdateGenerationsPerSecond();
@@ -2374,10 +2434,18 @@ private:
 	 *  за тем, почему одного Tick() недостаточно. */
 	void UpdateHudStats();
 
-	/** Сбрасывает GenerationCount и точку отсчёта GenerationsPerSecond в 0 -
-	 *  общий код для всех мест, начинающих новый прогон "с нуля" (GenerateRandom()/
-	 *  StartFromSelection()/LoadStateFromFile()/ResetToInitialState() - те же
-	 *  четыре места, что перезаписывают InitialStateCells, см. её doc-comment). */
+	/** Сбрасывает GenerationCount, точку отсчёта GenerationsPerSecond и историю
+	 *  графика (GenerationSamples) в 0 - общий код для всех мест, начинающих
+	 *  новый прогон "с нуля": RebuildGridFromCells() (через неё GenerateRandom()
+	 *  и GenerateState()), StartFromSelection(), LoadStateFromFile(),
+	 *  ResetToInitialState() и SpawnRuleVerificationPattern().
+	 *
+	 *  Единственная воронка всех пяти путей - поэтому очистка истории живёт
+	 *  здесь, а не расписана по вызывающим. Намеренное исключение -
+	 *  BakeCellsToMesh(): он освобождает Grid, но счётчик не трогает и сюда не
+	 *  заходит, так что график продолжает показывать прогон, который к этой
+	 *  скульптуре привёл (при том что AliveCellCount на HUD уходит в 0). Новых
+	 *  замеров после бейка всё равно не будет - шагать нечему. */
 	void ResetGenerationCounter();
 
 	/** true между Start() и Stop() - Tick() копит DeltaTime и вызывает
