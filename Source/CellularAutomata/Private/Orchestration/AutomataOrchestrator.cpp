@@ -298,6 +298,7 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bWaitForChunkedRenderToFinish = bWaitForChunkedRenderToFinish;
 	LastHudStats.bCellCullingEnabled = bEnableCellCulling;
 	LastHudStats.bRenderCullVolumeEnabled = bEnableRenderCullVolume;
+	LastHudStats.bViewSliceEnabled = bEnableViewSlice;
 	LastHudStats.bGhostShapeEnabled = bEnableGhostShape;
 	LastHudStats.bCellsCastShadows = bCellsCastShadows;
 	LastHudStats.bBackgroundVisible = bShowBackground;
@@ -331,6 +332,17 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bRenderCullVolumeVisible = AnyCullVolume && AnyCullVolume->IsVolumeVisible();
 	LastHudStats.bCullVolumeActive = GetActiveCullVolume() != nullptr;
 	LastHudStats.bGhostShapeReplacesDetailedRender = ShouldGhostShapeReplaceDetailedRender();
+
+	// Два других "режет ли на самом деле" из той же тройки индикаторов - см.
+	// bCellCullingActive/bViewSliceActive. Условия повторяют те, что стоят на
+	// боевых путях: у отсечения по расстоянию - ApplyCellCullDistances()
+	// (нулевая дистанция это движковое "выключено"), у среза -
+	// BuildCellRenderData() (плоскость задаётся камерой, без неё резать нечем).
+	LastHudStats.bCellCullingActive = bEnableCellCulling && CellCullEndDistance > 0.0f;
+
+	FVector SliceOrigin;
+	FVector SliceForward;
+	LastHudStats.bViewSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
 
 	UpdateGenerationsPerSecond();
 }

@@ -217,9 +217,22 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bWaitForChunkedRenderToFinish = false;
 
-	/** Отсечение клеток по расстоянию (B) - см. bEnableCellCulling. */
+	/** Отсечение клеток по расстоянию (B) - см. bEnableCellCulling. Само по
+	 *  себе НЕ означает, что клетки сейчас режутся: см. bCellCullingActive. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bCellCullingEnabled = false;
+
+	/** Итог: отсечение по расстоянию СЕЙЧАС реально работает - переключатель
+	 *  включён И CellCullEndDistance > 0.
+	 *
+	 *  Отдельное поле по той же причине, что и bCullVolumeActive ниже, только
+	 *  случай тут ещё неприятнее: bEnableCellCulling по умолчанию true, а обе
+	 *  дистанции - 0 (движковый "выключено"). То есть индикатор, повешенный на
+	 *  один переключатель, горел бы с первой секунды сессии, ничего при этом не
+	 *  отсекая - ровно то враньё, ради недопущения которого этот блок
+	 *  зеркалит ФАКТИЧЕСКИЕ состояния, а не только тумблеры. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bCellCullingActive = false;
 
 	/** Отсечение кубом включено (C) - см. bEnableRenderCullVolume. Само по себе
 	 *  НЕ означает, что клетки сейчас режутся: см. bCullVolumeActive ниже. */
@@ -238,6 +251,23 @@ struct FHudStats
 	 *  делает разницу между "включено" и "работает". */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bCullVolumeActive = false;
+
+	/** Срез вдоль взгляда включён (J) - см. bEnableViewSlice. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bViewSliceEnabled = false;
+
+	/** Итог: срез СЕЙЧАС реально режет - включён И камера доступна
+	 *  (GetCameraView()). Второе условие не формальность: плоскость среза
+	 *  задаётся положением и направлением камеры, и без них резать нечем -
+	 *  BuildCellRenderData() проверяет ровно эту же конъюнкцию.
+	 *
+	 *  Троица bCellCullingActive/bCullVolumeActive/bViewSliceActive - это три
+	 *  индикатора HUD, и все три намеренно про "режет", а не про "включено":
+	 *  тумблеры рядом (bCellCullingEnabled/bRenderCullVolumeEnabled/
+	 *  bViewSliceEnabled) остаются на месте, если виджету захочется
+	 *  промежуточного состояния "взведён, но не работает". */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bViewSliceActive = false;
 
 	/** Chunk-силуэт (H) - см. bEnableGhostShape. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
