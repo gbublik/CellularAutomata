@@ -314,14 +314,21 @@ void ARenderCullVolume::BeginGizmoDrag(EVolumeGizmoHandle Handle, const FVector&
 	DragStartBoxExtent = BoundsBox->GetUnscaledBoxExtent();
 }
 
-void ARenderCullVolume::UpdateGizmoDrag(float AxisParam, bool bUniformScale)
+void ARenderCullVolume::UpdateGizmoDrag(float AxisParam, bool bUniformScale, bool bCoarseScale)
 {
 	if (ActiveGizmoHandle == EVolumeGizmoHandle::None)
 	{
 		return;
 	}
 
-	const float Delta = AxisParam - DragStartAxisParam;
+	// Ctrl - тот же драг, но в GizmoCoarseScaleMultiplier раз быстрее курсора,
+	// одинаково для перемещения и для масштаба. Множитель применяется к
+	// СМЕЩЕНИЮ от начала драга, а не к итоговой позиции/полуразмеру: иначе
+	// нажатие Ctrl посреди драга скачком отбросило бы куб в десять раз дальше,
+	// а отпускание вернуло бы обратно - Ctrl читается каждый кадр наравне с
+	// Shift, и обе клавиши обязаны быть безопасны к нажатию на ходу.
+	const float DragSpeed = bCoarseScale ? GizmoCoarseScaleMultiplier : 1.0f;
+	const float Delta = (AxisParam - DragStartAxisParam) * DragSpeed;
 
 	switch (ActiveGizmoHandle)
 	{

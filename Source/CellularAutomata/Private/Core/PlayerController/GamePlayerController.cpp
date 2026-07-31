@@ -1446,12 +1446,13 @@ void AGamePlayerController::Tick(float DeltaTime)
 		// точками (см. doc-comment GetGizmoDragOrigin()).
 		if (ComputeGizmoAxisParam(CullVolume->GetGizmoDragOrigin(), CullVolume->GetActiveGizmoAxis(), RayOrigin, AxisParam))
 		{
-			// Shift читается каждый кадр драга, а не запоминается на его
-			// начало (в отличие от модификатора выделения рамкой): здесь это
-			// не "режим операции", а непрерывная подстройка - зажал посреди
-			// драга и пропорции подхватились, отпустил и снова тянется одна
-			// ось.
-			CullVolume->UpdateGizmoDrag(AxisParam, IsShiftHeld());
+			// Shift и Ctrl читаются каждый кадр драга, а не запоминаются на
+			// его начало (в отличие от модификатора выделения рамкой): здесь
+			// это не "режим операции", а непрерывная подстройка - зажал
+			// посреди драга и пропорции (Shift) или ускорение (Ctrl)
+			// подхватились, отпустил и снова тянется одна ось один к одному.
+			const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+			CullVolume->UpdateGizmoDrag(AxisParam, IsShiftHeld(), bCtrl);
 		}
 	}
 }
