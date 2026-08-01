@@ -666,6 +666,26 @@ bool AAutomataOrchestrator::GetCameraView(FVector& OutLocation, FVector& OutForw
 
 void AAutomataOrchestrator::ShowStatusMessage(int32 Key, const FString& Message) const
 {
+	// Сперва - в HUD, если он готов принять. Движковый канал рисует строки от
+	// зашитых константой 45 пикселей сверху и залезает на верхнюю панель.
+	if (UMainHudWidget* Widget = GetHudWidget())
+	{
+		static const FName StatusEventName(TEXT("OnStatusMessage"));
+		const UFunction* Handler = Widget->GetClass()->FindFunctionByName(StatusEventName);
+
+		// У BlueprintImplementableEvent без реализации в графе владелец
+		// найденной UFunction - нативный класс (сама заглушка). Как только
+		// событие разведено в WBP, у Blueprint-класса появляется своя версия, и
+		// поиск от наследника находит именно её. Без этой проверки правка была
+		// бы не добавочной: невыведенное событие - это молчаливый no-op, и
+		// сообщения исчезли бы совсем, ничего не сказав.
+		if (Handler && Handler->GetOwnerClass() && !Handler->GetOwnerClass()->HasAnyClassFlags(CLASS_Native))
+		{
+			Widget->OnStatusMessage(FText::FromString(Message), Key);
+			return;
+		}
+	}
+
 	if (GEngine)
 	{
 		GEngine->AddOnScreenDebugMessage(Key, 3.0f, FColor::Cyan, Message);

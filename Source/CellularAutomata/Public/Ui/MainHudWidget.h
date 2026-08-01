@@ -50,6 +50,27 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Automata|HUD")
 	void OnToggleInfoPanel();
 
+	/** Статусное сообщение хоткея - см. AAutomataOrchestrator::
+	 *  ShowStatusMessage(), она сюда и направляет.
+	 *
+	 *  Раньше это шло в движковый канал (AddOnScreenDebugMessage), а он рисует
+	 *  строки от жёстко зашитых 45 пикселей сверху (UnrealEngine.cpp,
+	 *  MessageStartY - ни настройки, ни cvar) - ровно поверх верхней панели
+	 *  HUD. Здесь сообщение становится частью HUD: место, стиль и время жизни
+	 *  решает вёрстка, а не движок.
+	 *
+	 *  Key - постоянный идентификатор ВИДА сообщения (EStatusMessageKey), а не
+	 *  порядковый номер: он затем и заведён, чтобы повторное сообщение той же
+	 *  категории заменяло предыдущее, а не копилось - хоткеи на Triggered
+	 *  срабатывают каждый кадр удержания. В графе по нему удобно решать, в
+	 *  какую строку писать.
+	 *
+	 *  Пока событие не реализовано в Blueprint-наследнике, оркестратор этого не
+	 *  видит как ошибку и продолжает слать в движковый канал - см. проверку
+	 *  владельца UFunction в ShowStatusMessage(). */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Automata|HUD")
+	void OnStatusMessage(const FText& Message, int32 Key);
+
 protected:
 	virtual void NativeConstruct() override;
 
