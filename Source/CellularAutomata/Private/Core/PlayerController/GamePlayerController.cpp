@@ -33,9 +33,12 @@ void AGamePlayerController::SetupInputComponent()
 	FastStepAction->ValueType = EInputActionValueType::Boolean;
 
 	// По действию на профиль рендера. Их ровно столько, сколько клавиш F1-F4
-	// ниже; если в таблицу RenderPresets::GetAll() добавится пятый профиль,
-	// ему нужно будет добавить и действие, и клавишу, и биндинг - поэтому
-	// количество здесь одно на всё, а не переоткрывается в трёх местах.
+	// ниже. Это НЕ размер таблицы RenderPresets::GetAll() - профилей там уже
+	// пять: последний, Photo, клавиши не имеет намеренно, его применяет сама
+	// съёмка (TakePhotoShot() на F10), потому что вне снимка он не нужен.
+	// Профилю, который добавят для повседневной работы, понадобятся действие,
+	// клавиша и биндинг - поэтому счётчик здесь один на всё, а не
+	// переоткрывается в трёх местах.
 	constexpr int32 NumRenderPresetHotkeys = 4;
 	RenderPresetActions.Reset(NumRenderPresetHotkeys);
 	for (int32 PresetIndex = 0; PresetIndex < NumRenderPresetHotkeys; ++PresetIndex)
@@ -338,6 +341,15 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnToggleHudInfoPanel();
 	}
 
+	// F10 - парадный снимок в максимальном разрешении. Именно F10, а не
+	// соседняя свободная клавиша: из F-ряда движок занимает под свои
+	// DebugExecBindings F1-F5, F9 и F11, F8 в PIE выбрасывает из пешки, а F6/F7
+	// уже наши (срез и серия). F10 - единственная, не занятая никем.
+	if (Params.Key == EKeys::F10 && Params.Event == IE_Pressed)
+	{
+		OnTakePhotoShot();
+	}
+
 	// F6 - снять текущий вид как PNG-срез, Shift+F6 - то же с диалогом выбора
 	// файла. Модификатор проверяется в обработчике (Enhanced Input не умеет
 	// требовать его в привязке), см. OnCaptureTextureSlice().
@@ -562,6 +574,18 @@ void AGamePlayerController::OnToggleHudInfoPanel()
 	}
 
 	Orchestrator->ToggleHudInfoPanel();
+}
+
+void AGamePlayerController::OnTakePhotoShot()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnTakePhotoShot: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->TakePhotoShot();
 }
 
 void AGamePlayerController::OnCaptureTextureSlice()

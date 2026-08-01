@@ -12,6 +12,8 @@
 #include "Automata/Rendering/RenderCullVolume.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/FloatingPawnMovement.h"
+// GetMax2DTextureDimension() - предел стороны снимка, см. TakePhotoShot().
+#include "RHIGlobals.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
@@ -4395,6 +4397,107 @@ void AAutomataOrchestrator::ApplyRenderPreset(int32 PresetIndex)
 	bRenderPresetModified = false;
 
 	UE_LOG(LogTemp, Log, TEXT("ApplyRenderPreset: профиль рендера -> %s (%s)"), *Preset.Name, *Preset.Description);
+}
+
+void AAutomataOrchestrator::TakePhotoShot()
+{
+	// 0. Проверяем размер ДО любых побочных эффектов - тот же принцип, что у
+	// бюджетов бейка и генератора: отказ обязан оставить всё как было, а не
+	// остановить симуляцию, снять отсечения и переключить профиль ради снимка,
+	// которого не будет.
+	int32 Width = 0;
+	int32 Height = 0;
+	if (!ValidatePhotoShotResolution(Width, Height))
+	{
+		return;
+	}
+
+	// 1. Кадр обязан быть неподвижен. HighResShot снимает тайлами, по одному
+	// проходу на тайл, и между проходами проходят кадры игры - шагающая
+	// симуляция склеилась бы из разных поколений.
+	if (bSimulationRunning)
+	{
+		Stop();
+	}
+	if (bFastStepActive)
+	{
+		StopFastStep();
+	}
+
+	// 2. Всё, что убирает клетки из кадра. Профиль Photo ниже снимет отсечение
+	// по расстоянию, куб и Ghost Shape - он ими владеет; здесь остаются два,
+	// которых в профиле нет вовсе, потому что это инструменты разглядывания, а
+	// не качество картинки.
+	if (bEnableViewSlice)
+	{
+		SetViewSliceEnabled(false);
+	}
+	if (IsAgeFilterActive())
+	{
+		SetAgeFilter(-1);
+	}
+
+	// 3. Профиль Photo - последний в таблице, своей F-клавиши у него нет.
+	const int32 PhotoPresetIndex = RenderPresets::GetAll().Num() - 1;
+	ApplyRenderPreset(PhotoPresetIndex);
+
+	// 4. Перерисовать целиком и немедленно: ApplyRenderPreset() уже
+	// перерисовывает через сеттер Ghost Shape, но полагаться на это нельзя -
+	// он перерисует только если флаг силуэта реально сменился.
+	RenderGridImmediate();
+
+	// 5. Пауза перед затвором и сам снимок. Задержку ставим каждый раз, а не
+	// один раз при старте: свойство редактируется в Details, и значение должно
+	// означать себя на КАЖДОМ снимке, а не на первом.
+	RunRenderConsoleCommand(FString::Printf(TEXT("r.HighResScreenshotDelay %d"), FMath::Max(0, PhotoShotDelayFrames)));
+
+	const int32 CellCount = Grid.IsValid() ? Grid->Num() : 0;
+	const double Megapixels = (double(Width) * double(Height)) / 1000000.0;
+
+	UE_LOG(LogTemp, Log, TEXT("TakePhotoShot: снимок %dx%d (%.1f Мпикс), живых клеток %d, задержка %d кадров - файл появится в Saved/Screenshots"),
+		Width, Height, Megapixels, CellCount, PhotoShotDelayFrames);
+
+	ShowStatusMessage(StatusKey_PhotoShot, FString::Printf(TEXT("[F10] Снимок %dx%d (%.1f Мпикс) - рендер идёт одним кадром, это десятки секунд"),
+		Width, Height, Megapixels));
+
+	RunRenderConsoleCommand(FString::Printf(TEXT("HighResShot %dx%d"), Width, Height));
+}
+
+bool AAutomataOrchestrator::ValidatePhotoShotResolution(int32& OutWidth, int32& OutHeight) const
+{
+	OutWidth = FMath::Max(64, PhotoShotResolution.X);
+	OutHeight = FMath::Max(64, PhotoShotResolution.Y);
+
+	// HighResShot НЕ тайлит - он заводит один рендер-таргет запрошенного
+	// размера (UnrealClient.cpp: DummyViewport->SizeX = GScreenshotResolutionX).
+	// Значит потолок ровно один - предел RHI на сторону 2D-текстуры, и упереться
+	// в него означает не "снимок поменьше", а вылет по нехватке видеопамяти,
+	// уже после того как профиль применён и сетка перерисована.
+	const int32 MaxSide = static_cast<int32>(GetMax2DTextureDimension());
+	if (OutWidth > MaxSide || OutHeight > MaxSide)
+	{
+		const FString Reason = FString::Printf(
+			TEXT("снимок %dx%d не влезает: предел стороны текстуры на этой видеокарте %d"),
+			OutWidth, OutHeight, MaxSide);
+		UE_LOG(LogTemp, Warning, TEXT("TakePhotoShot: %s - снимок отменён"), *Reason);
+		ShowStatusMessage(StatusKey_PhotoShot, FString::Printf(TEXT("[F10] %s"), *Reason));
+		return false;
+	}
+
+	// Мягкий порог: в предел текстуры укладывается и то, что не укладывается в
+	// видеопамять. Считаем по площади, а не по стороне - именно она и растёт
+	// квадратично, и именно на ней погорела первая версия (ScreenPercentage 200
+	// поверх 8K). Не запрещаем: сколько потянет конкретная карта, отсюда не
+	// видно - но предупредить обязаны ДО того, как редактор начнёт умирать.
+	constexpr double SoftLimitMegapixels = 40.0;
+	const double Megapixels = (double(OutWidth) * double(OutHeight)) / 1000000.0;
+	if (Megapixels > SoftLimitMegapixels)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TakePhotoShot: %.1f Мпикс (%dx%d) - это уже гигабайты видеопамяти под GBuffer. Если редактор вылетит, снижайте PhotoShotResolution."),
+			Megapixels, OutWidth, OutHeight);
+	}
+
+	return true;
 }
 
 void AAutomataOrchestrator::RefreshRenderCullVolume()

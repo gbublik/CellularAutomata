@@ -180,6 +180,51 @@ namespace RenderPresets
 				Result.Add(MoveTemp(Preset));
 			}
 
+			// --- Photo -------------------------------------------------------
+			// Единственный профиль без своей F-клавиши: его применяет сама
+			// съёмка (TakePhotoShot()), потому что вне снимка в нём нет смысла -
+			// он заведомо медленнее Quality и нужен ровно на один кадр.
+			//
+			// От Quality не отличается ни одним cvar'ом, и это осознанно.
+			//
+			// Первая версия ставила сюда FXAA и ScreenPercentage 200 - против
+			// швов между тайлами. Обоснование было ложным: HighResShot НЕ
+			// тайлит, он создаёт один рендер-таргет запрошенного размера
+			// (UnrealClient.cpp: DummyViewport->SizeX = GScreenshotResolutionX).
+			// Швов не бывает, бороться не с чем - а ScreenPercentage 200 при
+			// этом множил и без того огромный таргет на четыре по площади и
+			// ронял редактор по нехватке видеопамяти (проверено: 7680x4320 при
+			// 200% это 15360x8640, 133 мегапикселя GBuffer'а, и всего 82 тысячи
+			// живых клеток в сцене - дело было не в сетке вовсе).
+			//
+			// Раз тайлов нет, временное сглаживание безопасно и желательно:
+			// TSR из Quality остаётся, а сойтись ему даёт время задержка
+			// затвора (PhotoShotDelayFrames -> r.HighResScreenshotDelay) при
+			// неподвижной камере.
+			//
+			// ViewDistanceScale тоже как у Quality (10), а не 1: единица
+			// заставила бы отсекать по расстоянию РАНЬШЕ, а весь смысл этого
+			// профиля в том, чтобы в кадр попало всё.
+			//
+			// Профиль остаётся отдельной записью, хотя cvar'ы совпадают с
+			// Quality: он гасит Ghost Shape и отсечение, которые Quality не
+			// трогает, и главное - им владеет съёмка, так что его можно
+			// настраивать под снимок, не задевая рабочий профиль.
+			{
+				FRenderCvars Cvars;
+
+				FRenderPreset Preset;
+				Preset.Name = TEXT("Photo");
+				Preset.Description = TEXT("Всё включено, ничего не отсекается. Для снимка, не для работы.");
+				Preset.bLit = true;
+				Preset.bShowBackground = true;
+				Preset.bCellsCastShadows = true;
+				Preset.bCellCullingEnabled = false;
+				Preset.bGhostShapeEnabled = false;
+				Preset.ConsoleCommands = BuildCommands(Cvars);
+				Result.Add(MoveTemp(Preset));
+			}
+
 			return Result;
 		}();
 
