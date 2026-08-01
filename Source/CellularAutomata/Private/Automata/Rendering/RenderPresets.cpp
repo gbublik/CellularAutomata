@@ -225,9 +225,69 @@ namespace RenderPresets
 				Result.Add(MoveTemp(Preset));
 			}
 
+			// --- Photo Lean --------------------------------------------------
+			// Тот же снимок, но без подсистем, чей расход памяти растёт вместе с
+			// размером кадра. На снимке это решает: кадр рендерится целиком, в
+			// один таргет, и на 33 мегапикселях каждый полноразмерный буфер
+			// стоит сотни мегабайт.
+			//
+			// Убрано именно то, что аллоцируется ПО РАЗМЕРУ КАДРА: Lumen
+			// (экранные пробы и кэш радиантности), Virtual Shadow Maps (пул
+			// страниц), история TSR, цепочки bloom/DOF/SSAO/тумана.
+			//
+			// А вот ShadowQuality остаётся высоким, и это не оплошность: с
+			// выключенным VSM тени рисуются обычными картами, а те живут в своём
+			// атласе фиксированного размера и от разрешения кадра не зависят.
+			// Тени - половина того, ради чего снимок вообще делается, и терять
+			// их вместе с памятью незачем.
+			//
+			// Сглаживание - FXAA вместо TSR: у TSR несколько полноразмерных
+			// историй, а сходиться ему на неподвижном кадре всё равно негде
+			// взять движения. Разрешение остаётся полным - его режет
+			// PhotoShotResolution, а не профиль.
+			{
+				FRenderCvars Cvars;
+				Cvars.LumenGlobalIllumination = 0;
+				Cvars.LumenReflections = 0;
+				Cvars.VirtualShadowMaps = 0;
+				Cvars.AntiAliasing = 1;
+				Cvars.Bloom = 0;
+				Cvars.DepthOfField = 0;
+				Cvars.MotionBlur = 0;
+				Cvars.AmbientOcclusion = 0;
+				Cvars.VolumetricFog = 0;
+
+				FRenderPreset Preset;
+				Preset.Name = TEXT("Photo Lean");
+				Preset.Description = TEXT("Снимок без Lumen, VSM и пост-обработки - тени и свет на месте, видеопамяти в разы меньше.");
+				Preset.bLit = true;
+				Preset.bShowBackground = true;
+				Preset.bCellsCastShadows = true;
+				Preset.bCellCullingEnabled = false;
+				Preset.bGhostShapeEnabled = false;
+				Preset.ConsoleCommands = BuildCommands(Cvars);
+				Result.Add(MoveTemp(Preset));
+			}
+
 			return Result;
 		}();
 
 		return Presets;
+	}
+
+	int32 GetPhotoPresetIndex(bool bLeanMemory)
+	{
+		const TCHAR* WantedName = bLeanMemory ? TEXT("Photo Lean") : TEXT("Photo");
+
+		const TArray<FRenderPreset>& Presets = GetAll();
+		for (int32 Index = 0; Index < Presets.Num(); ++Index)
+		{
+			if (Presets[Index].Name == WantedName)
+			{
+				return Index;
+			}
+		}
+
+		return INDEX_NONE;
 	}
 }
