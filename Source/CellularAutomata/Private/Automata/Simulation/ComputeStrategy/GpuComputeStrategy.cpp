@@ -155,20 +155,25 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 		MaxAlive.Z = FMath::Max(MaxAlive.Z, Cell.Z);
 	}
 
-	// Гало обязано равняться Radius * (число шагов в пачке). Компоненты
-	// NeighborOffsets лежат в пределах [-Radius, Radius] (см.
-	// CellularAutomatonRule.cpp::BuildNeighborOffsets), поэтому за поколение
-	// структура вырастает максимум на Radius клеток в каждую сторону, а за K
-	// поколений - на Radius*K, и с таким гало результат ТОЧЕН: всё, что могло
-	// родиться, лежит внутри буфера. С гало меньше нужного пограничные клетки
-	// молча терялись бы, и GPU разошёлся бы с CPU - поэтому подбирается не
-	// гало под объём, а размер пачки под лимиты.
+	// Гало обязано равняться Extent * (число шагов в пачке), где Extent -
+	// фактический размах офсетов (см. FCellularAutomatonRule::
+	// GetNeighborExtent()). За поколение структура вырастает максимум на
+	// Extent клеток в каждую сторону, за K поколений - на Extent*K, и с таким
+	// гало результат ТОЧЕН: всё, что могло родиться, лежит внутри буфера. С
+	// гало меньше нужного пограничные клетки молча терялись бы, и GPU
+	// разошёлся бы с CPU - поэтому подбирается не гало под объём, а размер
+	// пачки под лимиты.
 	//
-	// Множитель Radius - причина, по которой радиус дороже всего обходится
-	// именно пачке: при радиусе 2 тот же объём набирается вдвое меньшим
-	// числом поколений, то есть StepsPerRender начинает урезаться раньше.
-	// На стоимость одного диспатча радиус влияет только через число офсетов.
-	const int32 NeighborRadius = FMath::Max(1, Rule.GetNeighborRadius());
+	// Именно размах, а НЕ радиус: у форм с дальними осями (см. ENeighborhood)
+	// радиус равен 1, а смещения дотягиваются до второй клетки, и гало по
+	// радиусу тихо резало бы им границу.
+	//
+	// Этот множитель - причина, по которой дальнобойное соседство дороже всего
+	// обходится именно пачке: при размахе 2 тот же объём набирается вдвое
+	// меньшим числом поколений, то есть StepsPerRender начинает урезаться
+	// раньше. На стоимость одного диспатча размах не влияет вовсе - только
+	// число офсетов.
+	const int32 NeighborExtent = FMath::Max(1, Rule.GetNeighborExtent());
 	//
 	// Generations (States > 2) пачке не мешает: угасание в этом режиме ведёт
 	// сам шейдер по байтовой плоскости состояний (см. bTrackDecayStates ниже
@@ -179,7 +184,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	FIntVector MinCell;
 	FIntVector VolumeDim;
 	int64 VolumeCells = 0;
-	ComputeHaloVolume(MinAlive, MaxAlive, NeighborRadius * EffectiveSteps, MinCell, VolumeDim, VolumeCells);
+	ComputeHaloVolume(MinAlive, MaxAlive, NeighborExtent * EffectiveSteps, MinCell, VolumeDim, VolumeCells);
 
 	// Пачка не влезает - урезаем её (а не отбрасываем): меньше шагов -> меньше
 	// гало -> меньше объём, так что цикл сходится монотонно. Даже пачка из 3
@@ -188,7 +193,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	while (EffectiveSteps > 1 && (VolumeCells <= 0 || VolumeCells > MaxVolumeCells || VolumeCells > BatchLimit))
 	{
 		--EffectiveSteps;
-		ComputeHaloVolume(MinAlive, MaxAlive, NeighborRadius * EffectiveSteps, MinCell, VolumeDim, VolumeCells);
+		ComputeHaloVolume(MinAlive, MaxAlive, NeighborExtent * EffectiveSteps, MinCell, VolumeDim, VolumeCells);
 	}
 
 	// Защита от OOM: две далёкие друг от друга живые клетки в разреженной
@@ -703,7 +708,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	// него), и именно расхождение здесь выдаёт неверно посчитанное гало.
 	UE_LOG(LogTemp, Log, TEXT("GpuStep: живых %d -> объём %dx%dx%d = %lld клеток (радиус %d, соседей %d, гало %d), поколений за круг: %d из %d (шаг: %.2f мс [GetAliveCells: %.2f, Pack: %.2f, GpuRoundTrip: %.2f, Unpack: %.2f])"),
 		AliveCells.Num(), VolumeDim.X, VolumeDim.Y, VolumeDim.Z, VolumeCells,
-		NeighborRadius, NeighborOffsets.Num(), NeighborRadius * EffectiveSteps,
+		NeighborExtent, NeighborOffsets.Num(), NeighborExtent * EffectiveSteps,
 		EffectiveSteps, RequestedSteps, TotalSeconds * 1000.0,
 		GetAliveSeconds * 1000.0, PackSeconds * 1000.0, GpuRoundTripSeconds * 1000.0, UnpackSeconds * 1000.0);
 

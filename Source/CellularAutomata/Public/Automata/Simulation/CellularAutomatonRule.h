@@ -43,13 +43,23 @@ public:
 	const TSet<int32>& GetSurvivalCounts() const { return SurvivalCounts; }
 	int32 GetStates() const { return States; }
 
-	/** Радиус соседства в клетках. Спрашивается не ради самих офсетов (те
-	 *  уже развёрнуты в GetNeighborOffsets()), а ради ГАЛО GPU-пачки: за
-	 *  поколение структура вырастает максимум на радиус клеток в каждую
-	 *  сторону, поэтому пачке из K поколений нужно гало Radius*K, а не K
-	 *  (см. FGpuComputeStrategy::StepBatch() - гало меньше нужного молча
-	 *  теряет пограничные клетки). */
+	/** Радиус соседства в клетках - ровно то, что запросили (см.
+	 *  AAutomataOrchestrator::NeighborhoodRadius). Осмыслен только для метрик;
+	 *  у форм всегда 1, и для гало он НЕ годится - см. GetNeighborExtent(). */
 	int32 GetNeighborRadius() const { return NeighborRadius; }
+
+	/** Насколько далеко от клетки дотягивается самый дальний офсет (максимум
+	 *  модуля компоненты по всему набору). Это и есть скорость роста
+	 *  структуры: за поколение она расширяется максимум на столько клеток в
+	 *  каждую сторону, поэтому GPU-пачке из K поколений нужно гало Extent*K
+	 *  (см. FGpuComputeStrategy::StepBatch() - гало меньше нужного МОЛЧА
+	 *  теряет пограничные клетки, без падения и без строчки в логе).
+	 *
+	 *  Считается по фактическим офсетам, а не берётся из радиуса, и это
+	 *  принципиально: у форм с дальними осями радиус равен 1, а размах - 2.
+	 *  Любая будущая форма получает верное гало бесплатно, просто потому что
+	 *  оно выведено из геометрии, а не продублировано рядом с ней. */
+	int32 GetNeighborExtent() const { return NeighborExtent; }
 
 	/** Смещения соседей по метрике InNeighborhood в пределах радиуса Radius,
 	 *  без центральной клетки. Публичная и статическая, потому что это чистая
@@ -74,9 +84,14 @@ public:
 	bool HasDecayStates() const { return States > 2; }
 
 private:
+	/** См. GetNeighborExtent(). Порядок полей ниже важен: NeighborExtent
+	 *  инициализируется от уже построенного NeighborOffsets. */
+	static int32 ComputeNeighborExtent(const TArray<FIntVector>& Offsets);
+
 	TArray<FIntVector> NeighborOffsets;
 	TSet<int32> BirthCounts;
 	TSet<int32> SurvivalCounts;
 	int32 States;
 	int32 NeighborRadius;
+	int32 NeighborExtent;
 };

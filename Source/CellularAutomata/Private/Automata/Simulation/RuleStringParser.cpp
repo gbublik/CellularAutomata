@@ -98,6 +98,9 @@ namespace
 			{ TEXT("E"),  TEXT("Edges"),      ENeighborhood::Edges },
 			{ TEXT("C"),  TEXT("Corners"),    ENeighborhood::Corners },
 			{ TEXT("FE"), TEXT("FacesEdges"), ENeighborhood::FacesEdges },
+			{ TEXT("FA"), TEXT("FarAxes"),    ENeighborhood::FarAxes },
+			{ TEXT("EFA"), TEXT("EdgesFarAxes"),   ENeighborhood::EdgesFarAxes },
+			{ TEXT("CFA"), TEXT("CornersFarAxes"), ENeighborhood::CornersFarAxes },
 		};
 
 		for (const FNeighborhoodToken& Token : Tokens)
@@ -122,6 +125,9 @@ namespace
 		case ENeighborhood::Edges:      return TEXT("E");
 		case ENeighborhood::Corners:    return TEXT("C");
 		case ENeighborhood::FacesEdges: return TEXT("FE");
+		case ENeighborhood::FarAxes:        return TEXT("FA");
+		case ENeighborhood::EdgesFarAxes:   return TEXT("EFA");
+		case ENeighborhood::CornersFarAxes: return TEXT("CFA");
 		default:                        return TEXT("M");
 		}
 	}
@@ -217,7 +223,7 @@ namespace RuleStringParser
 
 		if (!ParseNeighborhoodName(NameToken, Parsed.Neighborhood))
 		{
-			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается 'M'/'Moore', 'VN'/'VonNeumann', 'E'/'Edges', 'C'/'Corners' или 'FE'/'FacesEdges', с необязательным радиусом ('VN2')"), *NeighborhoodToken);
+			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается 'M'/'Moore', 'VN'/'VonNeumann', 'E'/'Edges', 'C'/'Corners', 'FE'/'FacesEdges', 'FA'/'FarAxes', 'EFA'/'EdgesFarAxes' или 'CFA'/'CornersFarAxes', с необязательным радиусом ('VN2')"), *NeighborhoodToken);
 			return false;
 		}
 

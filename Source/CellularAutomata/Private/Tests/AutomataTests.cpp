@@ -244,9 +244,81 @@ bool FNeighborhoodRadiusTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Moore радиуса 1 - 26 соседей"), M1.Num(), 26);
 	TestEqual(TEXT("фон Нейман радиуса 2 - 24 соседа"), VN2.Num(), 24);
 	TestEqual(TEXT("Moore радиуса 2 - 124 соседа"), M2.Num(), 124);
+	const TArray<FIntVector> FarAxes = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::FarAxes, 1);
+	const TArray<FIntVector> EdgesFarAxes = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::EdgesFarAxes, 1);
+	const TArray<FIntVector> CornersFarAxes = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::CornersFarAxes, 1);
+
 	TestEqual(TEXT("рёбра - 12 соседей"), Edges.Num(), 12);
 	TestEqual(TEXT("диагонали - 8 соседей"), Corners.Num(), 8);
 	TestEqual(TEXT("грани+рёбра - 18 соседей"), FacesEdges.Num(), 18);
+	TestEqual(TEXT("дальние оси - 6 соседей"), FarAxes.Num(), 6);
+	TestEqual(TEXT("рёбра+дальние оси - 18 соседей"), EdgesFarAxes.Num(), 18);
+	TestEqual(TEXT("диагонали+дальние оси - 14 соседей"), CornersFarAxes.Num(), 14);
+
+	// Дальние оси - это ровно (+-2,0,0) и её перестановки, ничего больше.
+	// Куб 5x5x5 полон смещений с компонентой 2 (например (2,1,0)), и они не
+	// должны просочиться: отсев идёт по d^2 <= 4, а у (2,1,0) он равен 5.
+	{
+		bool bAllFarAxis = true;
+		for (const FIntVector& Offset : FarAxes)
+		{
+			const int32 DistSq = Offset.X * Offset.X + Offset.Y * Offset.Y + Offset.Z * Offset.Z;
+			if (DistSq != 4)
+			{
+				bAllFarAxis = false;
+			}
+		}
+		TestTrue(TEXT("дальние оси - только смещения с d^2 = 4"), bAllFarAxis);
+		TestTrue(TEXT("дальние оси содержат (2,0,0)"), FarAxes.Contains(FIntVector(2, 0, 0)));
+		TestFalse(TEXT("дальние оси не содержат (2,1,0)"), FarAxes.Contains(FIntVector(2, 1, 0)));
+		TestFalse(TEXT("дальние оси не содержат (2,2,0)"), FarAxes.Contains(FIntVector(2, 2, 0)));
+	}
+
+	// Оболочки складываются: von Neumann радиуса 2 - это в точности
+	// грани+рёбра+дальние оси, а рёбра+дальние оси - это оболочка
+	// |dx|+|dy|+|dz| = 2, то есть VN2 минус его внутренность.
+	{
+		TSet<FIntVector> Rebuilt;
+		Rebuilt.Append(FacesEdges);
+		Rebuilt.Append(FarAxes);
+		TestEqual(TEXT("грани+рёбра+дальние оси в сумме дают VN радиуса 2"), Rebuilt.Num(), VN2.Num());
+
+		bool bMatchesVN2 = true;
+		for (const FIntVector& Offset : VN2)
+		{
+			if (!Rebuilt.Contains(Offset))
+			{
+				bMatchesVN2 = false;
+			}
+		}
+		TestTrue(TEXT("собранный из оболочек набор совпадает с VN2"), bMatchesVN2);
+
+		bool bShellIsManhattanTwo = true;
+		for (const FIntVector& Offset : EdgesFarAxes)
+		{
+			if (FMath::Abs(Offset.X) + FMath::Abs(Offset.Y) + FMath::Abs(Offset.Z) != 2)
+			{
+				bShellIsManhattanTwo = false;
+			}
+		}
+		TestTrue(TEXT("рёбра+дальние оси - это ровно оболочка |d|=2 по Манхэттену"), bShellIsManhattanTwo);
+	}
+
+	// Размах офсетов - то, из чего считается гало GPU-пачки. У форм с дальними
+	// осями радиус равен 1, а размах 2, и гало по радиусу молча срезало бы им
+	// границу. Это единственная защита от той ошибки на уровне правила.
+	{
+		const FCellularAutomatonRule MooreRule({ 1 }, { 2 }, ENeighborhood::Moore, 2);
+		const FCellularAutomatonRule FarRule({ 1 }, { 2 }, ENeighborhood::FarAxes, 2);
+		const FCellularAutomatonRule EdgeRule({ 1 }, { 2 }, ENeighborhood::Edges, 2);
+		const FCellularAutomatonRule Vn2Rule({ 1 }, { 2 }, ENeighborhood::VonNeumann, 2, 2);
+
+		TestEqual(TEXT("размах Moore радиуса 1"), MooreRule.GetNeighborExtent(), 1);
+		TestEqual(TEXT("размах рёбер"), EdgeRule.GetNeighborExtent(), 1);
+		TestEqual(TEXT("размах VN радиуса 2"), Vn2Rule.GetNeighborExtent(), 2);
+		TestEqual(TEXT("размах дальних осей - 2 при радиусе 1"), FarRule.GetNeighborExtent(), 2);
+		TestEqual(TEXT("радиус дальних осей при этом 1"), FarRule.GetNeighborRadius(), 1);
+	}
 
 	// Формы обязаны быть именно РАЗБИЕНИЕМ куба 3x3x3, а не произвольными
 	// наборами: грани+рёбра+диагонали дают ровно Moore, и ни одна пара из
@@ -429,6 +501,9 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TEXT("0-6/1,3/2/E"),
 		TEXT("0-4/1,3/2/C"),
 		TEXT("0-9/1,3/2/FE"),
+		TEXT("0-3/1,3/2/FA"),
+		TEXT("0-9/1,3/2/EFA"),
+		TEXT("0-7/1,3/2/CFA"),
 	};
 
 	for (const FString& Rule : Rules)
@@ -488,6 +563,12 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::Corners), FString(TEXT("5/4/2/C")));
 	TestEqual(TEXT("токен граней+рёбер"),
 		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::FacesEdges), FString(TEXT("5/4/2/FE")));
+	TestEqual(TEXT("токен дальних осей"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::FarAxes), FString(TEXT("5/4/2/FA")));
+	TestEqual(TEXT("токен рёбер+дальних осей"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::EdgesFarAxes), FString(TEXT("5/4/2/EFA")));
+	TestEqual(TEXT("токен диагоналей+дальних осей"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::CornersFarAxes), FString(TEXT("5/4/2/CFA")));
 
 	// Длинные формы имён разбираются наравне с короткими.
 	{
@@ -579,6 +660,12 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		// подрешётки - расхождение проявилось бы как перетекание между ними.
 		{ TEXT("бинарное 3-8/5-6/2/E"), { 5, 6 }, { 3, 4, 5, 6, 7, 8 }, ENeighborhood::Edges, 2 },
 		{ TEXT("бинарное 5-11/8-9/2/FE"), { 8, 9 }, { 5, 6, 7, 8, 9, 10, 11 }, ENeighborhood::FacesEdges, 2 },
+		// Формы с дальними осями: смещения дотягиваются до ВТОРОЙ клетки при
+		// номинальном радиусе 1. Кандидаты CPU-стратегии и гало GPU обязаны
+		// одинаково это учесть - расхождение здесь означало бы, что где-то
+		// размах офсетов подменили радиусом.
+		{ TEXT("бинарное 0-6/1,3/2/FA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6 }, ENeighborhood::FarAxes, 2 },
+		{ TEXT("бинарное 0-14/1,3/2/CFA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 }, ENeighborhood::CornersFarAxes, 2 },
 	};
 
 	for (const FRuleCase& Case : Cases)
@@ -667,6 +754,12 @@ bool FGpuBatchParityTest::RunTest(const FString& Parameters)
 		// множителе не роняет ничего - она молча теряет пограничные клетки, и
 		// расхождение с пошаговым прогоном единственное, что её показывает.
 		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, 2, ENeighborhood::VonNeumann, 2 },
+		// Самый ценный случай во всём файле: форма с дальними осями имеет
+		// РАДИУС 1, но РАЗМАХ 2, поэтому пачке из 5 поколений нужно гало 10,
+		// а не 5. Если гало где-нибудь снова начнут считать от радиуса, пачка
+		// потеряет пограничные клетки - молча, без падения и без строчки в
+		// логе, и разойдётся с пошаговым прогоном только здесь.
+		{ TEXT("бинарное 0-6/1,3/2/FA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6 }, 2, ENeighborhood::FarAxes, 1 },
 	};
 
 	for (const FRuleCase& Case : Cases)
