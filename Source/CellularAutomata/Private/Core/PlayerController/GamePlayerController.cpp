@@ -322,7 +322,8 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnNewSeed();
 	}
 
-	// Y (построить состояние генератором, Shift+Y - следующий тип) - тот же
+	// Y (построить состояние генератором, Shift+Y - следующий тип, Ctrl+Y -
+	// гистограмма соседей живой структуры) - тот же
 	// случай, что P/R/N: генератор нажимают ровно тогда, когда картинка не
 	// нравится и сетка уже разрослась, то есть в момент худшего лага.
 	// Модификатор проверяется внутри обработчика, а не маппингом - Enhanced
@@ -552,6 +553,16 @@ void AGamePlayerController::OnGenerateState()
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnGenerateState: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// Ctrl+Y - гистограмма соседей ЖИВОЙ структуры. Рядом с Y не случайно:
+	// Y печатает такую же гистограмму для только что СГЕНЕРИРОВАННОГО набора
+	// (см. FStateGeneratorParams::bAnalyzeNeighborCounts), и это буквально та
+	// же мера, снятая в другой момент - до эволюции и после.
+	if (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))
+	{
+		Orchestrator->AnalyzeLiveStructure();
 		return;
 	}
 

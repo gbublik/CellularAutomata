@@ -2843,6 +2843,54 @@ void AAutomataOrchestrator::GenerateState()
 		FString::Printf(TEXT("Генератор: %s - %d клеток"), *GeneratorName, Grid->Num()));
 }
 
+void AAutomataOrchestrator::AnalyzeLiveStructure()
+{
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AnalyzeLiveStructure: сетка ещё не создана"));
+		return;
+	}
+
+	// Гвард на bStepInProgress намеренно НЕ ставится: фоновый шаг читает
+	// *Grid, эта функция тоже только читает, а подменить Grid может лишь
+	// ApplyStepResult() - то есть игровой поток, тот же, что выполняет эту
+	// функцию. Двух одновременных читателей const-структуры достаточно.
+	TArray<FIntVector> AliveCells;
+	Grid->GetAliveCells(AliveCells);
+
+	if (AliveCells.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AnalyzeLiveStructure: живых клеток нет"));
+		ShowStatusMessage(StatusKey_Generation, TEXT("Гистограмма: живых клеток нет"));
+		return;
+	}
+
+	const double StartSeconds = FPlatformTime::Seconds();
+
+	StateGenerators::FNeighborHistogram Histogram;
+	StateGenerators::AnalyzeNeighborCounts(AliveCells, Neighborhood, LiveAnalysisSampleExtent, Histogram);
+
+	const double ElapsedSeconds = FPlatformTime::Seconds() - StartSeconds;
+
+	// Доля выборки печатается всегда: на эволюционировавшей структуре
+	// центральный подкуб может оказаться и всей структурой, и одним процентом
+	// от неё, а по самой гистограмме этого не видно.
+	const double SampleShare = AliveCells.Num() > 0
+		? 100.0 * double(Histogram.SampledAlive) / double(AliveCells.Num())
+		: 0.0;
+
+	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: правило %s, соседство %s (%d соседей), поколение %d"),
+		*GetActiveRuleString(), GetNeighborhoodDisplayName(Neighborhood),
+		FCellularAutomatonRule::BuildNeighborOffsets(Neighborhood).Num(), GenerationCount);
+	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: живых всего %d, в выборке %lld (%.1f%%, подкуб +-%d), посчитано за %.2f мс"),
+		AliveCells.Num(), Histogram.SampledAlive, SampleShare, LiveAnalysisSampleExtent, ElapsedSeconds * 1000.0);
+	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: %s"), *StateGenerators::DescribeHistogram(Histogram));
+
+	ShowStatusMessage(StatusKey_Generation,
+		FString::Printf(TEXT("Гистограмма соседей: %lld из %d клеток (%.0f%%) - подробности в логе"),
+			Histogram.SampledAlive, AliveCells.Num(), SampleShare));
+}
+
 void AAutomataOrchestrator::CycleStateGeneratorType()
 {
 	const int32 TypeCount = static_cast<int32>(EStateGeneratorType::SymmetricSeed) + 1;
