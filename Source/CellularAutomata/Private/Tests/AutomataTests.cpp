@@ -236,10 +236,73 @@ bool FNeighborhoodRadiusTest::RunTest(const FString& Parameters)
 	const TArray<FIntVector> VN2 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::VonNeumann, 2);
 	const TArray<FIntVector> M2 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Moore, 2);
 
+	const TArray<FIntVector> Edges = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Edges, 1);
+	const TArray<FIntVector> Corners = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Corners, 1);
+	const TArray<FIntVector> FacesEdges = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::FacesEdges, 1);
+
 	TestEqual(TEXT("фон Нейман радиуса 1 - 6 соседей"), VN1.Num(), 6);
 	TestEqual(TEXT("Moore радиуса 1 - 26 соседей"), M1.Num(), 26);
 	TestEqual(TEXT("фон Нейман радиуса 2 - 24 соседа"), VN2.Num(), 24);
 	TestEqual(TEXT("Moore радиуса 2 - 124 соседа"), M2.Num(), 124);
+	TestEqual(TEXT("рёбра - 12 соседей"), Edges.Num(), 12);
+	TestEqual(TEXT("диагонали - 8 соседей"), Corners.Num(), 8);
+	TestEqual(TEXT("грани+рёбра - 18 соседей"), FacesEdges.Num(), 18);
+
+	// Формы обязаны быть именно РАЗБИЕНИЕМ куба 3x3x3, а не произвольными
+	// наборами: грани+рёбра+диагонали дают ровно Moore, и ни одна пара из
+	// трёх классов не пересекается. Проверяется множествами, а не числами -
+	// 6+12+8=26 сошлось бы и при перепутанных классах.
+	{
+		TSet<FIntVector> Union;
+		Union.Append(VN1);
+		Union.Append(Edges);
+		Union.Append(Corners);
+		TestEqual(TEXT("грани+рёбра+диагонали в сумме дают весь куб 3x3x3"), Union.Num(), 26);
+
+		bool bAllInMoore = true;
+		for (const FIntVector& Offset : Union)
+		{
+			if (!M1.Contains(Offset))
+			{
+				bAllInMoore = false;
+			}
+		}
+		TestTrue(TEXT("объединение классов совпадает с Moore"), bAllInMoore);
+
+		TSet<FIntVector> FacesEdgesExpected;
+		FacesEdgesExpected.Append(VN1);
+		FacesEdgesExpected.Append(Edges);
+		TestEqual(TEXT("грани+рёбра - это ровно грани плюс рёбра"), FacesEdgesExpected.Num(), FacesEdges.Num());
+
+		bool bFacesEdgesMatch = true;
+		for (const FIntVector& Offset : FacesEdges)
+		{
+			if (!FacesEdgesExpected.Contains(Offset))
+			{
+				bFacesEdgesMatch = false;
+			}
+		}
+		TestTrue(TEXT("грани+рёбра не содержит ничего лишнего"), bFacesEdgesMatch);
+	}
+
+	// Структурное свойство, ради которого эти формы и добавлены: рёбра
+	// сохраняют чётность суммы координат (решётка распадается на две
+	// независимые подрешётки), диагонали переворачивают чётность каждой
+	// координаты (на четыре). Если это сломается, формы станут просто
+	// "Moore поменьше" и потеряют весь смысл.
+	for (const FIntVector& Offset : Edges)
+	{
+		TestTrue(TEXT("ребро не меняет чётность суммы координат"), ((Offset.X + Offset.Y + Offset.Z) % 2) == 0);
+	}
+	for (const FIntVector& Offset : Corners)
+	{
+		TestTrue(TEXT("диагональ переворачивает чётность каждой координаты"),
+			FMath::Abs(Offset.X) == 1 && FMath::Abs(Offset.Y) == 1 && FMath::Abs(Offset.Z) == 1);
+	}
+
+	// У форм радиуса нет - запрошенный игнорируется, а не растягивает набор.
+	TestEqual(TEXT("рёбра с радиусом 2 дают тот же набор из 12"),
+		FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Edges, 2).Num(), 12);
 
 	TestTrue(TEXT("фон Нейман радиуса 2 влезает в шейдерный массив и в 32-битные маски"), VN2.Num() <= 26);
 
@@ -298,6 +361,9 @@ bool FNeighborhoodRadiusTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Moore радиуса 1 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::Moore, 1));
 	TestTrue(TEXT("VN радиуса 2 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 2));
 	TestFalse(TEXT("Moore радиуса 2 не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::Moore, 2));
+	TestTrue(TEXT("форма радиуса 1 поддержана"), IsNeighborhoodRadiusSupported(ENeighborhood::Edges, 1));
+	TestFalse(TEXT("форма радиуса 2 не поддержана"), IsNeighborhoodRadiusSupported(ENeighborhood::Edges, 2));
+	TestFalse(TEXT("диагонали радиуса 2 не поддержаны"), IsNeighborhoodRadiusSupported(ENeighborhood::Corners, 2));
 	TestFalse(TEXT("радиус 0 не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 0));
 	TestFalse(TEXT("радиус за потолком не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, MaxNeighborhoodRadius + 1));
 
@@ -360,6 +426,9 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TEXT("8,11,13-26/13-26/5/M"),
 		TEXT("6-8/6-8/3/M"),
 		TEXT("0-6/1,3/2/VN2"),
+		TEXT("0-6/1,3/2/E"),
+		TEXT("0-4/1,3/2/C"),
+		TEXT("0-9/1,3/2/FE"),
 	};
 
 	for (const FString& Rule : Rules)
@@ -411,6 +480,26 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("радиус 2 печатается цифрой"),
 		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::VonNeumann, 2), FString(TEXT("5/4/2/VN2")));
 
+	// Токены форм. Ни один не должен заканчиваться цифрой - иначе он разобрался
+	// бы как имя плюс радиус (см. ParseNeighborhoodName()).
+	TestEqual(TEXT("токен рёбер"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::Edges), FString(TEXT("5/4/2/E")));
+	TestEqual(TEXT("токен диагоналей"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::Corners), FString(TEXT("5/4/2/C")));
+	TestEqual(TEXT("токен граней+рёбер"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::FacesEdges), FString(TEXT("5/4/2/FE")));
+
+	// Длинные формы имён разбираются наравне с короткими.
+	{
+		RuleStringParser::FParsedRule Parsed;
+		FString Error;
+		TestTrue(TEXT("'FacesEdges' разбирается"), RuleStringParser::ParseRuleString(TEXT("1/2/2/FacesEdges"), Parsed, Error));
+		TestTrue(TEXT("'FacesEdges' - это грани+рёбра"), Parsed.Neighborhood == ENeighborhood::FacesEdges);
+
+		TestTrue(TEXT("'corners' разбирается регистронезависимо"), RuleStringParser::ParseRuleString(TEXT("1/2/2/corners"), Parsed, Error));
+		TestTrue(TEXT("'corners' - это диагонали"), Parsed.Neighborhood == ENeighborhood::Corners);
+	}
+
 	// Битые строки обязаны отвергаться ЦЕЛИКОМ и с внятной ошибкой - принцип
 	// "никогда не применять частично" (см. ApplyRuleString()).
 	const TArray<FString> BadRules = {
@@ -428,6 +517,10 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		// ни в 32-битные маски правила, поэтому это отказ, а не тихое
 		// приведение к радиусу 1 (см. IsNeighborhoodRadiusSupported()).
 		TEXT("1/2/2/M2"),
+		// ...и радиус у формы: она определена как подмножество куба 3x3x3,
+		// поэтому радиуса у неё нет вовсе.
+		TEXT("1/2/2/E2"),
+		TEXT("1/2/2/FE2"),
 	};
 
 	for (const FString& Bad : BadRules)
@@ -480,6 +573,12 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		// вымерло - на пустой сетке любые две реализации совпадают.
 		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann, 2, 2 },
 		{ TEXT("Generations 6-16/12-13/5/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann, 5, 2 },
+		// Формы: набор офсетов перестаёт быть "шаром вокруг клетки", и обе
+		// стратегии обязаны это одинаково пережить. Рёбра дополнительно
+		// интересны тем, что решётка распадается на две независимые
+		// подрешётки - расхождение проявилось бы как перетекание между ними.
+		{ TEXT("бинарное 3-8/5-6/2/E"), { 5, 6 }, { 3, 4, 5, 6, 7, 8 }, ENeighborhood::Edges, 2 },
+		{ TEXT("бинарное 5-11/8-9/2/FE"), { 8, 9 }, { 5, 6, 7, 8, 9, 10, 11 }, ENeighborhood::FacesEdges, 2 },
 	};
 
 	for (const FRuleCase& Case : Cases)

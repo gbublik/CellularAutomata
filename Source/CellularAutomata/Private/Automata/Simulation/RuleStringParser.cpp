@@ -77,6 +77,55 @@ namespace
 		return true;
 	}
 
+	/** Имя соседства (без хвостовой цифры радиуса) -> значение перечисления.
+	 *  Короткая и длинная форма для каждого, регистронезависимо.
+	 *
+	 *  ВАЖНО для любого нового соседства: токен не должен ЗАКАНЧИВАТЬСЯ
+	 *  цифрой - хвостовые цифры отрезаются как радиус ещё до вызова этой
+	 *  функции, так что токен вида "S2" разобрался бы как "S" радиуса 2. */
+	bool ParseNeighborhoodName(const FString& Name, ENeighborhood& OutNeighborhood)
+	{
+		struct FNeighborhoodToken
+		{
+			const TCHAR* Short;
+			const TCHAR* Long;
+			ENeighborhood Value;
+		};
+
+		static const FNeighborhoodToken Tokens[] = {
+			{ TEXT("M"),  TEXT("Moore"),      ENeighborhood::Moore },
+			{ TEXT("VN"), TEXT("VonNeumann"), ENeighborhood::VonNeumann },
+			{ TEXT("E"),  TEXT("Edges"),      ENeighborhood::Edges },
+			{ TEXT("C"),  TEXT("Corners"),    ENeighborhood::Corners },
+			{ TEXT("FE"), TEXT("FacesEdges"), ENeighborhood::FacesEdges },
+		};
+
+		for (const FNeighborhoodToken& Token : Tokens)
+		{
+			if (Name.Equals(Token.Short, ESearchCase::IgnoreCase) || Name.Equals(Token.Long, ESearchCase::IgnoreCase))
+			{
+				OutNeighborhood = Token.Value;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Обратное к ParseNeighborhoodName(): короткая форма, та, что печатается
+	 *  в строку правила. */
+	const TCHAR* FormatNeighborhoodName(ENeighborhood Neighborhood)
+	{
+		switch (Neighborhood)
+		{
+		case ENeighborhood::VonNeumann: return TEXT("VN");
+		case ENeighborhood::Moore:      return TEXT("M");
+		case ENeighborhood::Edges:      return TEXT("E");
+		case ENeighborhood::Corners:    return TEXT("C");
+		case ENeighborhood::FacesEdges: return TEXT("FE");
+		default:                        return TEXT("M");
+		}
+	}
+
 	/** Сжимает список счётчиков в поле строки правила: сортирует, убирает
 	 *  повторы и склеивает подряд идущие значения в диапазоны "x-y" - ровно
 	 *  та форма, которую понимает ParseCountListField() выше. Пустой список
@@ -166,17 +215,9 @@ namespace RuleStringParser
 		const FString RadiusToken = NeighborhoodToken.Mid(RadiusStart);
 		const FString NameToken = NeighborhoodToken.Left(RadiusStart);
 
-		if (NameToken.Equals(TEXT("M"), ESearchCase::IgnoreCase) || NameToken.Equals(TEXT("Moore"), ESearchCase::IgnoreCase))
+		if (!ParseNeighborhoodName(NameToken, Parsed.Neighborhood))
 		{
-			Parsed.Neighborhood = ENeighborhood::Moore;
-		}
-		else if (NameToken.Equals(TEXT("VN"), ESearchCase::IgnoreCase) || NameToken.Equals(TEXT("VonNeumann"), ESearchCase::IgnoreCase))
-		{
-			Parsed.Neighborhood = ENeighborhood::VonNeumann;
-		}
-		else
-		{
-			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается 'M'/'Moore' или 'VN'/'VonNeumann' с необязательным радиусом ('VN2')"), *NeighborhoodToken);
+			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается 'M'/'Moore', 'VN'/'VonNeumann', 'E'/'Edges', 'C'/'Corners' или 'FE'/'FacesEdges', с необязательным радиусом ('VN2')"), *NeighborhoodToken);
 			return false;
 		}
 
@@ -189,11 +230,19 @@ namespace RuleStringParser
 		}
 		if (!IsNeighborhoodRadiusSupported(Parsed.Neighborhood, ParsedRadius))
 		{
-			// Единственный непокрытый диапазоном случай - Moore с радиусом > 1.
-			// Отказ явный: приведение к радиусу 1 дало бы совсем другое
-			// правило под именем запрошенного.
-			OutError = FString::Printf(TEXT("Neighborhood: радиус %d поддержан только для 'VN'/'VonNeumann' (Moore радиуса %d - это %d соседей, не влезает ни в шейдерный массив, ни в 32-битные маски правила)"),
-				ParsedRadius, ParsedRadius, (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) - 1);
+			// Отказ явный: приведение к радиусу 1 запустило бы совсем другое
+			// правило под именем запрошенного. Причина у Moore и у форм разная,
+			// поэтому и текст разный - см. IsNeighborhoodRadiusSupported().
+			if (Parsed.Neighborhood == ENeighborhood::Moore)
+			{
+				OutError = FString::Printf(TEXT("Neighborhood: радиус %d у Moore не поддержан - это %d соседей, не влезает ни в шейдерный массив, ни в 32-битные маски правила. Радиус больше 1 доступен только у 'VN'/'VonNeumann'"),
+					ParsedRadius, (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) - 1);
+			}
+			else
+			{
+				OutError = FString::Printf(TEXT("Neighborhood: у формы '%s' радиуса нет - она определена как подмножество куба 3x3x3. Радиус больше 1 доступен только у 'VN'/'VonNeumann'"),
+					*NameToken);
+			}
 			return false;
 		}
 		Parsed.Radius = ParsedRadius;
@@ -207,7 +256,7 @@ namespace RuleStringParser
 		// Радиус 1 печатается ОТСУТСТВИЕМ цифры, а не единицей: иначе каждая
 		// уже написанная строка правила (включая все записи RulePresets)
 		// начала бы возвращаться из round-trip'а в изменённом виде.
-		FString NeighborhoodToken = (Neighborhood == ENeighborhood::Moore) ? TEXT("M") : TEXT("VN");
+		FString NeighborhoodToken = FormatNeighborhoodName(Neighborhood);
 		if (Radius > 1)
 		{
 			NeighborhoodToken += FString::FromInt(Radius);

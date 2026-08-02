@@ -535,7 +535,7 @@ bool AAutomataOrchestrator::TryApplyRuleString(const FString& InRuleString, FStr
 
 	UE_LOG(LogTemp, Log, TEXT("TryApplyRuleString: '%s' -> BirthCounts=%d знач., SurvivalCounts=%d знач., States=%d, Neighborhood=%s, радиус=%d"),
 		*InRuleString, BirthCounts.Num(), SurvivalCounts.Num(), States,
-		Neighborhood == ENeighborhood::Moore ? TEXT("Moore") : TEXT("VonNeumann"),
+		GetNeighborhoodDisplayName(Neighborhood),
 		NeighborhoodRadius);
 
 	return true;
@@ -2846,7 +2846,7 @@ void AAutomataOrchestrator::GenerateState()
 	if (!HistogramText.IsEmpty())
 	{
 		UE_LOG(LogTemp, Log, TEXT("GenerateState: соседи по %s - %s"),
-			Neighborhood == ENeighborhood::VonNeumann ? TEXT("von Neumann") : TEXT("Moore"),
+			GetNeighborhoodDisplayName(Neighborhood),
 			*HistogramText);
 	}
 
