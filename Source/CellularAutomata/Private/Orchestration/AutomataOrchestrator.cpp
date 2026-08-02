@@ -2879,16 +2879,71 @@ void AAutomataOrchestrator::AnalyzeLiveStructure()
 		? 100.0 * double(Histogram.SampledAlive) / double(AliveCells.Num())
 		: 0.0;
 
+	// Правило строится из тех же Details-panel свойств, по которым идёт
+	// симуляция (та же конвенция "пересобирать каждый вызов, ничего не
+	// кэшировать", что в Next()/StepAsync()) - иначе сводка ниже могла бы
+	// описывать не то правило, которое реально считает.
+	const FCellularAutomatonRule Rule(BirthCounts, SurvivalCounts, Neighborhood, States);
+
+	// Сводка - ради неё вся функция и нужна: гистограмма отвечает на вопрос
+	// "какое распределение", а это - на вопрос "куда по нему бьют пороги".
+	int64 Doomed = 0;
+	for (int32 Count = 0; Count < Histogram.AliveByCount.Num(); ++Count)
+	{
+		if (!Rule.GetSurvivalCounts().Contains(Count))
+		{
+			Doomed += Histogram.AliveByCount[Count];
+		}
+	}
+
+	int64 Births = 0;
+	for (int32 Count = 0; Count < Histogram.EmptyByCount.Num(); ++Count)
+	{
+		if (Rule.GetBirthCounts().Contains(Count))
+		{
+			Births += Histogram.EmptyByCount[Count];
+		}
+	}
+
+	const int64 Survivors = Histogram.SampledAlive - Doomed;
+	const double DoomedShare = Histogram.SampledAlive > 0
+		? 100.0 * double(Doomed) / double(Histogram.SampledAlive)
+		: 0.0;
+	// Оценка, а не точное число: рождения считаются по пустым клеткам,
+	// примыкающим к выборке, а часть их лежит уже ЗА границей подкуба, тогда
+	// как знаменатель - строго клетки выборки. На однородной структуре
+	// отношение всё равно показывает направление и порядок величины.
+	const double GrowthFactor = Histogram.SampledAlive > 0
+		? double(Survivors + Births) / double(Histogram.SampledAlive)
+		: 0.0;
+
+	// При Generations клетка, переставшая выживать, не умирает, а уходит в
+	// угасание - слово должно быть другим. Строка собирается заранее:
+	// format-строка у Printf проверяется на этапе компиляции и обязана быть
+	// литералом, тернарник прямо в вызове не соберётся.
+	FString DoomedWord = TEXT("умрут");
+	FString DecayNote;
+	if (Rule.HasDecayStates())
+	{
+		DoomedWord = TEXT("уйдут в угасание");
+		// Угасающие клетки не живые, поэтому в гистограмме они попадают в
+		// "примыкающие пустые" - а родиться там нельзя (birth-immunity), так
+		// что оценка рождений при Generations завышена.
+		DecayNote = TEXT(" (Generations: рождения завышены - часть 'пустых' на деле угасающие и рождению не подлежат)");
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: правило %s, соседство %s (%d соседей), поколение %d"),
 		*GetActiveRuleString(), GetNeighborhoodDisplayName(Neighborhood),
-		FCellularAutomatonRule::BuildNeighborOffsets(Neighborhood).Num(), GenerationCount);
+		Rule.GetNeighborOffsets().Num(), GenerationCount);
 	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: живых всего %d, в выборке %lld (%.1f%%, подкуб +-%d), посчитано за %.2f мс"),
 		AliveCells.Num(), Histogram.SampledAlive, SampleShare, LiveAnalysisSampleExtent, ElapsedSeconds * 1000.0);
 	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: %s"), *StateGenerators::DescribeHistogram(Histogram));
+	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: ИТОГО %s %lld (%.1f%%), выживут %lld, родятся %lld -> нетто %+lld, x%.2f%s"),
+		*DoomedWord, Doomed, DoomedShare, Survivors, Births, Births - Doomed, GrowthFactor, *DecayNote);
 
 	ShowStatusMessage(StatusKey_Generation,
-		FString::Printf(TEXT("Гистограмма соседей: %lld из %d клеток (%.0f%%) - подробности в логе"),
-			Histogram.SampledAlive, AliveCells.Num(), SampleShare));
+		FString::Printf(TEXT("Соседи: %s %lld из %lld (%.0f%%), родятся %lld, x%.2f - подробности в логе"),
+			*DoomedWord, Doomed, Histogram.SampledAlive, DoomedShare, Births, GrowthFactor));
 }
 
 void AAutomataOrchestrator::CycleStateGeneratorType()
