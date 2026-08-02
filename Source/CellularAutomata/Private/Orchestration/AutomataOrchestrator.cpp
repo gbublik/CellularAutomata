@@ -304,6 +304,7 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bFastStepActive = bFastStepActive;
 	LastHudStats.bSelectionModeActive = GamePC ? GamePC->IsSelectionModeActive() : false;
 	LastHudStats.bOrthographicCamera = GamePC ? GamePC->IsOrthographicCamera() : false;
+	LastHudStats.bHeadlightEnabled = GamePC ? GamePC->IsHeadlightEnabled() : false;
 	LastHudStats.ComputeMethod = ComputeMethod;
 	LastHudStats.bChunkedRenderEnabled = bEnableChunkedRender;
 	LastHudStats.ChunkedRenderOrder = ChunkedRenderOrder;

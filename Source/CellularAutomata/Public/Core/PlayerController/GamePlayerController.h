@@ -10,6 +10,7 @@
 class AAutomataOrchestrator;
 class ARenderCullVolume;
 class AGameCameraManager;
+class UPointLightComponent;
 
 /**
  *
@@ -82,6 +83,28 @@ public:
 	void SetSelectionModeActive(bool bActive);
 
 	bool IsSelectionModeActive() const { return bSelectionModeActive; }
+
+	/** Лампочка на камере (Shift+U): точечный свет, привязанный к управляемой
+	 *  пешке, выключен по умолчанию. Нужен ровно для одного случая - осмотра
+	 *  ИЗНУТРИ структуры, куда свет уровня не достаёт: снаружи фигура освещена
+	 *  направленным светом сцены, а внутри плотной решётки видны только грани,
+	 *  до которых он случайно пробился.
+	 *
+	 *  Свет висит на пешке, а не на самом контроллере, и это не стилистика:
+	 *  AController в конструкторе помечен скрытым (SetHidden(true)), а
+	 *  ULightComponent::CreateRenderState_Concurrent() добавляет свет в сцену
+	 *  только при ShouldRender(), которое учитывает скрытость владельца - на
+	 *  контроллере лампочка молча не светила бы вовсе, без единой строчки в
+	 *  логе. Пешка (ADefaultPawn) не скрыта, и заодно свет ездит вместе с ней
+	 *  сам, без пересчёта позиции каждый кадр.
+	 *
+	 *  Настройки (яркость/радиус/цвет/тени) живут на AAutomataOrchestrator -
+	 *  см. HeadlightIntensity и соседние. */
+	UFUNCTION(BlueprintCallable, Category = "Camera")
+	void SetHeadlightEnabled(bool bEnable);
+
+	UFUNCTION(BlueprintPure, Category = "Camera")
+	bool IsHeadlightEnabled() const { return bHeadlightEnabled; }
 
 	/** Для AGameHud::DrawHUD() - рамка выделения рисуется, пока тянется мышь;
 	 *  текущая позиция мыши читается HUD'ом самостоятельно каждый кадр через
@@ -253,7 +276,15 @@ protected:
 
 	/** Хоткей (U) - показать/скрыть фон (небо и туман), не трогая освещение,
 	 *  через AAutomataOrchestrator::SetBackgroundVisible()/IsBackgroundVisible().
-	 *  Отдельно от профилей: "убрать фон" хочется и поверх Quality тоже. */
+	 *  Отдельно от профилей: "убрать фон" хочется и поверх Quality тоже.
+	 *
+	 *  С зажатым Shift вместо этого включает/выключает лампочку на камере
+	 *  (SetHeadlightEnabled()). Модификатор проверяется внутри обработчика -
+	 *  Enhanced Input не умеет требовать его в привязке клавиши (та же идиома,
+	 *  что у Shift+Y/Shift+F6/Ctrl+S). Именно U, а не своя клавиша: свободных
+	 *  букв в проекте не осталось ни одной, а из занятых U - единственная про
+	 *  свет и фон, так что пара получается осмысленной ("убрать чужой свет" /
+	 *  "принести свой"), а не случайной. */
 	void OnToggleBackground();
 
 	/** Хоткей (Left Shift, удержание) - ускоряет полёт камеры на время
@@ -634,6 +665,40 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<ARenderCullVolume> CachedCullVolume;
+
+	/** То же самое для оркестратора. Все хоткеи ниже резолвят его прямым
+	 *  GetActorOfClass() на каждое нажатие, и это правильно - нажатие редкое.
+	 *  Здесь нужен кэш ровно потому, что единственный вызывающий -
+	 *  UpdateHeadlight() из Tick(): перебирать актёров мира каждый кадр ради
+	 *  четырёх float'ов было бы платой не по товару. */
+	AAutomataOrchestrator* FindOrchestrator();
+
+	UPROPERTY(Transient)
+	TObjectPtr<AAutomataOrchestrator> CachedOrchestrator;
+
+	/** Создаёт (или переносит на сменившуюся пешку) точечный свет лампочки и
+	 *  возвращает его; nullptr, если пешки ещё нет - тогда попробуем на
+	 *  следующем кадре, как и RebindPawnVerticalMovement().
+	 *
+	 *  Создаётся лениво, при первом включении, а не в BeginPlay(): по
+	 *  умолчанию лампочка выключена, и в типичной сессии её не включают вовсе. */
+	UPointLightComponent* EnsureHeadlight();
+
+	/** Перечитывает настройки лампочки с оркестратора и зажигает её. Зовётся из
+	 *  SetHeadlightEnabled() и каждый кадр из Tick(), пока она горит - чтобы
+	 *  правка яркости/радиуса в Details panel была видна сразу, а не после
+	 *  перещёлкивания хоткея (сеттеры ULightComponent сами сравнивают значение
+	 *  и на неизменившемся не делают ничего, так что кадр это не стоит). */
+	void UpdateHeadlight();
+
+	UPROPERTY(Transient)
+	TObjectPtr<UPointLightComponent> HeadlightComponent;
+
+	/** Горит ли лампочка. UPROPERTY по той же причине, что и указатель рядом:
+	 *  после реинстансинга Live Coding обычное поле осталось бы мусором, и
+	 *  флаг разошёлся бы с реальной видимостью света. */
+	UPROPERTY(Transient)
+	bool bHeadlightEnabled = false;
 
 	/** Ближайшая к лучу курсора точка на оси ручки, в мировых единицах вдоль
 	 *  этой оси - то, что ARenderCullVolume ждёт в Begin/UpdateGizmoDrag().

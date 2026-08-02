@@ -322,6 +322,11 @@ struct FHudStats
 	 *  bSelectionModeActive выше: проекция - состояние камеры, а не автомата. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bOrthographicCamera = false;
+
+	/** Лампочка на камере (Shift+U). Тоже читается с контроллера - свет висит
+	 *  на пешке, а не на автомате (AGamePlayerController::IsHeadlightEnabled()). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bHeadlightEnabled = false;
 };
 
 UCLASS()
@@ -1016,6 +1021,41 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera",
 			  meta = (ClampMin = "1.0", UIMin = "1.0", UIMax = "10.0"))
 	float CameraSpeedMultiplier = 6.0f;
+
+	/** Яркость лампочки, висящей на самой камере (Shift+U, см.
+	 *  AGamePlayerController::SetHeadlightEnabled()). Единицы намеренно
+	 *  безразмерные, а не канделы: у света отключено обратно-квадратичное
+	 *  затухание, иначе внутри структуры пришлось бы подбирать яркость
+	 *  вместе с радиусом, а хочется крутить их независимо.
+	 *
+	 *  Все четыре настройки лампочки живут здесь, а не на контроллере, по той
+	 *  же причине, что и CameraSpeedMultiplier выше: тюнятся из того же
+	 *  Details panel, что и остальное. Контроллер перечитывает их каждый кадр,
+	 *  пока лампочка горит, поэтому слайдер видно сразу, без перещёлкивания. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera",
+			  meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "50000.0"))
+	float HeadlightIntensity = 5000.0f;
+
+	/** Радиус её действия в мировых единицах. По умолчанию 3000 - это 30 клеток
+	 *  при CellSize = 100, то есть освещённый пузырь заметно больше того, во что
+	 *  упирается взгляд изнутри плотной структуры, но далеко не вся сетка. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera",
+			  meta = (ClampMin = "1.0", UIMin = "100.0", UIMax = "20000.0"))
+	float HeadlightRadius = 3000.0f;
+
+	/** Цвет лампочки. Белый по умолчанию - чтобы она показывала цвета клеток
+	 *  (рампу AgeColors), а не перекрашивала их в свой. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera")
+	FLinearColor HeadlightColor = FLinearColor::White;
+
+	/** Отбрасывают ли клетки тень ОТ этой лампочки. Выключено по умолчанию, и
+	 *  это не осторожность вообще, а конкретная цена: точечный свет с тенями -
+	 *  это кубическая карта теней, то есть шесть дополнительных проходов по тем
+	 *  же миллионам инстансов (та же причина, по которой отдельным
+	 *  переключателем вынесен bCellsCastShadows). Включать имеет смысл на
+	 *  маленькой сетке или для снимка F10. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera")
+	bool bHeadlightCastsShadows = false;
 
 	/** Размер сетки в клетках по осям X, Y, Z */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid",

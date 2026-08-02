@@ -12,6 +12,7 @@
 #include "Automata/Rendering/RenderCullVolume.h"
 #include "GameFramework/DefaultPawn.h"
 #include "GameFramework/FloatingPawnMovement.h"
+#include "Components/PointLightComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "SceneView.h"
 
@@ -655,6 +656,15 @@ void AGamePlayerController::OnApplyRenderPreset3() { OnApplyRenderPreset(3); }
 
 void AGamePlayerController::OnToggleBackground()
 {
+	// Shift+U - лампочка на камере, а не фон. Ей оркестратор нужен только ради
+	// настроек, поэтому проверка идёт ДО поиска актёра: без оркестратора свет
+	// всё равно зажжётся, просто с движковыми значениями яркости и радиуса.
+	if (IsShiftHeld())
+	{
+		SetHeadlightEnabled(!bHeadlightEnabled);
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -663,6 +673,104 @@ void AGamePlayerController::OnToggleBackground()
 	}
 
 	Orchestrator->SetBackgroundVisible(!Orchestrator->IsBackgroundVisible());
+}
+
+void AGamePlayerController::SetHeadlightEnabled(bool bEnable)
+{
+	bHeadlightEnabled = bEnable;
+
+	if (!bEnable)
+	{
+		// Компонент не уничтожается - гасится. Лампочку щёлкают туда-сюда, а
+		// пересоздание светового компонента это регистрация в сцене заново.
+		if (HeadlightComponent)
+		{
+			HeadlightComponent->SetVisibility(false);
+		}
+		ShowCameraStatusMessage(TEXT("Лампочка на камере: выключена"));
+		return;
+	}
+
+	UpdateHeadlight();
+
+	// Сообщение по факту, а не по флагу: если пешки ещё нет, EnsureHeadlight()
+	// вернула nullptr и светить пока нечему - Tick() дожжёт лампочку на
+	// следующем кадре сам, но врать про "включена" в этот момент не надо.
+	ShowCameraStatusMessage(HeadlightComponent
+		? TEXT("Лампочка на камере: включена")
+		: TEXT("Лампочка на камере: пешки ещё нет, включится сама"));
+}
+
+UPointLightComponent* AGamePlayerController::EnsureHeadlight()
+{
+	APawn* ControlledPawn = GetPawn();
+	if (!ControlledPawn || !ControlledPawn->GetRootComponent())
+	{
+		return nullptr;
+	}
+
+	// Пешка сменилась - прежний свет принадлежит ей и уедет вместе с ней.
+	if (HeadlightComponent && HeadlightComponent->GetOwner() != ControlledPawn)
+	{
+		HeadlightComponent->DestroyComponent();
+		HeadlightComponent = nullptr;
+	}
+
+	if (IsValid(HeadlightComponent))
+	{
+		return HeadlightComponent;
+	}
+
+	HeadlightComponent = NewObject<UPointLightComponent>(ControlledPawn, TEXT("CameraHeadlight"));
+
+	// Movable обязательна: свет ездит с пешкой, а статический/стационарный
+	// требует запечённого освещения и просто не поедет.
+	HeadlightComponent->SetMobility(EComponentMobility::Movable);
+
+	// Затухание не обратно-квадратичное, а степенное - тогда HeadlightIntensity
+	// и HeadlightRadius крутятся независимо друг от друга: радиус задаёт, докуда
+	// достаёт, яркость - насколько ярко, и одно не приходится подгонять под
+	// другое. Показатель 4 (а не движковый 8) - чтобы пузырь света был ровнее и
+	// дальняя половина радиуса не пропадала в темноте.
+	HeadlightComponent->bUseInverseSquaredFalloff = false;
+	HeadlightComponent->LightFalloffExponent = 4.0f;
+
+	// Ноль, а не движковые 20 см: источник висит ровно там, где камера, и
+	// заметный радиус источника размывал бы тени и блики от самого себя.
+	HeadlightComponent->SourceRadius = 0.0f;
+
+	// Нулевое относительное смещение - лампочка ровно в начале координат пешки.
+	// Камера ADefaultPawn берётся из GetActorEyesViewPoint(), т.е. может стоять
+	// на BaseEyeHeight выше, но это единицы процентов радиуса света, зато
+	// позицию не приходится пересчитывать каждый кадр.
+	HeadlightComponent->SetupAttachment(ControlledPawn->GetRootComponent());
+	HeadlightComponent->RegisterComponent();
+
+	UE_LOG(LogTemp, Log, TEXT("EnsureHeadlight: лампочка создана на пешке %s"), *ControlledPawn->GetName());
+	return HeadlightComponent;
+}
+
+void AGamePlayerController::UpdateHeadlight()
+{
+	UPointLightComponent* Headlight = EnsureHeadlight();
+	if (!Headlight)
+	{
+		return;
+	}
+
+	// Настройки живут на оркестраторе (см. AAutomataOrchestrator::
+	// HeadlightIntensity) и перечитываются каждый кадр - без кэша, как и всё
+	// остальное, что правится в Details panel. Если оркестратора в мире нет,
+	// свет остаётся с движковыми значениями: это не отказ, лампочка светит.
+	if (const AAutomataOrchestrator* Orchestrator = FindOrchestrator())
+	{
+		Headlight->SetIntensity(Orchestrator->HeadlightIntensity);
+		Headlight->SetAttenuationRadius(Orchestrator->HeadlightRadius);
+		Headlight->SetLightColor(Orchestrator->HeadlightColor);
+		Headlight->SetCastShadows(Orchestrator->bHeadlightCastsShadows);
+	}
+
+	Headlight->SetVisibility(true);
 }
 
 void AGamePlayerController::OnSpeedBoostStarted()
@@ -1414,6 +1522,15 @@ ARenderCullVolume* AGamePlayerController::FindCullVolume()
 	return CachedCullVolume;
 }
 
+AAutomataOrchestrator* AGamePlayerController::FindOrchestrator()
+{
+	if (!IsValid(CachedOrchestrator))
+	{
+		CachedOrchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	}
+	return CachedOrchestrator;
+}
+
 bool AGamePlayerController::ComputeGizmoAxisParam(const FVector& AxisOrigin, const FVector& Axis, FVector& OutRayOrigin, float& OutAxisParam) const
 {
 	FVector RayDirection = FVector::ZeroVector;
@@ -1490,6 +1607,15 @@ void AGamePlayerController::Tick(float DeltaTime)
 	// Разовая (на пешку) пересборка - до раннего выхода ниже, иначе она бы
 	// не случилась вовсе, пока в мире нет куба отсечения.
 	RebindPawnVerticalMovement();
+
+	// Тоже до раннего выхода и по той же причине. Пока лампочка выключена -
+	// ровно одна проверка флага; пока горит - перечитывание её настроек, чтобы
+	// они правились на живую (см. UpdateHeadlight()), и заодно самолечение,
+	// если пешка сменилась или её не было в момент нажатия.
+	if (bHeadlightEnabled)
+	{
+		UpdateHeadlight();
+	}
 
 	ARenderCullVolume* CullVolume = FindCullVolume();
 	if (!CullVolume || !CullVolume->IsGizmoVisible())
