@@ -5,6 +5,7 @@
 
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Core/PlayerController/GamePlayerController.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
@@ -283,6 +284,7 @@ void AAutomataOrchestrator::UpdateHudStats()
 	// крутят хоткеи (+/- и T/G) и Details panel, а не хранил свою копию.
 	LastHudStats.SimulationSpeed = Speed;
 	LastHudStats.StepsPerRender = StepsPerRender;
+	LastHudStats.CellBorderWidth = CellBorderWidth;
 
 	// Скорость камеры - фактическая, с учётом удержания Shift (см. doc-comment
 	// FHudStats::CameraSpeed).
@@ -455,6 +457,15 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 		{
 			RenderGridImmediate();
 		}
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellBorderWidth))
+	{
+		// Намеренно НЕ перерисовываем: ширина канта живёт в uniform-буфере
+		// материала, а не в per-instance данных, поэтому достаточно записать её
+		// в динамический инстанс. Тянуть сюда RenderGridImmediate() было бы
+		// прямым вредом - на миллионах клеток каждое движение ползунка в
+		// Details panel стоило бы полного AddInstances().
+		EnsureCellMaterialInstance();
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellCullStartDistance)
 		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellCullEndDistance))
@@ -1312,7 +1323,9 @@ void AAutomataOrchestrator::RenderSelectionOverlay()
 	// Тот же материал, что и у обычных клеток - отличается только цветом в
 	// per-instance custom data (см. doc-comment SelectionColor).
 	SelectionRenderer->SetMesh(CellMesh);
-	SelectionRenderer->SetMaterial(CellMaterial);
+	// Тот же динамический инстанс, что и у обычных клеток: подсветка отличается
+	// только цветом из custom data, и кант на ней должен быть такой же ширины.
+	SelectionRenderer->SetMaterial(EnsureCellMaterialInstance());
 	// Чуть крупнее обычного кубика - иначе поверхности совпадают и мерцают
 	// (z-fighting), см. doc-comment SelectionScaleMultiplier.
 	SelectionRenderer->SetScaleMultiplier(SelectionScaleMultiplier);
@@ -3997,7 +4010,7 @@ void AAutomataOrchestrator::RenderGridImmediate()
 	}
 
 	CellsRenderer->SetMesh(CellMesh);
-	CellsRenderer->SetMaterial(CellMaterial);
+	CellsRenderer->SetMaterial(EnsureCellMaterialInstance());
 	// Задаётся явно на каждый рендер: тот же класс рендерера используется и для
 	// подсветки выделения, где множитель свой (см. SelectionScaleMultiplier).
 	// Инвариант "обычные клетки берут CellMeshScaleMultiplier" лучше держать
@@ -4068,7 +4081,7 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 	}
 
 	CellsRenderer->SetMesh(CellMesh);
-	CellsRenderer->SetMaterial(CellMaterial);
+	CellsRenderer->SetMaterial(EnsureCellMaterialInstance());
 	// См. одноимённый комментарий в RenderGridImmediate().
 	CellsRenderer->SetScaleMultiplier(CellMeshScaleMultiplier);
 
@@ -4378,6 +4391,64 @@ void AAutomataOrchestrator::ApplyCellShadowSettings()
 	{
 		SelectionMeshComponent->SetCastShadow(bCellsCastShadows);
 	}
+}
+
+const FName AAutomataOrchestrator::CellBorderWidthParameter(TEXT("BorderWidth"));
+
+void AAutomataOrchestrator::SetCellBorderWidth(float NewBorderWidth)
+{
+	// Тот же зажим, что в meta у самого свойства: сеттер существует ради
+	// слайдера HUD, а тот пишет значение напрямую и об ограничениях панели не
+	// знает.
+	CellBorderWidth = FMath::Clamp(NewBorderWidth, 0.0f, 0.25f);
+
+	// Ни перерисовки, ни пересчёта поколения: значение уезжает в uniform-буфер
+	// материала и видно уже на следующем кадре, даже на полностью
+	// остановленной симуляции.
+	EnsureCellMaterialInstance();
+}
+
+UMaterialInterface* AAutomataOrchestrator::EnsureCellMaterialInstance()
+{
+	if (!CellMaterial)
+	{
+		CellMaterialInstance = nullptr;
+		return nullptr;
+	}
+
+	// Parent, а не GetBaseMaterial(): последний возвращает корневой UMaterial,
+	// поэтому подмена CellMaterial на другой Material Instance того же родителя
+	// осталась бы незамеченной, и клетки продолжили бы рисоваться прежним.
+	if (!CellMaterialInstance || CellMaterialInstance->Parent != CellMaterial)
+	{
+		CellMaterialInstance = UMaterialInstanceDynamic::Create(CellMaterial, this);
+		bCellBorderParameterWarned = false;
+	}
+
+	if (!CellMaterialInstance)
+	{
+		// Рисовать без канта лучше, чем не рисовать вовсе.
+		UE_LOG(LogTemp, Warning, TEXT("EnsureCellMaterialInstance: не удалось создать динамический инстанс материала - ширина контура меняться не будет"));
+		return CellMaterial;
+	}
+
+	// Отсутствующий параметр - тихий отказ: SetScalarParameterValue() в этом
+	// случае просто ничего не делает, и снаружи это выглядит как сломанный
+	// ползунок. Проверяем один раз на инстанс и говорим об этом вслух.
+	if (!bCellBorderParameterWarned)
+	{
+		float ExistingValue = 0.0f;
+		if (!CellMaterialInstance->GetScalarParameterValue(FMaterialParameterInfo(CellBorderWidthParameter), ExistingValue))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("EnsureCellMaterialInstance: в материале клеток нет скалярного параметра '%s' - CellBorderWidth ни на что не влияет"),
+				*CellBorderWidthParameter.ToString());
+		}
+		bCellBorderParameterWarned = true;
+	}
+
+	CellMaterialInstance->SetScalarParameterValue(CellBorderWidthParameter, CellBorderWidth);
+	return CellMaterialInstance;
 }
 
 void AAutomataOrchestrator::SetBackgroundVisible(bool bVisible)

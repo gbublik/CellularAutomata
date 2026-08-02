@@ -176,6 +176,13 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	float CameraSpeed = 0.0f;
 
+	/** Ширина контура на грани клетки - зеркало AAutomataOrchestrator::
+	 *  CellBorderWidth, чтобы слайдер в HUD показывал текущее значение, а не
+	 *  держал свою копию (тот же принцип, что у SimulationSpeed/StepsPerRender).
+	 *  Меняется через SetCellBorderWidth(). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	float CellBorderWidth = 0.0f;
+
 	// --- Режимы работы: зеркала живых переключателей, по одному на хоткей ---
 	// Все они зеркала, а не отдельное состояние: HUD показывает ровно то, что
 	// переключают хоткеи и Details panel. Держатся здесь, в FHudStats, а не в
@@ -1195,6 +1202,42 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
 			  meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "3.0"))
 	float CellMeshScaleMultiplier = 1.0f;
+
+	/** Ширина контура, которым материал обводит грань клетки, в единицах UV:
+	 *  расстояние до края грани меняется от 0 на ребре до 0.5 в центре, так что
+	 *  0.04 - это кант шириной в 8% пути до центра.
+	 *
+	 *  Уезжает в скалярный параметр материала с именем CellBorderWidthParameter
+	 *  ("BorderWidth"). Материал считает контур процедурно, по производным
+	 *  экранных координат, а не берёт его из текстуры - поэтому ширина здесь
+	 *  задаётся один раз и остаётся верной на любом расстоянии, без мип-уровней
+	 *  и без мерцания на мелких клетках.
+	 *
+	 *  Если в материале такого параметра нет, значение просто никуда не
+	 *  применится - SetScalarParameterValue() в этом случае молча ничего не
+	 *  делает. Чтобы это не выглядело как "ползунок не работает",
+	 *  EnsureCellMaterialInstance() один раз пишет об этом предупреждение в лог
+	 *  (та же болезнь, что у отсутствующего узла PerInstanceCustomData3Vector,
+	 *  см. FCellRenderInstance). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "0.25"))
+	float CellBorderWidth = 0.04f;
+
+	UFUNCTION(BlueprintPure, Category = "Automata|Cells")
+	float GetCellBorderWidth() const { return CellBorderWidth; }
+
+	/** Задаёт ширину контура клетки. Абсолютный сеттер под слайдер HUD, как
+	 *  SetSpeed()/SetStepsPerRender(), с тем же зажимом, что и у самого
+	 *  свойства - иначе слайдер, пишущий BlueprintReadWrite-поле напрямую, мог
+	 *  бы уехать за пределы разумного.
+	 *
+	 *  Пересчёта поколения и даже перерисовки НЕ требует: параметр материала
+	 *  живёт в uniform-буфере, а не в per-instance данных, поэтому новое
+	 *  значение видно уже на следующем кадре при полностью неподвижной
+	 *  симуляции. Это и есть причина, по которой ширина - параметр материала, а
+	 *  не что-то, зашитое в геометрию или в custom data. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Cells")
+	void SetCellBorderWidth(float NewBorderWidth);
 
 	/** Какая реализация инстансированного компонента используется для
 	 *  отрисовки клеток - выбирает, какой из двух постоянно существующих
@@ -2407,6 +2450,41 @@ private:
 	 *  ОБОИМ компонентам клеток, а не только к активному: смена
 	 *  CellMeshComponentType не должна оставить второй со старой настройкой. */
 	void ApplyCellShadowSettings();
+
+	/** Имя скалярного параметра материала, в который уезжает CellBorderWidth.
+	 *  Константа, а не литерал по месту: имя обязано совпадать с параметром в
+	 *  материале, и расхождение здесь не даёт ни ошибки компиляции, ни ошибки в
+	 *  рантайме - просто ползунок перестаёт на что-либо влиять. */
+	static const FName CellBorderWidthParameter;
+
+	/** Динамический инстанс CellMaterial - именно он отдаётся рендерерам, а не
+	 *  сам CellMaterial. Нужен ровно затем, чтобы параметры материала можно было
+	 *  менять в рантайме: у обычного UMaterialInterface значения параметров
+	 *  зафиксированы в ассете, и слайдер в HUD не имел бы к ним доступа.
+	 *
+	 *  Transient по той же причине, что GamePC/LastHudStats: реинстансинг после
+	 *  Live Coding копирует только UPROPERTY-поля, а пересоздать инстанс
+	 *  EnsureCellMaterialInstance() умеет сам - ему достаточно увидеть nullptr. */
+	UPROPERTY(Transient)
+	UMaterialInstanceDynamic* CellMaterialInstance = nullptr;
+
+	/** Предупреждение об отсутствующем параметре пишется один раз за жизнь
+	 *  инстанса, а не каждый рендер - иначе лог забился бы одной строкой. */
+	UPROPERTY(Transient)
+	bool bCellBorderParameterWarned = false;
+
+	/** Возвращает материал, который надо отдать рендереру: динамический инстанс
+	 *  поверх CellMaterial, создавая его при необходимости, и заодно ЗАПИСЫВАЕТ
+	 *  в него текущие значения параметров.
+	 *
+	 *  Одна функция, а не пара "создай" + "примени", намеренно: у неё три места
+	 *  вызова (оба пути рендера и подсветка выделения), и разделение дало бы
+	 *  возможность забыть второй вызов - материал тогда молча остался бы со
+	 *  старой шириной канта.
+	 *
+	 *  nullptr, если CellMaterial не назначен; сам CellMaterial, если создать
+	 *  инстанс почему-то не удалось - рисовать без канта лучше, чем не рисовать. */
+	UMaterialInterface* EnsureCellMaterialInstance();
 	/** Применяет bShowBackground к небу/туману/облакам уровня, предварительно
 	 *  заморозив захват у ASkyLight - см. doc-comment SetBackgroundVisible()
 	 *  про то, почему без заморозки вместе с фоном пропадает и свет. */
