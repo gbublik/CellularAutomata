@@ -219,235 +219,162 @@ bool FDenseCellGridNegativeCoordsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FNeighborhoodRadiusTest,
-	"CellularAutomata.Rules.NeighborhoodRadius",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FNeighborhoodShellsTest,
+	"CellularAutomata.Rules.NeighborhoodShells",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
 
-bool FNeighborhoodRadiusTest::RunTest(const FString& Parameters)
+bool FNeighborhoodShellsTest::RunTest(const FString& Parameters)
 {
-	// Числа соседей - это и есть всё содержание радиуса, и каждое из них
-	// упирается в конкретный потолок в другом месте кода: 24 у фон Неймана
-	// радиуса 2 обязаны остаться <= 26 (шейдерный массив, см.
-	// GpuComputeStrategy.cpp::MaxShaderNeighborOffsets) и < 32 (маски правила
-	// там же). 124 у Moore радиуса 2 приведены не потому, что поддержаны, а
-	// потому, что именно это число обе границы и ломает.
-	const TArray<FIntVector> VN1 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::VonNeumann, 1);
-	const TArray<FIntVector> M1 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Moore, 1);
-	const TArray<FIntVector> VN2 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::VonNeumann, 2);
-	const TArray<FIntVector> M2 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Moore, 2);
+	// Четыре оболочки - вся модель соседства целиком (см. ENeighborhood).
+	// Проверяется она сама, а не отдельные значения: если оболочки верны и
+	// значения из них собраны, то верно и всё остальное.
+	const TArray<FIntVector> Faces = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::VonNeumann);
+	const TArray<FIntVector> Edges = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Edges);
+	const TArray<FIntVector> Corners = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Corners);
+	const TArray<FIntVector> FarAxes = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::FarAxes);
 
-	const TArray<FIntVector> Edges = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Edges, 1);
-	const TArray<FIntVector> Corners = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Corners, 1);
-	const TArray<FIntVector> FacesEdges = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::FacesEdges, 1);
+	TestEqual(TEXT("грани - 6"), Faces.Num(), 6);
+	TestEqual(TEXT("рёбра - 12"), Edges.Num(), 12);
+	TestEqual(TEXT("диагонали - 8"), Corners.Num(), 8);
+	TestEqual(TEXT("дальние оси - 6"), FarAxes.Num(), 6);
 
-	TestEqual(TEXT("фон Нейман радиуса 1 - 6 соседей"), VN1.Num(), 6);
-	TestEqual(TEXT("Moore радиуса 1 - 26 соседей"), M1.Num(), 26);
-	TestEqual(TEXT("фон Нейман радиуса 2 - 24 соседа"), VN2.Num(), 24);
-	TestEqual(TEXT("Moore радиуса 2 - 124 соседа"), M2.Num(), 124);
-	const TArray<FIntVector> FarAxes = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::FarAxes, 1);
-	const TArray<FIntVector> EdgesFarAxes = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::EdgesFarAxes, 1);
-	const TArray<FIntVector> CornersFarAxes = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::CornersFarAxes, 1);
-
-	TestEqual(TEXT("рёбра - 12 соседей"), Edges.Num(), 12);
-	TestEqual(TEXT("диагонали - 8 соседей"), Corners.Num(), 8);
-	TestEqual(TEXT("грани+рёбра - 18 соседей"), FacesEdges.Num(), 18);
-	TestEqual(TEXT("дальние оси - 6 соседей"), FarAxes.Num(), 6);
-	TestEqual(TEXT("рёбра+дальние оси - 18 соседей"), EdgesFarAxes.Num(), 18);
-	TestEqual(TEXT("диагонали+дальние оси - 14 соседей"), CornersFarAxes.Num(), 14);
-
-	// Дальние оси - это ровно (+-2,0,0) и её перестановки, ничего больше.
-	// Куб 5x5x5 полон смещений с компонентой 2 (например (2,1,0)), и они не
-	// должны просочиться: отсев идёт по d^2 <= 4, а у (2,1,0) он равен 5.
+	// Каждая оболочка - ровно один класс по d^2, без примесей. Куб 5x5x5, по
+	// которому идёт перебор, полон смещений вроде (2,1,0) с d^2=5, и они не
+	// должны просачиваться никуда.
+	auto CheckShell = [this](const TArray<FIntVector>& Offsets, int32 ExpectedDistSq, const TCHAR* Label)
 	{
-		bool bAllFarAxis = true;
-		for (const FIntVector& Offset : FarAxes)
+		bool bOk = true;
+		for (const FIntVector& Offset : Offsets)
 		{
-			const int32 DistSq = Offset.X * Offset.X + Offset.Y * Offset.Y + Offset.Z * Offset.Z;
-			if (DistSq != 4)
+			if (Offset.X * Offset.X + Offset.Y * Offset.Y + Offset.Z * Offset.Z != ExpectedDistSq)
 			{
-				bAllFarAxis = false;
+				bOk = false;
 			}
 		}
-		TestTrue(TEXT("дальние оси - только смещения с d^2 = 4"), bAllFarAxis);
-		TestTrue(TEXT("дальние оси содержат (2,0,0)"), FarAxes.Contains(FIntVector(2, 0, 0)));
-		TestFalse(TEXT("дальние оси не содержат (2,1,0)"), FarAxes.Contains(FIntVector(2, 1, 0)));
-		TestFalse(TEXT("дальние оси не содержат (2,2,0)"), FarAxes.Contains(FIntVector(2, 2, 0)));
+		TestTrue(FString::Printf(TEXT("%s: все смещения одного класса d^2"), Label), bOk);
+	};
+	CheckShell(Faces, 1, TEXT("грани"));
+	CheckShell(Edges, 2, TEXT("рёбра"));
+	CheckShell(Corners, 3, TEXT("диагонали"));
+	CheckShell(FarAxes, 4, TEXT("дальние оси"));
+	TestFalse(TEXT("дальние оси не содержат (2,1,0)"), FarAxes.Contains(FIntVector(2, 1, 0)));
+	TestFalse(TEXT("дальние оси не содержат (2,2,0)"), FarAxes.Contains(FIntVector(2, 2, 0)));
+
+	// Все 14 значений: размер, отсутствие повторов, и то, что набор в точности
+	// равен объединению своих оболочек. Последнее - главное: числа сошлись бы и
+	// при перепутанных классах (6+8 и 12+2 одинаково дают 14).
+	struct FCase
+	{
+		ENeighborhood Value;
+		int32 ExpectedCount;
+		bool bFaces;
+		bool bEdges;
+		bool bCorners;
+		bool bFarAxes;
+		const TCHAR* Label;
+	};
+
+	const TArray<FCase> Cases = {
+		{ ENeighborhood::VonNeumann,           6, true,  false, false, false, TEXT("VonNeumann") },
+		{ ENeighborhood::Moore,               26, true,  true,  true,  false, TEXT("Moore") },
+		{ ENeighborhood::VonNeumann2,         24, true,  true,  false, true,  TEXT("VonNeumann2") },
+		{ ENeighborhood::Edges,               12, false, true,  false, false, TEXT("Edges") },
+		{ ENeighborhood::Corners,              8, false, false, true,  false, TEXT("Corners") },
+		{ ENeighborhood::FarAxes,              6, false, false, false, true,  TEXT("FarAxes") },
+		{ ENeighborhood::FacesEdges,          18, true,  true,  false, false, TEXT("FacesEdges") },
+		{ ENeighborhood::FacesCorners,        14, true,  false, true,  false, TEXT("FacesCorners") },
+		{ ENeighborhood::FacesFarAxes,        12, true,  false, false, true,  TEXT("FacesFarAxes") },
+		{ ENeighborhood::EdgesCorners,        20, false, true,  true,  false, TEXT("EdgesCorners") },
+		{ ENeighborhood::EdgesFarAxes,        18, false, true,  false, true,  TEXT("EdgesFarAxes") },
+		{ ENeighborhood::CornersFarAxes,      14, false, false, true,  true,  TEXT("CornersFarAxes") },
+		{ ENeighborhood::FacesCornersFarAxes, 20, true,  false, true,  true,  TEXT("FacesCornersFarAxes") },
+		{ ENeighborhood::EdgesCornersFarAxes, 26, false, true,  true,  true,  TEXT("EdgesCornersFarAxes") },
+	};
+
+	for (const FCase& Case : Cases)
+	{
+		const TArray<FIntVector> Offsets = FCellularAutomatonRule::BuildNeighborOffsets(Case.Value);
+		TestEqual(FString::Printf(TEXT("%s: число соседей"), Case.Label), Offsets.Num(), Case.ExpectedCount);
+
+		TSet<FIntVector> Expected;
+		if (Case.bFaces)   { Expected.Append(Faces); }
+		if (Case.bEdges)   { Expected.Append(Edges); }
+		if (Case.bCorners) { Expected.Append(Corners); }
+		if (Case.bFarAxes) { Expected.Append(FarAxes); }
+
+		TestEqual(FString::Printf(TEXT("%s: без повторов"), Case.Label), TSet<FIntVector>(Offsets).Num(), Offsets.Num());
+		TestEqual(FString::Printf(TEXT("%s: размер совпал с объединением оболочек"), Case.Label), Expected.Num(), Offsets.Num());
+
+		bool bMatches = true;
+		for (const FIntVector& Offset : Offsets)
+		{
+			if (!Expected.Contains(Offset))
+			{
+				bMatches = false;
+			}
+		}
+		TestTrue(FString::Printf(TEXT("%s: набор равен объединению своих оболочек"), Case.Label), bMatches);
+
+		// Потолок шейдерного массива - он же потолок 32-битных масок правила
+		// (счётчик соседей не может превысить их число). Таблица обязана
+		// оставаться под ним целиком.
+		TestTrue(FString::Printf(TEXT("%s: влезает в шейдерный массив"), Case.Label), Offsets.Num() <= 26);
 	}
 
-	// Оболочки складываются: von Neumann радиуса 2 - это в точности
-	// грани+рёбра+дальние оси, а рёбра+дальние оси - это оболочка
-	// |dx|+|dy|+|dz| = 2, то есть VN2 минус его внутренность.
+	// Moore обязан отдавать прежние 26 смещений в прежнем порядке: порядок ни
+	// на что не влияет (оба compute-пути только суммируют), но сохранить его
+	// дешевле, чем каждый раз доказывать, что можно не сохранять.
 	{
-		TSet<FIntVector> Rebuilt;
-		Rebuilt.Append(FacesEdges);
-		Rebuilt.Append(FarAxes);
-		TestEqual(TEXT("грани+рёбра+дальние оси в сумме дают VN радиуса 2"), Rebuilt.Num(), VN2.Num());
-
-		bool bMatchesVN2 = true;
-		for (const FIntVector& Offset : VN2)
+		TArray<FIntVector> ExpectedMoore;
+		for (int32 dx = -1; dx <= 1; ++dx)
 		{
-			if (!Rebuilt.Contains(Offset))
+			for (int32 dy = -1; dy <= 1; ++dy)
 			{
-				bMatchesVN2 = false;
+				for (int32 dz = -1; dz <= 1; ++dz)
+				{
+					if (dx != 0 || dy != 0 || dz != 0)
+					{
+						ExpectedMoore.Add(FIntVector(dx, dy, dz));
+					}
+				}
 			}
 		}
-		TestTrue(TEXT("собранный из оболочек набор совпадает с VN2"), bMatchesVN2);
-
-		bool bShellIsManhattanTwo = true;
-		for (const FIntVector& Offset : EdgesFarAxes)
-		{
-			if (FMath::Abs(Offset.X) + FMath::Abs(Offset.Y) + FMath::Abs(Offset.Z) != 2)
-			{
-				bShellIsManhattanTwo = false;
-			}
-		}
-		TestTrue(TEXT("рёбра+дальние оси - это ровно оболочка |d|=2 по Манхэттену"), bShellIsManhattanTwo);
+		TestTrue(TEXT("Moore - прежний набор в прежнем порядке"),
+			FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Moore) == ExpectedMoore);
 	}
 
-	// Размах офсетов - то, из чего считается гало GPU-пачки. У форм с дальними
-	// осями радиус равен 1, а размах 2, и гало по радиусу молча срезало бы им
-	// границу. Это единственная защита от той ошибки на уровне правила.
-	{
-		const FCellularAutomatonRule MooreRule({ 1 }, { 2 }, ENeighborhood::Moore, 2);
-		const FCellularAutomatonRule FarRule({ 1 }, { 2 }, ENeighborhood::FarAxes, 2);
-		const FCellularAutomatonRule EdgeRule({ 1 }, { 2 }, ENeighborhood::Edges, 2);
-		const FCellularAutomatonRule Vn2Rule({ 1 }, { 2 }, ENeighborhood::VonNeumann, 2, 2);
-
-		TestEqual(TEXT("размах Moore радиуса 1"), MooreRule.GetNeighborExtent(), 1);
-		TestEqual(TEXT("размах рёбер"), EdgeRule.GetNeighborExtent(), 1);
-		TestEqual(TEXT("размах VN радиуса 2"), Vn2Rule.GetNeighborExtent(), 2);
-		TestEqual(TEXT("размах дальних осей - 2 при радиусе 1"), FarRule.GetNeighborExtent(), 2);
-		TestEqual(TEXT("радиус дальних осей при этом 1"), FarRule.GetNeighborRadius(), 1);
-	}
-
-	// Формы обязаны быть именно РАЗБИЕНИЕМ куба 3x3x3, а не произвольными
-	// наборами: грани+рёбра+диагонали дают ровно Moore, и ни одна пара из
-	// трёх классов не пересекается. Проверяется множествами, а не числами -
-	// 6+12+8=26 сошлось бы и при перепутанных классах.
-	{
-		TSet<FIntVector> Union;
-		Union.Append(VN1);
-		Union.Append(Edges);
-		Union.Append(Corners);
-		TestEqual(TEXT("грани+рёбра+диагонали в сумме дают весь куб 3x3x3"), Union.Num(), 26);
-
-		bool bAllInMoore = true;
-		for (const FIntVector& Offset : Union)
-		{
-			if (!M1.Contains(Offset))
-			{
-				bAllInMoore = false;
-			}
-		}
-		TestTrue(TEXT("объединение классов совпадает с Moore"), bAllInMoore);
-
-		TSet<FIntVector> FacesEdgesExpected;
-		FacesEdgesExpected.Append(VN1);
-		FacesEdgesExpected.Append(Edges);
-		TestEqual(TEXT("грани+рёбра - это ровно грани плюс рёбра"), FacesEdgesExpected.Num(), FacesEdges.Num());
-
-		bool bFacesEdgesMatch = true;
-		for (const FIntVector& Offset : FacesEdges)
-		{
-			if (!FacesEdgesExpected.Contains(Offset))
-			{
-				bFacesEdgesMatch = false;
-			}
-		}
-		TestTrue(TEXT("грани+рёбра не содержит ничего лишнего"), bFacesEdgesMatch);
-	}
-
-	// Структурное свойство, ради которого эти формы и добавлены: рёбра
-	// сохраняют чётность суммы координат (решётка распадается на две
-	// независимые подрешётки), диагонали переворачивают чётность каждой
-	// координаты (на четыре). Если это сломается, формы станут просто
-	// "Moore поменьше" и потеряют весь смысл.
+	// Структурные свойства, ради которых наборы без граней и существуют: рёбра
+	// сохраняют чётность суммы координат (две подрешётки), диагонали
+	// переворачивают чётность каждой координаты (четыре), дальние оси её
+	// сохраняют (восемь). Сломайся это - наборы станут просто "Moore поменьше".
 	for (const FIntVector& Offset : Edges)
 	{
-		TestTrue(TEXT("ребро не меняет чётность суммы координат"), ((Offset.X + Offset.Y + Offset.Z) % 2) == 0);
+		TestTrue(TEXT("ребро сохраняет чётность суммы координат"), ((Offset.X + Offset.Y + Offset.Z) % 2) == 0);
 	}
 	for (const FIntVector& Offset : Corners)
 	{
 		TestTrue(TEXT("диагональ переворачивает чётность каждой координаты"),
 			FMath::Abs(Offset.X) == 1 && FMath::Abs(Offset.Y) == 1 && FMath::Abs(Offset.Z) == 1);
 	}
-
-	// У форм радиуса нет - запрошенный игнорируется, а не растягивает набор.
-	TestEqual(TEXT("рёбра с радиусом 2 дают тот же набор из 12"),
-		FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Edges, 2).Num(), 12);
-
-	TestTrue(TEXT("фон Нейман радиуса 2 влезает в шейдерный массив и в 32-битные маски"), VN2.Num() <= 26);
-
-	// Радиус 1 обязан давать РОВНО прежний набор в прежнем порядке - иначе
-	// появление радиуса могло бы незаметно сдвинуть уже сохранённые прогоны.
-	// Порядок сам по себе ни на что не влияет (оба compute-пути только
-	// суммируют по нему), но проверить дешевле, чем каждый раз доказывать.
-	const TArray<FIntVector> ExpectedVN1 = {
-		FIntVector(1, 0, 0), FIntVector(-1, 0, 0),
-		FIntVector(0, 1, 0), FIntVector(0, -1, 0),
-		FIntVector(0, 0, 1), FIntVector(0, 0, -1)
-	};
-	TestTrue(TEXT("фон Нейман радиуса 1 - прежний набор в прежнем порядке"), VN1 == ExpectedVN1);
-
-	TArray<FIntVector> ExpectedM1;
-	for (int32 dx = -1; dx <= 1; ++dx)
+	for (const FIntVector& Offset : FarAxes)
 	{
-		for (int32 dy = -1; dy <= 1; ++dy)
-		{
-			for (int32 dz = -1; dz <= 1; ++dz)
-			{
-				if (dx != 0 || dy != 0 || dz != 0)
-				{
-					ExpectedM1.Add(FIntVector(dx, dy, dz));
-				}
-			}
-		}
+		TestTrue(TEXT("дальняя ось сохраняет чётность каждой координаты"),
+			(Offset.X % 2) == 0 && (Offset.Y % 2) == 0 && (Offset.Z % 2) == 0);
 	}
-	TestTrue(TEXT("Moore радиуса 1 - прежний набор в прежнем порядке"), M1 == ExpectedM1);
 
-	// Метрики: фон Нейман - Манхэттен, Moore - Чебышёв. Проверяется не только
-	// "не больше радиуса", но и что ни один офсет не повторяется и центра нет.
-	auto CheckSet = [this](const TArray<FIntVector>& Offsets, int32 Radius, bool bMoore, const TCHAR* Label)
+	// Размах - то, из чего считается гало GPU-пачки, и он обязан браться из
+	// офсетов, а не из чего-либо ещё: наборы с дальними осями дотягиваются до
+	// второй клетки, оставаясь обычными наборами оболочек.
 	{
-		TSet<FIntVector> Unique;
-		bool bMetricOk = true;
-		for (const FIntVector& Offset : Offsets)
-		{
-			Unique.Add(Offset);
-			const int32 Chebyshev = FMath::Max3(FMath::Abs(Offset.X), FMath::Abs(Offset.Y), FMath::Abs(Offset.Z));
-			const int32 Manhattan = FMath::Abs(Offset.X) + FMath::Abs(Offset.Y) + FMath::Abs(Offset.Z);
-			const int32 Distance = bMoore ? Chebyshev : Manhattan;
-			if (Distance < 1 || Distance > Radius)
-			{
-				bMetricOk = false;
-			}
-		}
-		TestTrue(FString::Printf(TEXT("%s: офсеты не повторяются"), Label), Unique.Num() == Offsets.Num());
-		TestTrue(FString::Printf(TEXT("%s: все офсеты в пределах радиуса и без центра"), Label), bMetricOk);
-	};
-	CheckSet(VN2, 2, /*bMoore=*/false, TEXT("фон Нейман радиуса 2"));
-	CheckSet(M2, 2, /*bMoore=*/true, TEXT("Moore радиуса 2"));
+		const FCellularAutomatonRule MooreRule({ 1 }, { 2 }, ENeighborhood::Moore, 2);
+		const FCellularAutomatonRule FarRule({ 1 }, { 2 }, ENeighborhood::FarAxes, 2);
+		const FCellularAutomatonRule Vn2Rule({ 1 }, { 2 }, ENeighborhood::VonNeumann2, 2);
 
-	// Поддержанность пар: радиус > 1 только у фон Неймана, и только до 2.
-	TestTrue(TEXT("VN радиуса 1 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 1));
-	TestTrue(TEXT("Moore радиуса 1 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::Moore, 1));
-	TestTrue(TEXT("VN радиуса 2 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 2));
-	TestFalse(TEXT("Moore радиуса 2 не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::Moore, 2));
-	TestTrue(TEXT("форма радиуса 1 поддержана"), IsNeighborhoodRadiusSupported(ENeighborhood::Edges, 1));
-	TestFalse(TEXT("форма радиуса 2 не поддержана"), IsNeighborhoodRadiusSupported(ENeighborhood::Edges, 2));
-	TestFalse(TEXT("диагонали радиуса 2 не поддержаны"), IsNeighborhoodRadiusSupported(ENeighborhood::Corners, 2));
-	TestFalse(TEXT("радиус 0 не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 0));
-	TestFalse(TEXT("радиус за потолком не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, MaxNeighborhoodRadius + 1));
-
-	// Правило доносит радиус до GPU-гало - без этого пачка теряла бы
-	// пограничные клетки молча.
-	const FCellularAutomatonRule Rule({ 1 }, { 2 }, ENeighborhood::VonNeumann, 2, 2);
-	TestEqual(TEXT("правило помнит радиус"), Rule.GetNeighborRadius(), 2);
-	TestEqual(TEXT("правило построило офсеты по радиусу"), Rule.GetNeighborOffsets().Num(), 24);
-
-	const FCellularAutomatonRule DefaultRule({ 1 }, { 2 }, ENeighborhood::Moore, 2);
-	TestEqual(TEXT("радиус по умолчанию - 1"), DefaultRule.GetNeighborRadius(), 1);
-	TestEqual(TEXT("правило без радиуса - прежние 26 офсетов"), DefaultRule.GetNeighborOffsets().Num(), 26);
+		TestEqual(TEXT("размах Moore"), MooreRule.GetNeighborExtent(), 1);
+		TestEqual(TEXT("размах дальних осей"), FarRule.GetNeighborExtent(), 2);
+		TestEqual(TEXT("размах VonNeumann2"), Vn2Rule.GetNeighborExtent(), 2);
+		TestEqual(TEXT("правило построило офсеты по соседству"), Vn2Rule.GetNeighborOffsets().Num(), 24);
+	}
 
 	return true;
 }
@@ -471,21 +398,23 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Birth содержит 3"), Parsed.BirthCounts.Contains(3));
 		TestEqual(TEXT("States"), Parsed.States, 2);
 		TestTrue(TEXT("Neighborhood"), Parsed.Neighborhood == ENeighborhood::VonNeumann);
-		TestEqual(TEXT("радиус без цифры - 1"), Parsed.Radius, 1);
 	}
 
-	// Хвостовая цифра радиуса. Отдельным блоком, потому что проверяется не
-	// только само число, но и что имя соседства при этом разобрано верно -
-	// цифра отрезается с конца, а не отделяется разделителем.
+	// "VN2" - самостоятельное ИМЯ, а не "VN с цифрой". Отдельным блоком,
+	// потому что раньше хвостовые цифры отрезались как радиус, и такая строка
+	// разбиралась бы как VonNeumann. Радиуса больше нет (см. Neighborhood.h),
+	// имя сравнивается целиком.
 	{
 		RuleStringParser::FParsedRule Parsed;
 		FString Error;
 		TestTrue(TEXT("'0-6/1,3/2/VN2' разбирается"), RuleStringParser::ParseRuleString(TEXT("0-6/1,3/2/VN2"), Parsed, Error));
-		TestEqual(TEXT("радиус 2"), Parsed.Radius, 2);
-		TestTrue(TEXT("соседство при радиусе 2"), Parsed.Neighborhood == ENeighborhood::VonNeumann);
+		TestTrue(TEXT("'VN2' - это VonNeumann2, а не VonNeumann"), Parsed.Neighborhood == ENeighborhood::VonNeumann2);
 
 		TestTrue(TEXT("'0-6/1,3/2/VonNeumann' разбирается"), RuleStringParser::ParseRuleString(TEXT("0-6/1,3/2/VonNeumann"), Parsed, Error));
-		TestEqual(TEXT("длинное имя без цифры - радиус 1"), Parsed.Radius, 1);
+		TestTrue(TEXT("длинное имя - обычный VonNeumann"), Parsed.Neighborhood == ENeighborhood::VonNeumann);
+
+		TestTrue(TEXT("'VonNeumann2' разбирается"), RuleStringParser::ParseRuleString(TEXT("0-6/1,3/2/VonNeumann2"), Parsed, Error));
+		TestTrue(TEXT("'VonNeumann2' - это VonNeumann2"), Parsed.Neighborhood == ENeighborhood::VonNeumann2);
 	}
 
 	// Round-trip: Parse -> Format -> Parse даёт то же самое. Проверяем на
@@ -515,7 +444,7 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 			continue;
 		}
 
-		const FString Formatted = RuleStringParser::FormatRuleString(First.SurvivalCounts, First.BirthCounts, First.States, First.Neighborhood, First.Radius);
+		const FString Formatted = RuleStringParser::FormatRuleString(First.SurvivalCounts, First.BirthCounts, First.States, First.Neighborhood);
 
 		RuleStringParser::FParsedRule Second;
 		if (!TestTrue(FString::Printf(TEXT("'%s' (из '%s') разбирается обратно"), *Formatted, *Rule),
@@ -530,15 +459,6 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("'%s': Birth после round-trip"), *Rule), Second.BirthCounts == First.BirthCounts);
 		TestEqual(FString::Printf(TEXT("'%s': States после round-trip"), *Rule), Second.States, First.States);
 		TestTrue(FString::Printf(TEXT("'%s': Neighborhood после round-trip"), *Rule), Second.Neighborhood == First.Neighborhood);
-		TestEqual(FString::Printf(TEXT("'%s': радиус после round-trip"), *Rule), Second.Radius, First.Radius);
-
-		// Строки радиуса 1 обязаны печататься БАЙТ В БАЙТ как раньше: иначе
-		// каждая уже написанная строка (и каждая запись RulePresets) начала бы
-		// возвращаться из round-trip'а в другом виде.
-		if (First.Radius == 1)
-		{
-			TestFalse(FString::Printf(TEXT("'%s': радиус 1 не печатает цифру"), *Rule), Formatted.EndsWith(TEXT("1")));
-		}
 	}
 
 	// Сжатие обратно в диапазоны - не косметика: без него строка растёт с
@@ -548,15 +468,46 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("повторы схлопываются"),
 		RuleStringParser::FormatRuleString({ 5, 5, 5 }, { 4 }, 2, ENeighborhood::VonNeumann), FString(TEXT("5/4/2/VN")));
 
-	// Радиус в печати: 1 - отсутствием цифры (в т.ч. когда его передали явно),
-	// 2 - цифрой.
-	TestEqual(TEXT("явный радиус 1 цифры не печатает"),
-		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::VonNeumann, 1), FString(TEXT("5/4/2/VN")));
-	TestEqual(TEXT("радиус 2 печатается цифрой"),
-		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::VonNeumann, 2), FString(TEXT("5/4/2/VN2")));
+	// Каждое значение перечисления обязано печататься СВОИМ токеном и
+	// разбираться обратно в себя же. Проверяется весь список разом: пропуск в
+	// таблице токенов иначе тихо превратился бы в "M" (её fallback).
+	{
+		const TArray<TPair<ENeighborhood, FString>> Tokens = {
+			{ ENeighborhood::VonNeumann,          TEXT("VN") },
+			{ ENeighborhood::Moore,               TEXT("M") },
+			{ ENeighborhood::VonNeumann2,         TEXT("VN2") },
+			{ ENeighborhood::Edges,               TEXT("E") },
+			{ ENeighborhood::Corners,             TEXT("C") },
+			{ ENeighborhood::FarAxes,             TEXT("FA") },
+			{ ENeighborhood::FacesEdges,          TEXT("FE") },
+			{ ENeighborhood::FacesCorners,        TEXT("FC") },
+			{ ENeighborhood::FacesFarAxes,        TEXT("FFA") },
+			{ ENeighborhood::EdgesCorners,        TEXT("EC") },
+			{ ENeighborhood::EdgesFarAxes,        TEXT("EFA") },
+			{ ENeighborhood::CornersFarAxes,      TEXT("CFA") },
+			{ ENeighborhood::FacesCornersFarAxes, TEXT("FCFA") },
+			{ ENeighborhood::EdgesCornersFarAxes, TEXT("ECFA") },
+		};
 
-	// Токены форм. Ни один не должен заканчиваться цифрой - иначе он разобрался
-	// бы как имя плюс радиус (см. ParseNeighborhoodName()).
+		for (const TPair<ENeighborhood, FString>& Token : Tokens)
+		{
+			const FString Expected = FString::Printf(TEXT("5/4/2/%s"), *Token.Value);
+			TestEqual(FString::Printf(TEXT("токен '%s' печатается"), *Token.Value),
+				RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, Token.Key), Expected);
+
+			RuleStringParser::FParsedRule Parsed;
+			FString Error;
+			if (TestTrue(FString::Printf(TEXT("токен '%s' разбирается"), *Token.Value),
+				RuleStringParser::ParseRuleString(Expected, Parsed, Error)))
+			{
+				TestTrue(FString::Printf(TEXT("токен '%s' разбирается в себя же"), *Token.Value),
+					Parsed.Neighborhood == Token.Key);
+			}
+		}
+	}
+
+	// Точечные проверки нескольких токенов - те же, что выше, но читаемые в
+	// отчёте по имени.
 	TestEqual(TEXT("токен рёбер"),
 		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::Edges), FString(TEXT("5/4/2/E")));
 	TestEqual(TEXT("токен диагоналей"),
@@ -591,15 +542,12 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TEXT("1/2/1/M"),
 		TEXT("1/2/2/X"),
 		TEXT("1//2/M"),
-		// Радиус вне [1, MaxNeighborhoodRadius]...
+		// Соседства с цифрой больше не разбираются "почти как VN": имя
+		// сравнивается целиком, поэтому всё, чего нет в таблице токенов, -
+		// ошибка, а не VN какого-то радиуса.
 		TEXT("1/2/2/VN0"),
 		TEXT("1/2/2/VN3"),
-		// ...и радиус у Moore: 124 соседа не влезают ни в шейдерный массив,
-		// ни в 32-битные маски правила, поэтому это отказ, а не тихое
-		// приведение к радиусу 1 (см. IsNeighborhoodRadiusSupported()).
 		TEXT("1/2/2/M2"),
-		// ...и радиус у формы: она определена как подмножество куба 3x3x3,
-		// поэтому радиуса у неё нет вовсе.
 		TEXT("1/2/2/E2"),
 		TEXT("1/2/2/FE2"),
 	};
@@ -640,7 +588,6 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		TArray<int32> Survival;
 		ENeighborhood Neighborhood;
 		int32 States;
-		int32 Radius = 1;
 	};
 
 	const TArray<FRuleCase> Cases = {
@@ -652,8 +599,8 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		// не влезающих в 32-битные маски. Правило подобрано под плотность
 		// затравки (~10 живых соседей из 24), чтобы за 4 поколения ничего не
 		// вымерло - на пустой сетке любые две реализации совпадают.
-		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann, 2, 2 },
-		{ TEXT("Generations 6-16/12-13/5/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann, 5, 2 },
+		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann2, 2 },
+		{ TEXT("Generations 6-16/12-13/5/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann2, 5 },
 		// Формы: набор офсетов перестаёт быть "шаром вокруг клетки", и обе
 		// стратегии обязаны это одинаково пережить. Рёбра дополнительно
 		// интересны тем, что решётка распадается на две независимые
@@ -670,7 +617,7 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 
 	for (const FRuleCase& Case : Cases)
 	{
-		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States, Case.Radius);
+		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States);
 
 		FDenseCellGrid Source(CellSize, ChunkSize, Rule.HasDecayStates());
 		AutomataTestUtils::SeedSphere(Source, /*Seed=*/1337, /*Radius=*/12, /*Amount=*/4000);
@@ -743,7 +690,6 @@ bool FGpuBatchParityTest::RunTest(const FString& Parameters)
 		TArray<int32> Survival;
 		int32 States;
 		ENeighborhood Neighborhood = ENeighborhood::Moore;
-		int32 Radius = 1;
 	};
 
 	const TArray<FRuleCase> Cases = {
@@ -753,18 +699,18 @@ bool FGpuBatchParityTest::RunTest(const FString& Parameters)
 		// то есть при радиусе 2 оно вдвое больше, чем было. Ошибка в этом
 		// множителе не роняет ничего - она молча теряет пограничные клетки, и
 		// расхождение с пошаговым прогоном единственное, что её показывает.
-		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, 2, ENeighborhood::VonNeumann, 2 },
+		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, 2, ENeighborhood::VonNeumann2 },
 		// Самый ценный случай во всём файле: форма с дальними осями имеет
 		// РАДИУС 1, но РАЗМАХ 2, поэтому пачке из 5 поколений нужно гало 10,
 		// а не 5. Если гало где-нибудь снова начнут считать от радиуса, пачка
 		// потеряет пограничные клетки - молча, без падения и без строчки в
 		// логе, и разойдётся с пошаговым прогоном только здесь.
-		{ TEXT("бинарное 0-6/1,3/2/FA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6 }, 2, ENeighborhood::FarAxes, 1 },
+		{ TEXT("бинарное 0-6/1,3/2/FA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6 }, 2, ENeighborhood::FarAxes },
 	};
 
 	for (const FRuleCase& Case : Cases)
 	{
-		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States, Case.Radius);
+		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States);
 		const FGpuComputeStrategy GpuStrategy(VolumeLimit);
 
 		FDenseCellGrid Source(CellSize, ChunkSize, Rule.HasDecayStates());
@@ -969,7 +915,7 @@ bool FLatticeNeighborUniformityTest::RunTest(const FString& Parameters)
 		// Полуразмер выборки заметно меньше области построения - иначе в неё
 		// попали бы клетки у самого края, у которых соседей меньше просто
 		// потому, что структура там кончается.
-		StateGenerators::AnalyzeNeighborCounts(Cells, ENeighborhood::Moore, /*NeighborRadius=*/1, /*MaxSampleExtent=*/20, Histogram);
+		StateGenerators::AnalyzeNeighborCounts(Cells, ENeighborhood::Moore, /*MaxSampleExtent=*/20, Histogram);
 
 		if (Histogram.SampledAlive == 0)
 		{

@@ -77,33 +77,41 @@ namespace
 		return true;
 	}
 
-	/** Имя соседства (без хвостовой цифры радиуса) -> значение перечисления.
-	 *  Короткая и длинная форма для каждого, регистронезависимо.
+	/** Таблица токенов соседства: короткая и длинная форма для каждого
+	 *  значения, регистронезависимо. Одна таблица служит обеим сторонам -
+	 *  разбору и печати, - чтобы они не могли разъехаться.
 	 *
-	 *  ВАЖНО для любого нового соседства: токен не должен ЗАКАНЧИВАТЬСЯ
-	 *  цифрой - хвостовые цифры отрезаются как радиус ещё до вызова этой
-	 *  функции, так что токен вида "S2" разобрался бы как "S" радиуса 2. */
+	 *  Токен "VN2" заканчивается цифрой, и это теперь нормально: пока
+	 *  существовал отдельный радиус, хвостовые цифры отрезались как его
+	 *  значение, и такой токен разобрался бы как "VN" радиуса 2. Радиуса
+	 *  больше нет (см. Neighborhood.h), так что имя сравнивается целиком. */
+	struct FNeighborhoodToken
+	{
+		const TCHAR* Short;
+		const TCHAR* Long;
+		ENeighborhood Value;
+	};
+
+	static const FNeighborhoodToken NeighborhoodTokens[] = {
+		{ TEXT("VN"),   TEXT("VonNeumann"),          ENeighborhood::VonNeumann },
+		{ TEXT("M"),    TEXT("Moore"),               ENeighborhood::Moore },
+		{ TEXT("VN2"),  TEXT("VonNeumann2"),         ENeighborhood::VonNeumann2 },
+		{ TEXT("E"),    TEXT("Edges"),               ENeighborhood::Edges },
+		{ TEXT("C"),    TEXT("Corners"),             ENeighborhood::Corners },
+		{ TEXT("FA"),   TEXT("FarAxes"),             ENeighborhood::FarAxes },
+		{ TEXT("FE"),   TEXT("FacesEdges"),          ENeighborhood::FacesEdges },
+		{ TEXT("FC"),   TEXT("FacesCorners"),        ENeighborhood::FacesCorners },
+		{ TEXT("FFA"),  TEXT("FacesFarAxes"),        ENeighborhood::FacesFarAxes },
+		{ TEXT("EC"),   TEXT("EdgesCorners"),        ENeighborhood::EdgesCorners },
+		{ TEXT("EFA"),  TEXT("EdgesFarAxes"),        ENeighborhood::EdgesFarAxes },
+		{ TEXT("CFA"),  TEXT("CornersFarAxes"),      ENeighborhood::CornersFarAxes },
+		{ TEXT("FCFA"), TEXT("FacesCornersFarAxes"), ENeighborhood::FacesCornersFarAxes },
+		{ TEXT("ECFA"), TEXT("EdgesCornersFarAxes"), ENeighborhood::EdgesCornersFarAxes },
+	};
+
 	bool ParseNeighborhoodName(const FString& Name, ENeighborhood& OutNeighborhood)
 	{
-		struct FNeighborhoodToken
-		{
-			const TCHAR* Short;
-			const TCHAR* Long;
-			ENeighborhood Value;
-		};
-
-		static const FNeighborhoodToken Tokens[] = {
-			{ TEXT("M"),  TEXT("Moore"),      ENeighborhood::Moore },
-			{ TEXT("VN"), TEXT("VonNeumann"), ENeighborhood::VonNeumann },
-			{ TEXT("E"),  TEXT("Edges"),      ENeighborhood::Edges },
-			{ TEXT("C"),  TEXT("Corners"),    ENeighborhood::Corners },
-			{ TEXT("FE"), TEXT("FacesEdges"), ENeighborhood::FacesEdges },
-			{ TEXT("FA"), TEXT("FarAxes"),    ENeighborhood::FarAxes },
-			{ TEXT("EFA"), TEXT("EdgesFarAxes"),   ENeighborhood::EdgesFarAxes },
-			{ TEXT("CFA"), TEXT("CornersFarAxes"), ENeighborhood::CornersFarAxes },
-		};
-
-		for (const FNeighborhoodToken& Token : Tokens)
+		for (const FNeighborhoodToken& Token : NeighborhoodTokens)
 		{
 			if (Name.Equals(Token.Short, ESearchCase::IgnoreCase) || Name.Equals(Token.Long, ESearchCase::IgnoreCase))
 			{
@@ -118,18 +126,30 @@ namespace
 	 *  в строку правила. */
 	const TCHAR* FormatNeighborhoodName(ENeighborhood Neighborhood)
 	{
-		switch (Neighborhood)
+		for (const FNeighborhoodToken& Token : NeighborhoodTokens)
 		{
-		case ENeighborhood::VonNeumann: return TEXT("VN");
-		case ENeighborhood::Moore:      return TEXT("M");
-		case ENeighborhood::Edges:      return TEXT("E");
-		case ENeighborhood::Corners:    return TEXT("C");
-		case ENeighborhood::FacesEdges: return TEXT("FE");
-		case ENeighborhood::FarAxes:        return TEXT("FA");
-		case ENeighborhood::EdgesFarAxes:   return TEXT("EFA");
-		case ENeighborhood::CornersFarAxes: return TEXT("CFA");
-		default:                        return TEXT("M");
+			if (Token.Value == Neighborhood)
+			{
+				return Token.Short;
+			}
 		}
+		return TEXT("M");
+	}
+
+	/** Перечень допустимых токенов одной строкой - для текста ошибки, чтобы он
+	 *  не разъехался с таблицей выше при добавлении соседства. */
+	FString DescribeNeighborhoodTokens()
+	{
+		FString Result;
+		for (const FNeighborhoodToken& Token : NeighborhoodTokens)
+		{
+			if (!Result.IsEmpty())
+			{
+				Result += TEXT(", ");
+			}
+			Result += FString::Printf(TEXT("'%s'/'%s'"), Token.Short, Token.Long);
+		}
+		return Result;
 	}
 
 	/** Сжимает список счётчиков в поле строки правила: сортирует, убирает
@@ -210,64 +230,18 @@ namespace RuleStringParser
 		FString NeighborhoodToken = Fields[3];
 		NeighborhoodToken.TrimStartAndEndInline();
 
-		// Хвост из цифр - радиус ("VN2"). Отрезается с конца, а не ищется
-		// разделителем: имена соседств цифр не содержат, так что граница
-		// однозначна, и "VonNeumann" разбирается тем же кодом, что "VN".
-		int32 RadiusStart = NeighborhoodToken.Len();
-		while (RadiusStart > 0 && FChar::IsDigit(NeighborhoodToken[RadiusStart - 1]))
+		if (!ParseNeighborhoodName(NeighborhoodToken, Parsed.Neighborhood))
 		{
-			--RadiusStart;
-		}
-		const FString RadiusToken = NeighborhoodToken.Mid(RadiusStart);
-		const FString NameToken = NeighborhoodToken.Left(RadiusStart);
-
-		if (!ParseNeighborhoodName(NameToken, Parsed.Neighborhood))
-		{
-			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается 'M'/'Moore', 'VN'/'VonNeumann', 'E'/'Edges', 'C'/'Corners', 'FE'/'FacesEdges', 'FA'/'FarAxes', 'EFA'/'EdgesFarAxes' или 'CFA'/'CornersFarAxes', с необязательным радиусом ('VN2')"), *NeighborhoodToken);
+			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается одно из: %s"), *NeighborhoodToken, *DescribeNeighborhoodTokens());
 			return false;
 		}
-
-		// Отсутствие цифры - радиус 1 (прежнее поведение), а не ошибка.
-		const int32 ParsedRadius = RadiusToken.IsEmpty() ? 1 : FCString::Atoi(*RadiusToken);
-		if (ParsedRadius < 1 || ParsedRadius > MaxNeighborhoodRadius)
-		{
-			OutError = FString::Printf(TEXT("Neighborhood: радиус %d - должен быть от 1 до %d"), ParsedRadius, MaxNeighborhoodRadius);
-			return false;
-		}
-		if (!IsNeighborhoodRadiusSupported(Parsed.Neighborhood, ParsedRadius))
-		{
-			// Отказ явный: приведение к радиусу 1 запустило бы совсем другое
-			// правило под именем запрошенного. Причина у Moore и у форм разная,
-			// поэтому и текст разный - см. IsNeighborhoodRadiusSupported().
-			if (Parsed.Neighborhood == ENeighborhood::Moore)
-			{
-				OutError = FString::Printf(TEXT("Neighborhood: радиус %d у Moore не поддержан - это %d соседей, не влезает ни в шейдерный массив, ни в 32-битные маски правила. Радиус больше 1 доступен только у 'VN'/'VonNeumann'"),
-					ParsedRadius, (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) - 1);
-			}
-			else
-			{
-				OutError = FString::Printf(TEXT("Neighborhood: у формы '%s' радиуса нет - она определена как подмножество куба 3x3x3. Радиус больше 1 доступен только у 'VN'/'VonNeumann'"),
-					*NameToken);
-			}
-			return false;
-		}
-		Parsed.Radius = ParsedRadius;
 
 		OutResult = MoveTemp(Parsed);
 		return true;
 	}
 
-	FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood, int32 Radius)
+	FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood)
 	{
-		// Радиус 1 печатается ОТСУТСТВИЕМ цифры, а не единицей: иначе каждая
-		// уже написанная строка правила (включая все записи RulePresets)
-		// начала бы возвращаться из round-trip'а в изменённом виде.
-		FString NeighborhoodToken = FormatNeighborhoodName(Neighborhood);
-		if (Radius > 1)
-		{
-			NeighborhoodToken += FString::FromInt(Radius);
-		}
-
 		// Порядок полей - Survival, затем Birth: тот же, что читает
 		// ParseRuleString(), и обратный порядку объявления BirthCounts/
 		// SurvivalCounts в AAutomataOrchestrator (см. предупреждение в
@@ -277,6 +251,6 @@ namespace RuleStringParser
 			*FormatCountListField(SurvivalCounts),
 			*FormatCountListField(BirthCounts),
 			States,
-			*NeighborhoodToken);
+			FormatNeighborhoodName(Neighborhood));
 	}
 }

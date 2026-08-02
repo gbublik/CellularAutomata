@@ -31,22 +31,13 @@ class CELLULARAUTOMATA_API FCellularAutomatonRule
 public:
 	/** InStates=2 (дефолт) - классический бинарный автомат, HasDecayStates()
 	 *  возвращает false и ничего Generations-специфичного не задействуется
-	 *  ни на одном из compute-путей (см. AAutomataOrchestrator::States).
-	 *
-	 *  InRadius=1 (дефолт) - соседство в одну клетку, как было до появления
-	 *  радиуса: набор офсетов и их порядок совпадают с прежними побайтово для
-	 *  обеих метрик (см. BuildNeighborOffsets()). */
-	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, ENeighborhood InNeighborhood, int32 InStates = 2, int32 InRadius = 1);
+	 *  ни на одном из compute-путей (см. AAutomataOrchestrator::States). */
+	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, ENeighborhood InNeighborhood, int32 InStates = 2);
 
 	const TArray<FIntVector>& GetNeighborOffsets() const { return NeighborOffsets; }
 	const TSet<int32>& GetBirthCounts() const { return BirthCounts; }
 	const TSet<int32>& GetSurvivalCounts() const { return SurvivalCounts; }
 	int32 GetStates() const { return States; }
-
-	/** Радиус соседства в клетках - ровно то, что запросили (см.
-	 *  AAutomataOrchestrator::NeighborhoodRadius). Осмыслен только для метрик;
-	 *  у форм всегда 1, и для гало он НЕ годится - см. GetNeighborExtent(). */
-	int32 GetNeighborRadius() const { return NeighborRadius; }
 
 	/** Насколько далеко от клетки дотягивается самый дальний офсет (максимум
 	 *  модуля компоненты по всему набору). Это и есть скорость роста
@@ -55,25 +46,23 @@ public:
 	 *  (см. FGpuComputeStrategy::StepBatch() - гало меньше нужного МОЛЧА
 	 *  теряет пограничные клетки, без падения и без строчки в логе).
 	 *
-	 *  Считается по фактическим офсетам, а не берётся из радиуса, и это
-	 *  принципиально: у форм с дальними осями радиус равен 1, а размах - 2.
-	 *  Любая будущая форма получает верное гало бесплатно, просто потому что
-	 *  оно выведено из геометрии, а не продублировано рядом с ней. */
+	 *  Считается по фактическим ОФСЕТАМ, а не по какому-либо отдельно
+	 *  хранимому числу, и это принципиально: наборы с дальними осями
+	 *  дотягиваются до второй клетки, оставаясь обычными наборами оболочек.
+	 *  Любое будущее соседство получает верное гало бесплатно, просто потому
+	 *  что оно выведено из геометрии, а не продублировано рядом с ней. */
 	int32 GetNeighborExtent() const { return NeighborExtent; }
 
-	/** Смещения соседей по метрике InNeighborhood в пределах радиуса Radius,
-	 *  без центральной клетки. Публичная и статическая, потому что это чистая
-	 *  геометрия, нужная и вне правила: StateGenerators::
-	 *  AnalyzeNeighborCounts() считает по ней гистограмму соседей набора,
-	 *  никаких BirthCounts/SurvivalCounts при этом не читая (раньше там лежал
-	 *  свой дубликат этой таблицы).
+	/** Смещения соседей для InNeighborhood, без центральной клетки. Публичная
+	 *  и статическая, потому что это чистая геометрия, нужная и вне правила:
+	 *  StateGenerators::AnalyzeNeighborCounts() считает по ней гистограмму
+	 *  соседей набора, никаких BirthCounts/SurvivalCounts при этом не читая
+	 *  (раньше там лежал свой дубликат этой таблицы).
 	 *
-	 *  При Radius == 1 обе ветки отдают ровно прежний набор в прежнем порядке -
-	 *  специально, чтобы появление радиуса не могло ничего сдвинуть в уже
-	 *  сохранённых прогонах. Порядок офсетов сам по себе ни на что не влияет
-	 *  (и CPU-, и GPU-путь только суммируют по нему), но проверять это
-	 *  рассуждением каждый раз дороже, чем сохранить его дословно. */
-	static TArray<FIntVector> BuildNeighborOffsets(ENeighborhood InNeighborhood, int32 Radius = 1);
+	 *  Сама геометрия задаётся не здесь, а маской оболочек
+	 *  (GetNeighborhoodShellMask() в Neighborhood.h) - эта функция её только
+	 *  разворачивает. */
+	static TArray<FIntVector> BuildNeighborOffsets(ENeighborhood InNeighborhood);
 
 	/** true, если правило задействует Generations-угасание (States > 2) -
 	 *  единственная точка входа, которую спрашивают CPU/GPU compute-стратегии
@@ -92,6 +81,5 @@ private:
 	TSet<int32> BirthCounts;
 	TSet<int32> SurvivalCounts;
 	int32 States;
-	int32 NeighborRadius;
 	int32 NeighborExtent;
 };

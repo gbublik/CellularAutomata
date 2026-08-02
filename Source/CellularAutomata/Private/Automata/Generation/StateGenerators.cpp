@@ -1042,7 +1042,7 @@ namespace StateGenerators
 	}
 
 	void AnalyzeNeighborCounts(const TArray<FIntVector>& Cells, ENeighborhood Neighborhood,
-							   int32 NeighborRadius, int32 MaxSampleExtent, FNeighborHistogram& OutHistogram)
+							   int32 MaxSampleExtent, FNeighborHistogram& OutHistogram)
 	{
 		// Смещения соседей берутся у самого правила: это чистая геометрия
 		// (никакие BirthCounts/SurvivalCounts здесь не читаются), и раньше
@@ -1050,7 +1050,7 @@ namespace StateGenerators
 		// понятия о радиусе. Считать гистограмму по одной таблице, а
 		// симуляцию по другой - ровно тот способ разъехаться, ради которого
 		// эта функция и существует.
-		const TArray<FIntVector> Offsets = FCellularAutomatonRule::BuildNeighborOffsets(Neighborhood, NeighborRadius);
+		const TArray<FIntVector> Offsets = FCellularAutomatonRule::BuildNeighborOffsets(Neighborhood);
 
 		// Колонка на каждое возможное число соседей плюс колонка нуля - для
 		// привычного Moore-26 это прежние 27.

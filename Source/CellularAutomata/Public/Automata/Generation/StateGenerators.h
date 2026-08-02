@@ -98,7 +98,7 @@ namespace StateGenerators
 	 *  симуляция, - это геометрия набора, а не правило: ни BirthCounts, ни
 	 *  SurvivalCounts здесь не участвуют. */
 	CELLULARAUTOMATA_API void AnalyzeNeighborCounts(const TArray<FIntVector>& Cells, ENeighborhood Neighborhood,
-													int32 NeighborRadius, int32 MaxSampleExtent, FNeighborHistogram& OutHistogram);
+													int32 MaxSampleExtent, FNeighborHistogram& OutHistogram);
 
 	/** Гистограмма одной строкой для лога: перечисляет только ненулевые
 	 *  колонки, отдельно живые и примыкающие пустые. */
