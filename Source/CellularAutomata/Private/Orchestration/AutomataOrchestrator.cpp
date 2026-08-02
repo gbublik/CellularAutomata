@@ -446,6 +446,8 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, AgeColors)
 		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, AgeColorMaxAge)
 		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, DecayColors)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, ColorRampSpace)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, ColorRampCurve)
 		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, SelectionColor))
 	{
 		// Цвет - чистая функция уже посчитанного состояния, ждать следующего
@@ -1204,24 +1206,9 @@ void AAutomataOrchestrator::EnsureCellsRenderer()
 	CellsRenderer = MakeUnique<FInstancedMeshCellGridRenderer>(Target);
 }
 
-FLinearColor AAutomataOrchestrator::SampleColorRamp(const TArray<FLinearColor>& Keys, float T)
+FLinearColor AAutomataOrchestrator::SampleColorRamp(const TArray<FLinearColor>& Keys, float T) const
 {
-	if (Keys.Num() == 0)
-	{
-		// Белый, а не отказ рисовать: пустая рампа - это нормальное
-		// промежуточное состояние настройки, и белый цвет означает "как
-		// выглядит сам материал" (см. doc-comment AgeColors).
-		return FLinearColor::White;
-	}
-	if (Keys.Num() == 1)
-	{
-		return Keys[0];
-	}
-
-	const float Position = FMath::Clamp(T, 0.0f, 1.0f) * float(Keys.Num() - 1);
-	const int32 LowIndex = FMath::Clamp(FMath::FloorToInt(Position), 0, Keys.Num() - 1);
-	const int32 HighIndex = FMath::Min(LowIndex + 1, Keys.Num() - 1);
-	return FMath::Lerp(Keys[LowIndex], Keys[HighIndex], Position - float(LowIndex));
+	return ColorRamp::Sample(Keys, T, ColorRampSpace, ColorRampCurve);
 }
 
 void AAutomataOrchestrator::BuildAgeColorLut(TArray<FColor>& OutLut, bool bSRGB) const

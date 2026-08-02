@@ -5,6 +5,7 @@
 #include "Automata/Capture/CellRasterizer.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Grid/DenseCellGrid.h"
+#include "Automata/Rendering/ColorRamp.h"
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
@@ -1015,6 +1016,136 @@ bool FRandomBallLegacyParityTest::RunTest(const FString& Parameters)
 		}
 
 		AddInfo(FString::Printf(TEXT("сид %d: %d клеток, совпало с прежним поведением"), Case.Seed, Produced.Num()));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FColorRampTest,
+	"CellularAutomata.Rendering.ColorRamp",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FColorRampTest::RunTest(const FString& Parameters)
+{
+	const TArray<EColorRampSpace> Spaces = {
+		EColorRampSpace::LinearRgb, EColorRampSpace::Srgb,
+		EColorRampSpace::Oklab, EColorRampSpace::Oklch
+	};
+	const TArray<EColorRampCurve> Curves = { EColorRampCurve::Linear, EColorRampCurve::CatmullRom };
+
+	auto SpaceName = [](EColorRampSpace Space)
+	{
+		switch (Space)
+		{
+		case EColorRampSpace::Srgb:  return TEXT("Srgb");
+		case EColorRampSpace::Oklab: return TEXT("Oklab");
+		case EColorRampSpace::Oklch: return TEXT("Oklch");
+		default:                     return TEXT("LinearRgb");
+		}
+	};
+	auto CurveName = [](EColorRampCurve Curve)
+	{
+		return (Curve == EColorRampCurve::CatmullRom) ? TEXT("CatmullRom") : TEXT("Linear");
+	};
+
+	// Намеренно разношёрстный набор: насыщенные основные, тёмный, светлый и
+	// СЕРЫЙ. Серый здесь не для полноты - у него не определён тон, и именно на
+	// нём ломается наивная реализация Oklch (atan2 от нуля даёт произвольный
+	// угол, и рампа дёргается в случайную сторону).
+	const TArray<FLinearColor> Keys = {
+		FLinearColor(1.0f, 0.0f, 0.0f),
+		FLinearColor(0.5f, 0.5f, 0.5f),
+		FLinearColor(0.0f, 0.35f, 1.0f),
+		FLinearColor(1.0f, 0.9f, 0.1f)
+	};
+
+	for (EColorRampSpace Space : Spaces)
+	{
+		for (EColorRampCurve Curve : Curves)
+		{
+			const FString Case = FString::Printf(TEXT("%s/%s"), SpaceName(Space), CurveName(Curve));
+
+			// ГЛАВНАЯ ГАРАНТИЯ: в опорных точках обязан получаться сам ключ.
+			// Это то единственное, что ловит ошибку туда-обратного
+			// преобразования - она иначе проявляется как еле заметный сдвиг
+			// оттенка по ВСЕЙ рампе, который глазом не отличить от задуманного
+			// цвета. Допуск 1/255: ниже него разница всё равно теряется при
+			// квантовании в FColor (см. FCellRenderInstance).
+			constexpr float Tolerance = 1.0f / 255.0f;
+			for (int32 KeyIndex = 0; KeyIndex < Keys.Num(); ++KeyIndex)
+			{
+				const float T = float(KeyIndex) / float(Keys.Num() - 1);
+				const FLinearColor Got = ColorRamp::Sample(Keys, T, Space, Curve);
+				const FLinearColor& Want = Keys[KeyIndex];
+
+				if (FMath::Abs(Got.R - Want.R) > Tolerance
+					|| FMath::Abs(Got.G - Want.G) > Tolerance
+					|| FMath::Abs(Got.B - Want.B) > Tolerance)
+				{
+					AddError(FString::Printf(
+						TEXT("%s: в опорной точке %d (T=%.3f) получено (%.4f, %.4f, %.4f) вместо (%.4f, %.4f, %.4f)"),
+						*Case, KeyIndex, T, Got.R, Got.G, Got.B, Want.R, Want.G, Want.B));
+				}
+			}
+
+			// Ничего за пределами гаммы: Катмулл-Ром вылетает за диапазон
+			// опорных значений по построению, и без зажима это дало бы
+			// отрицательные компоненты, которые дальше молча превратились бы в
+			// мусор при квантовании.
+			bool bOutOfRange = false;
+			for (int32 Step = 0; Step <= 256 && !bOutOfRange; ++Step)
+			{
+				const FLinearColor Got = ColorRamp::Sample(Keys, float(Step) / 256.0f, Space, Curve);
+				// Проверка на конечность идёт ПЕРВОЙ и отдельно: сравнения с
+				// NaN всегда ложны, поэтому диапазонные условия ниже пропустили
+				// бы его молча.
+				if (!FMath::IsFinite(Got.R) || !FMath::IsFinite(Got.G) || !FMath::IsFinite(Got.B)
+					|| Got.R < 0.0f || Got.R > 1.0f || Got.G < 0.0f || Got.G > 1.0f
+					|| Got.B < 0.0f || Got.B > 1.0f)
+				{
+					AddError(FString::Printf(TEXT("%s: цвет вне [0,1] или NaN при T=%.4f - (%.4f, %.4f, %.4f)"),
+						*Case, float(Step) / 256.0f, Got.R, Got.G, Got.B));
+					bOutOfRange = true;
+				}
+			}
+		}
+	}
+
+	// Вырожденные входы - ровно то поведение, на которое опирается панель
+	// настройки: пустая рампа не ошибка, а "материал как есть".
+	const TArray<FLinearColor> Empty;
+	const FLinearColor FromEmpty = ColorRamp::Sample(Empty, 0.5f, EColorRampSpace::Oklab, EColorRampCurve::CatmullRom);
+	if (!FromEmpty.Equals(FLinearColor::White, KINDA_SMALL_NUMBER))
+	{
+		AddError(TEXT("пустая рампа обязана давать белый"));
+	}
+
+	const TArray<FLinearColor> Single = { FLinearColor(0.2f, 0.7f, 0.3f) };
+	for (float T : { 0.0f, 0.5f, 1.0f })
+	{
+		const FLinearColor Got = ColorRamp::Sample(Single, T, EColorRampSpace::Oklch, EColorRampCurve::CatmullRom);
+		if (!Got.Equals(Single[0], KINDA_SMALL_NUMBER))
+		{
+			AddError(FString::Printf(TEXT("рампа из одного ключа обязана давать его же при любом T (T=%.1f)"), T));
+		}
+	}
+
+	// Смена пространства обязана что-то МЕНЯТЬ в середине - иначе тест выше
+	// проходил бы и на реализации, которая молча игнорирует настройку и всегда
+	// смешивает в линейном RGB.
+	{
+		const TArray<FLinearColor> Pair = { FLinearColor(1.0f, 0.0f, 0.0f), FLinearColor(0.0f, 0.0f, 1.0f) };
+		const FLinearColor Lin = ColorRamp::Sample(Pair, 0.5f, EColorRampSpace::LinearRgb, EColorRampCurve::Linear);
+		const FLinearColor Lab = ColorRamp::Sample(Pair, 0.5f, EColorRampSpace::Oklab, EColorRampCurve::Linear);
+		if (Lin.Equals(Lab, 1.0f / 255.0f))
+		{
+			AddError(TEXT("середина рампы в LinearRgb и Oklab совпала - похоже, пространство не учитывается"));
+		}
+		else
+		{
+			AddInfo(FString::Printf(TEXT("середина красный->синий: LinearRgb (%.3f, %.3f, %.3f), Oklab (%.3f, %.3f, %.3f)"),
+				Lin.R, Lin.G, Lin.B, Lab.R, Lab.G, Lab.B));
+		}
 	}
 
 	return true;

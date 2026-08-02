@@ -10,6 +10,7 @@
 #include "Automata/Grid/CellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Rendering/ChunkedRenderOrder.h"
+#include "Automata/Rendering/ColorRamp.h"
 #include "Automata/Rendering/RenderPresets.h"
 #include "Automata/Persistence/AutomatonSaveHeader.h"
 #include "Automata/Capture/SliceCaptureParams.h"
@@ -1171,6 +1172,20 @@ public:
 	 *  оболочка и есть самое интересное в правилах Generations. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	TArray<FLinearColor> DecayColors;
+
+	/** В каком пространстве смешиваются соседние опорные цвета - см.
+	 *  EColorRampSpace. Действует на ОБЕ рампы (AgeColors и DecayColors): это
+	 *  свойство самого способа интерполяции, а не конкретного набора ключей, и
+	 *  две независимые настройки означали бы, что одинаково заданные рампы
+	 *  выглядят по-разному без видимой причины. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	EColorRampSpace ColorRampSpace = EColorRampSpace::LinearRgb;
+
+	/** Чем двигаться по опорным цветам - см. EColorRampCurve. Ортогонально
+	 *  ColorRampSpace: пространство задаёт, где проходит прямая, кривая - как
+	 *  идти по ключам; комбинируются свободно. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
+	EColorRampCurve ColorRampCurve = EColorRampCurve::Linear;
 
 	/** Размер одной клетки в мировых единицах */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
@@ -2552,9 +2567,11 @@ private:
 	 *  источником правды. */
 	void BuildAgeColorLut(TArray<FColor>& OutLut, bool bSRGB = false) const;
 	void BuildDecayColorLut(TArray<FColor>& OutLut, bool bSRGB = false) const;
-	/** Ядро интерполяции: T в [0,1] -> точка на ломаной по ключам Keys.
-	 *  Пустой массив -> белый, один ключ -> он же. */
-	static FLinearColor SampleColorRamp(const TArray<FLinearColor>& Keys, float T);
+	/** Ядро интерполяции: T в [0,1] -> точка на рампе по ключам Keys, с учётом
+	 *  ColorRampSpace/ColorRampCurve. Тонкая обёртка над ColorRamp::Sample() -
+	 *  сама математика вынесена свободными функциями и потому проверяется
+	 *  автотестом без актора и рендера. */
+	FLinearColor SampleColorRamp(const TArray<FLinearColor>& Keys, float T) const;
 	/** Лениво находит и кэширует ARenderCullVolume в мире через
 	 *  UGameplayStatics::GetActorOfClass() (тот же идиом, что
 	 *  AGamePlayerController использует для поиска САМОГО оркестратора) -
