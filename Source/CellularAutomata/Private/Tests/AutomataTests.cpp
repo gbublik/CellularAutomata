@@ -1020,6 +1020,239 @@ bool FRandomBallLegacyParityTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCellParityFilterTest,
+	"CellularAutomata.Generation.ParityFilter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FCellParityFilterTest::RunTest(const FString& Parameters)
+{
+	// Отбор по чётности (FStateGeneratorParams::ParityFilter) - это весь
+	// ГЦК-режим целиком, поэтому проверяется не "фильтр что-то отфильтровал", а
+	// два утверждения, на которых он держится.
+	//
+	// ПЕРВОЕ: фильтр РАЗБИВАЕТ набор, а не режет его. Even и Odd, слитые
+	// обратно, обязаны дать в точности то же, что даёт None - иначе фильтр
+	// теряет клетки помимо чётности. Именно это ловит главную ловушку в
+	// FCellEmitter::Emit(): отказ по чётности обязан возвращать true, а false
+	// там означает переполнение и обрывает генератор целиком, так что при
+	// ошибке набор оказался бы обрезан по первому же узлу не той чётности.
+	// Проверка идёт по КАЖДОМУ типу генератора, потому что мимо воронки Emit()
+	// мог бы пройти отдельный генератор.
+	{
+		const int32 TypeCount = static_cast<int32>(EStateGeneratorType::SymmetricSeed) + 1;
+
+		for (int32 TypeIndex = 0; TypeIndex < TypeCount; ++TypeIndex)
+		{
+			const EStateGeneratorType Type = static_cast<EStateGeneratorType>(TypeIndex);
+			const FString Name = StateGenerators::GetDisplayName(Type);
+
+			FStateGeneratorParams Params;
+			Params.Type = Type;
+			Params.Extent = FIntVector(10, 10, 10);
+			Params.Radius = 7;
+			Params.Amount = 200;
+			Params.ClusterCount = 5;
+			Params.ClusterRadius = 3;
+			Params.CoreExtent = FIntVector(3, 3, 3);
+
+			TArray<FIntVector> All;
+			TArray<FIntVector> Even;
+			TArray<FIntVector> Odd;
+			StateGenerators::FGenerateStats Stats;
+			FString Error;
+
+			Params.ParityFilter = ECellParityFilter::None;
+			if (!StateGenerators::Generate(Params, /*Seed=*/4242, MAX_int64, All, Stats, Error))
+			{
+				AddError(FString::Printf(TEXT("%s: генерация без фильтра не удалась - %s"), *Name, *Error));
+				continue;
+			}
+
+			Params.ParityFilter = ECellParityFilter::Even;
+			if (!StateGenerators::Generate(Params, /*Seed=*/4242, MAX_int64, Even, Stats, Error))
+			{
+				AddError(FString::Printf(TEXT("%s: генерация с чётным фильтром не удалась - %s"), *Name, *Error));
+				continue;
+			}
+
+			Params.ParityFilter = ECellParityFilter::Odd;
+			if (!StateGenerators::Generate(Params, /*Seed=*/4242, MAX_int64, Odd, Stats, Error))
+			{
+				AddError(FString::Printf(TEXT("%s: генерация с нечётным фильтром не удалась - %s"), *Name, *Error));
+				continue;
+			}
+
+			bool bParityHolds = true;
+			for (const FIntVector& Cell : Even)
+			{
+				if (((Cell.X + Cell.Y + Cell.Z) & 1) != 0)
+				{
+					AddError(FString::Printf(TEXT("%s: при фильтре Even попалась клетка нечётной суммы (%d,%d,%d)"),
+						*Name, Cell.X, Cell.Y, Cell.Z));
+					bParityHolds = false;
+					break;
+				}
+			}
+
+			for (const FIntVector& Cell : Odd)
+			{
+				if (((Cell.X + Cell.Y + Cell.Z) & 1) == 0)
+				{
+					AddError(FString::Printf(TEXT("%s: при фильтре Odd попалась клетка чётной суммы (%d,%d,%d)"),
+						*Name, Cell.X, Cell.Y, Cell.Z));
+					bParityHolds = false;
+					break;
+				}
+			}
+
+			if (!bParityHolds)
+			{
+				continue;
+			}
+
+			// Сравнение МНОЖЕСТВАМИ, а не длинами массивов, и это не
+			// педантизм: часть генераторов выдаёт одну и ту же клетку по
+			// нескольку раз (RandomBall - reject-sampling с коллизиями, см.
+			// NeedsDedupe()), так что "Even.Num() + Odd.Num()" считает повторы
+			// и к размеру объединения отношения не имеет. Утверждение здесь
+			// именно про состав набора, а не про его длину.
+			const TSet<FIntVector> EvenSet(Even);
+			const TSet<FIntVector> OddSet(Odd);
+			const TSet<FIntVector> Reference(All);
+
+			if (EvenSet.Intersect(OddSet).Num() != 0)
+			{
+				AddError(FString::Printf(TEXT("%s: Even и Odd пересекаются - одна клетка не может быть обеих чётностей"),
+					*Name));
+				continue;
+			}
+
+			TSet<FIntVector> Union(EvenSet);
+			Union.Append(OddSet);
+
+			if (Union.Num() != Reference.Num() || Union.Difference(Reference).Num() != 0)
+			{
+				AddError(FString::Printf(
+					TEXT("%s: Even+Odd не равно набору без фильтра (%d против %d) - фильтр теряет клетки помимо чётности"),
+					*Name, Union.Num(), Reference.Num()));
+				continue;
+			}
+
+			AddInfo(FString::Printf(TEXT("%s: %d уникальных клеток = %d чётных + %d нечётных"),
+				*Name, Reference.Num(), EvenSet.Num(), OddSet.Num()));
+		}
+	}
+
+	// ВТОРОЕ: замкнутость ГЦК-подрешётки. Соседство Edges - это ровно 12
+	// смещений с d^2 == 2, каждое меняет сумму координат на 0 или +-2, поэтому
+	// автомат, засеянный чётными клетками, обязан остаться чётным НАВСЕГДА.
+	// Это и есть всё утверждение "ГЦК уже работает без новой геометрии": если
+	// оно ложно, режим не решётка, а просто прореженный куб.
+	{
+		constexpr float CellSize = 100.0f;
+		constexpr int32 ChunkSize = 16;
+
+		FStateGeneratorParams Params;
+		Params.Type = EStateGeneratorType::SolidSphere;
+		Params.Radius = 9;
+		Params.ParityFilter = ECellParityFilter::Even;
+
+		TArray<FIntVector> SeedCells;
+		StateGenerators::FGenerateStats Stats;
+		FString Error;
+
+		if (!StateGenerators::Generate(Params, /*Seed=*/7, MAX_int64, SeedCells, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("не удалось построить ГЦК-затравку - %s"), *Error));
+			return true;
+		}
+
+		// Правило подобрано так, чтобы шаг заведомо что-то РОДИЛ: проверка "все
+		// живые клетки чётные" на пустой сетке прошла бы пустым множеством.
+		const TArray<int32> Birth = { 1, 2, 3 };
+		const TArray<int32> Survival = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+
+		struct FParityCase
+		{
+			ENeighborhood Neighborhood;
+			bool bExpectParityPreserved;
+			const TCHAR* Name;
+		};
+
+		// Moore здесь не для полноты, а как встречная проверка: он чётность
+		// заведомо ломает (грани меняют сумму на +-1), и если тест проходит и
+		// для него тоже - значит проверка вырожденная и ничего не измеряет.
+		const FParityCase Cases[] = {
+			{ ENeighborhood::Edges,        true,  TEXT("Edges") },
+			{ ENeighborhood::EdgesFarAxes, true,  TEXT("EdgesFarAxes") },
+			{ ENeighborhood::Moore,        false, TEXT("Moore") },
+		};
+
+		for (const FParityCase& Case : Cases)
+		{
+			const FCellularAutomatonRule Rule(Birth, Survival, Case.Neighborhood, /*States=*/2);
+			const FCpuComputeStrategy Strategy;
+
+			FDenseCellGrid Current(CellSize, ChunkSize, /*bEnableDecay=*/false);
+			for (const FIntVector& Cell : SeedCells)
+			{
+				Current.SetAlive(Cell, true);
+			}
+
+			FDenseCellGrid Next(CellSize, ChunkSize, /*bEnableDecay=*/false);
+			Strategy.Step(Current, Next, Rule);
+
+			TArray<FIntVector> Alive;
+			Next.GetAliveCells(Alive);
+
+			if (Alive.Num() == 0)
+			{
+				AddError(FString::Printf(TEXT("%s: после шага не осталось ни одной клетки - проверка была бы пустой"),
+					Case.Name));
+				continue;
+			}
+
+			int32 OddCount = 0;
+			for (const FIntVector& Cell : Alive)
+			{
+				if (((Cell.X + Cell.Y + Cell.Z) & 1) != 0)
+				{
+					++OddCount;
+				}
+			}
+
+			if (Case.bExpectParityPreserved)
+			{
+				if (OddCount != 0)
+				{
+					AddError(FString::Printf(
+						TEXT("%s: чётность не сохранилась - %d из %d клеток ушли на другую подрешётку"),
+						Case.Name, OddCount, Alive.Num()));
+					continue;
+				}
+
+				AddInfo(FString::Printf(TEXT("%s: %d клеток, все на ГЦК-подрешётке"), Case.Name, Alive.Num()));
+			}
+			else
+			{
+				if (OddCount == 0)
+				{
+					AddError(FString::Printf(
+						TEXT("%s: чётность неожиданно сохранилась - встречная проверка выродилась, ")
+						TEXT("основная перестала что-либо доказывать"),
+						Case.Name));
+					continue;
+				}
+
+				AddInfo(FString::Printf(TEXT("%s: %d из %d клеток нечётные, как и ожидалось"),
+					Case.Name, OddCount, Alive.Num()));
+			}
+		}
+	}
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSliceCaptureOrientationTest,
 	"CellularAutomata.Slice.Orientation",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)

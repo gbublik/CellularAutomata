@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Automata/Generation/CellParityFilter.h"
 #include "Automata/Generation/SeedSymmetry.h"
 #include "Automata/Generation/StateGeneratorType.h"
 #include "StateGeneratorParams.generated.h"
@@ -178,6 +179,25 @@ struct FStateGeneratorParams
 			  meta = (EditCondition = "Type == EStateGeneratorType::SymmetricSeed",
 					  EditConditionHides))
 	ESeedSymmetry Symmetry = ESeedSymmetry::FullCubic;
+
+	/** Отбросить при генерации клетки "не той" чётности суммы координат, получив
+	 *  ГЦК-подрешётку вместо кубической - см. ECellParityFilter, там же о том,
+	 *  почему это даёт настоящую плотную упаковку и с каким соседством её
+	 *  запускать (Edges или EdgesFarAxes).
+	 *
+	 *  Применяется ко ВСЕМ типам генераторов и потому без EditCondition: это не
+	 *  параметр формы, а решётка, на которой форма строится. Отбор идёт в
+	 *  FCellEmitter::Emit(), то есть в единственной воронке всех генераторов -
+	 *  отброшенные клетки в массив не попадают вовсе, и потолок MaxGeneratedCells
+	 *  считает реальные клетки, а не выброшенные.
+	 *
+	 *  На оценку EstimateCellCount() сознательно НЕ влияет: та документирована
+	 *  как строгая оценка СВЕРХУ, подмножество её не нарушает, а делить её на
+	 *  два было бы неверно - генератор вправе выдать целиком чётный набор
+	 *  (LatticeBlocks с чётным Period), и тогда половинная оценка перестала бы
+	 *  быть верхней границей. Оценка просто становится вдвое запасливее. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation")
+	ECellParityFilter ParityFilter = ECellParityFilter::None;
 
 	/** Посчитать после генерации гистограмму числа живых соседей - отдельно по
 	 *  живым клеткам и по примыкающим к ним пустым - и вывести её в лог.

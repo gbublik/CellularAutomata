@@ -3998,11 +3998,12 @@ void AAutomataOrchestrator::RenderGridImmediate()
 
 	CellsRenderer->SetMesh(CellMesh);
 	CellsRenderer->SetMaterial(CellMaterial);
-	// Явно 1.0: тот же класс рендерера используется и для подсветки выделения,
-	// где множитель 1.1 (см. SelectionScaleMultiplier). Инвариант "обычные
-	// клетки - ровно в размер клетки" лучше держать локально и видимо, чем
-	// полагаться на то, что этих двух рендереров никто никогда не смешает.
-	CellsRenderer->SetScaleMultiplier(1.0f);
+	// Задаётся явно на каждый рендер: тот же класс рендерера используется и для
+	// подсветки выделения, где множитель свой (см. SelectionScaleMultiplier).
+	// Инвариант "обычные клетки берут CellMeshScaleMultiplier" лучше держать
+	// локально и видимо, чем полагаться на то, что этих двух рендереров никто
+	// никогда не смешает.
+	CellsRenderer->SetScaleMultiplier(CellMeshScaleMultiplier);
 
 	if (ShouldGhostShapeReplaceDetailedRender())
 	{
@@ -4069,7 +4070,7 @@ void AAutomataOrchestrator::RenderCurrentGrid()
 	CellsRenderer->SetMesh(CellMesh);
 	CellsRenderer->SetMaterial(CellMaterial);
 	// См. одноимённый комментарий в RenderGridImmediate().
-	CellsRenderer->SetScaleMultiplier(1.0f);
+	CellsRenderer->SetScaleMultiplier(CellMeshScaleMultiplier);
 
 	if (ShouldGhostShapeReplaceDetailedRender())
 	{

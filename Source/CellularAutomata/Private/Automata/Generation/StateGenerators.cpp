@@ -115,16 +115,40 @@ namespace
 	 *  надо до того, как массив съест память. */
 	struct FCellEmitter
 	{
-		explicit FCellEmitter(TArray<FIntVector>& InCells, int64 InMaxCells)
+		explicit FCellEmitter(TArray<FIntVector>& InCells, int64 InMaxCells,
+							  ECellParityFilter InParityFilter = ECellParityFilter::None)
 			: Cells(InCells)
 			// TArray адресуется int32, так что потолок в любом случае не может
 			// быть выше MAX_int32 - сколько бы ни выставили в настройках.
 			, MaxCells(FMath::Min(InMaxCells, static_cast<int64>(MAX_int32)))
+			, ParityFilter(InParityFilter)
 		{
 		}
 
 		FORCEINLINE bool Emit(const FIntVector& Cell)
 		{
+			// Отбор по чётности - ДО проверки потолка: отброшенная клетка места
+			// не занимает, и потолок обязан считать реальные клетки.
+			//
+			// Отказ возвращает true, а НЕ false. false здесь - сигнал
+			// переполнения, по которому вызывающий генератор прерывает работу
+			// целиком (везде "if (!Emit(...)) break;"), и вернуть его на
+			// рядовой отфильтрованной клетке значило бы оборвать генерацию на
+			// первой же попавшейся - результат оказался бы обрезан по первому
+			// узлу неподходящей чётности вместо честной ГЦК-подрешётки.
+			if (ParityFilter != ECellParityFilter::None)
+			{
+				// Побитовое И вместо остатка: сумма бывает отрицательной, а
+				// у % в C++ знак результата совпадает со знаком делимого, так
+				// что "Sum % 2 == 1" не ловит нечётные отрицательные суммы.
+				const bool bOdd = ((Cell.X + Cell.Y + Cell.Z) & 1) != 0;
+				const bool bWantOdd = (ParityFilter == ECellParityFilter::Odd);
+				if (bOdd != bWantOdd)
+				{
+					return true;
+				}
+			}
+
 			if (static_cast<int64>(Cells.Num()) >= MaxCells)
 			{
 				bOverflow = true;
@@ -142,6 +166,7 @@ namespace
 
 		TArray<FIntVector>& Cells;
 		int64 MaxCells;
+		ECellParityFilter ParityFilter;
 		bool bOverflow = false;
 	};
 
@@ -745,7 +770,7 @@ namespace StateGenerators
 			Cells.Reserve(static_cast<int32>(FMath::Min(Estimate, static_cast<int64>(MAX_int32))));
 		}
 
-		FCellEmitter Emitter(Cells, MaxCells);
+		FCellEmitter Emitter(Cells, MaxCells, Params.ParityFilter);
 
 		switch (Params.Type)
 		{
