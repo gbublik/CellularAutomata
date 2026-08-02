@@ -1313,9 +1313,16 @@ void AAutomataOrchestrator::RenderSelectionOverlay()
 	// Тот же динамический инстанс, что и у обычных клеток: подсветка отличается
 	// только цветом из custom data, и кант на ней должен быть такой же ширины.
 	SelectionRenderer->SetMaterial(EnsureCellMaterialInstance());
-	// Чуть крупнее обычного кубика - иначе поверхности совпадают и мерцают
+	// Чуть крупнее обычной клетки - иначе поверхности совпадают и мерцают
 	// (z-fighting), см. doc-comment SelectionScaleMultiplier.
-	SelectionRenderer->SetScaleMultiplier(SelectionScaleMultiplier);
+	//
+	// Множитель клетки обязателен множителем, а не заменой: SelectionScaleMultiplier
+	// задан ОТНОСИТЕЛЬНО клетки ("на 10% крупнее"), а не абсолютно. Пока
+	// CellMeshScaleMultiplier был единицей, разницы не было; с ячейками решёток,
+	// которым нужен масштаб 2 (ромбододекаэдр, усечённый октаэдр), подсветка
+	// рисовалась вдвое МЕНЬШЕ клетки и целиком пряталась внутри неё - выделение
+	// при этом работало, просто его не было видно.
+	SelectionRenderer->SetScaleMultiplier(CellMeshScaleMultiplier * SelectionScaleMultiplier);
 
 	// Всегда одним снимком - выделение всегда маленькое, чанкинг не нужен
 	// даже во время непрерывного Play.
