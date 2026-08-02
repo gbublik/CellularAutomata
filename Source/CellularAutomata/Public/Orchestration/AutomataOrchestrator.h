@@ -18,6 +18,9 @@
 #include "Automata/Generation/StateGeneratorPresets.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
+#include "Automata/Simulation/HexNeighborhood.h"
+#include "Automata/Simulation/LatticeType.h"
+#include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Automata/Simulation/RulePresets.h"
 #include "Orchestration/GenerationHistory.h"
 #include "GameFramework/PlayerController.h"
@@ -2054,8 +2057,25 @@ public:
 	 *  каждый набор даёт на картинке - см. ENeighborhood в Neighborhood.h.
 	 *  Отдельного радиуса нет: дальность - часть выбранного набора (например
 	 *  VonNeumann2 и FarAxes дотягиваются до второй клетки). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules",
+			  meta = (EditCondition = "LatticeType == ELatticeType::Cubic", EditConditionHides))
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
+
+	/** На какой решётке считается автомат - см. ELatticeType. Влияет ТОЛЬКО на
+	 *  то, какие смещения считаются соседними; отрисовка пока в обоих случаях
+	 *  кубическая, поэтому под HexPrism картинка выходит скошенной при
+	 *  совершенно честной гексагональной динамике. Подробности и обоснование -
+	 *  в doc-comment самого перечисления. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
+	ELatticeType LatticeType = ELatticeType::Cubic;
+
+	/** Соседство на гексагональной решётке - см. EHexNeighborhood. Отдельное
+	 *  свойство рядом с Neighborhood, а не его расширение: перечисления
+	 *  раздельные (почему - см. doc-comment EHexNeighborhood), и показывается
+	 *  каждое только при своей решётке. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules",
+			  meta = (EditCondition = "LatticeType == ELatticeType::HexPrism", EditConditionHides))
+	EHexNeighborhood HexNeighborhood = EHexNeighborhood::Prism8;
 
 	/** Общее число состояний клетки - 2 (дефолт) значит классический
 	 *  бинарный автомат (жива/мертва), поведение не отличается от того, что
@@ -2465,6 +2485,18 @@ private:
 	 *  ОБОИМ компонентам клеток, а не только к активному: смена
 	 *  CellMeshComponentType не должна оставить второй со старой настройкой. */
 	void ApplyCellShadowSettings();
+
+	/** Собирает правило из свойств Details panel, выбирая набор смещений по
+	 *  LatticeType. Единственное место, где эта развилка существует: три точки
+	 *  построения правила (Next(), StepAsync(), AnalyzeLiveStructure()) обязаны
+	 *  видеть одно и то же, иначе гистограмма считалась бы по одному соседству,
+	 *  а симуляция шла по другому - расхождение, которое никак себя не проявит,
+	 *  кроме непонятных чисел на экране.
+	 *
+	 *  Пересоздаётся на каждый вызов, без кэша - та же конвенция, что и у
+	 *  CreateGrid()/CreateComputeStrategy(): правка в Details panel обязана
+	 *  подхватываться немедленно. */
+	FCellularAutomatonRule BuildRule() const;
 
 	/** Имя скалярного параметра материала, в который уезжает CellBorderWidth.
 	 *  Константа, а не литерал по месту: имя обязано совпадать с параметром в

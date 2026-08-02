@@ -9,6 +9,7 @@
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
+#include "Automata/Simulation/HexNeighborhood.h"
 #include "Automata/Simulation/RuleStringParser.h"
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
@@ -589,6 +590,12 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		TArray<int32> Survival;
 		ENeighborhood Neighborhood;
 		int32 States;
+
+		/** Непустой список ЗАМЕЩАЕТ Neighborhood: так в тот же перебор попадают
+		 *  гексагональные соседства, живущие в своём перечислении (см.
+		 *  EHexNeighborhood). Поле последнее, чтобы кубические случаи выше
+		 *  продолжали инициализироваться без него. */
+		TArray<FIntVector> HexOffsets;
 	};
 
 	const TArray<FRuleCase> Cases = {
@@ -614,11 +621,26 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		// размах офсетов подменили радиусом.
 		{ TEXT("бинарное 0-6/1,3/2/FA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6 }, ENeighborhood::FarAxes, 2 },
 		{ TEXT("бинарное 0-14/1,3/2/CFA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 }, ENeighborhood::CornersFarAxes, 2 },
+		// Гексагональные призмы: набор смещений приходит в правило НАПРЯМУЮ,
+		// минуя ENeighborhood. Тест относительный (CPU против GPU), эталон ему
+		// не нужен, поэтому новая решётка обходится добавлением строк, а не
+		// новой проверкой. Survival намеренно покрывает все возможные счётчики -
+		// клетки тогда не умирают вовсе, и сравнение заведомо идёт по непустым
+		// сеткам, а не по двум одинаково вымершим.
+		{ TEXT("гекс 1-6/2,3/2 (6 в плоскости)"), { 2, 3 }, { 1, 2, 3, 4, 5, 6 },
+		  ENeighborhood::Moore, 2, BuildHexNeighborOffsets(EHexNeighborhood::Plane6) },
+		{ TEXT("гекс 1-8/3,4/2 (призма 8)"), { 3, 4 }, { 1, 2, 3, 4, 5, 6, 7, 8 },
+		  ENeighborhood::Moore, 2, BuildHexNeighborOffsets(EHexNeighborhood::Prism8) },
+		{ TEXT("гекс 1-20/6-8/2 (призма 20)"), { 6, 7, 8 },
+		  { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 },
+		  ENeighborhood::Moore, 2, BuildHexNeighborOffsets(EHexNeighborhood::Prism20) },
 	};
 
 	for (const FRuleCase& Case : Cases)
 	{
-		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States);
+		const FCellularAutomatonRule Rule = (Case.HexOffsets.Num() > 0)
+			? FCellularAutomatonRule(Case.Birth, Case.Survival, Case.HexOffsets, Case.States)
+			: FCellularAutomatonRule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States);
 
 		FDenseCellGrid Source(CellSize, ChunkSize, Rule.HasDecayStates());
 		AutomataTestUtils::SeedSphere(Source, /*Seed=*/1337, /*Radius=*/12, /*Amount=*/4000);

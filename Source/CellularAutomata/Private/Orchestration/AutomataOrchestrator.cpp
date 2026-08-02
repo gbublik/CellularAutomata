@@ -2883,7 +2883,7 @@ void AAutomataOrchestrator::AnalyzeLiveStructure()
 	// симуляция (та же конвенция "пересобирать каждый вызов, ничего не
 	// кэшировать", что в Next()/StepAsync()) - иначе сводка ниже могла бы
 	// описывать не то правило, которое реально считает.
-	const FCellularAutomatonRule Rule(BirthCounts, SurvivalCounts, Neighborhood, States);
+	const FCellularAutomatonRule Rule = BuildRule();
 
 	// Сводка - ради неё вся функция и нужна: гистограмма отвечает на вопрос
 	// "какое распределение", а это - на вопрос "куда по нему бьют пороги".
@@ -3532,7 +3532,7 @@ void AAutomataOrchestrator::Next()
 	// SurvivalCounts/Neighborhood в Details panel подхватывались немедленно
 	// (аналогично тому, как GenerateRandom() каждый раз пересоздаёт Grid,
 	// а не кэширует его)
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
+	FCellularAutomatonRule AutomatonRule = BuildRule();
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 
 	// Ручной шаг считает StepsPerRender поколений за одно нажатие (то же
@@ -3701,7 +3701,7 @@ void AAutomataOrchestrator::StepAsync()
 	// которые могут одновременно редактироваться в Details panel. После этой
 	// точки фоновый поток их больше не касается - только *Grid (на чтение) и
 	// NextGridBuffer (на запись, свежесозданный, ни с кем не общий).
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
+	FCellularAutomatonRule AutomatonRule = BuildRule();
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 	TUniquePtr<FCellGrid> NextGridBuffer = CreateGrid();
 
@@ -4378,6 +4378,16 @@ void AAutomataOrchestrator::ApplyCellShadowSettings()
 	{
 		SelectionMeshComponent->SetCastShadow(bCellsCastShadows);
 	}
+}
+
+FCellularAutomatonRule AAutomataOrchestrator::BuildRule() const
+{
+	if (LatticeType == ELatticeType::HexPrism)
+	{
+		return FCellularAutomatonRule(BirthCounts, SurvivalCounts, BuildHexNeighborOffsets(HexNeighborhood), States);
+	}
+
+	return FCellularAutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
 }
 
 const FName AAutomataOrchestrator::CellBorderWidthParameter(TEXT("BorderWidth"));

@@ -64,3 +64,15 @@ FCellularAutomatonRule::FCellularAutomatonRule(const TArray<int32>& InBirthCount
 	, NeighborExtent(ComputeNeighborExtent(NeighborOffsets))
 {
 }
+
+FCellularAutomatonRule::FCellularAutomatonRule(const TArray<int32>& InBirthCounts, const TArray<int32>& InSurvivalCounts, const TArray<FIntVector>& InNeighborOffsets, int32 InStates)
+	: NeighborOffsets(InNeighborOffsets)
+	, BirthCounts(InBirthCounts)
+	, SurvivalCounts(InSurvivalCounts)
+	, States(InStates)
+	// Тот же вывод extent'а из фактических смещений, что и у соседства по
+	// перечислению: гало обязано зависеть от геометрии набора, а не от того,
+	// каким путём набор сюда попал.
+	, NeighborExtent(ComputeNeighborExtent(NeighborOffsets))
+{
+}

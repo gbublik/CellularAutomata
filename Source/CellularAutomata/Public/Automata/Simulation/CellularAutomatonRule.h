@@ -34,6 +34,20 @@ public:
 	 *  ни на одном из compute-путей (см. AAutomataOrchestrator::States). */
 	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, ENeighborhood InNeighborhood, int32 InStates = 2);
 
+	/** То же правило, но со списком смещений НАПРЯМУЮ, минуя ENeighborhood.
+	 *
+	 *  Именно это делает класс нейтральным к решётке: гексагональные призмы
+	 *  задаются своим перечислением (см. EHexNeighborhood) и своей таблицей
+	 *  смещений, а сюда приходят уже готовым списком - расширять замкнутую
+	 *  таблицу оболочек ENeighborhood ради них не требуется.
+	 *
+	 *  Всё остальное - подсчёт соседей, гало, обе стратегии вычисления,
+	 *  шейдер - работает как есть: они и так оперируют произвольным набором
+	 *  целых смещений, а NeighborExtent выводится из фактических значений
+	 *  (см. GetNeighborExtent()), а не из того, каким перечислением набор
+	 *  назвали. */
+	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, const TArray<FIntVector>& InNeighborOffsets, int32 InStates = 2);
+
 	const TArray<FIntVector>& GetNeighborOffsets() const { return NeighborOffsets; }
 	const TSet<int32>& GetBirthCounts() const { return BirthCounts; }
 	const TSet<int32>& GetSurvivalCounts() const { return SurvivalCounts; }
