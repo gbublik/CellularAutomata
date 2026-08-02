@@ -1381,6 +1381,116 @@ bool FCellParityFilterTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// ТРЕТЬЕ: то же самое для ОЦК. Условие здесь ДРУГОЕ - не чётность суммы, а
+	// одинаковая чётность всех трёх координат (см. ECellParityFilter::SameParity),
+	// поэтому и проверка своя, а не переиспользованная сверху.
+	{
+		constexpr float CellSize = 100.0f;
+		constexpr int32 ChunkSize = 16;
+
+		auto IsSameParity = [](const FIntVector& Cell)
+		{
+			const int32 ParityX = Cell.X & 1;
+			return (Cell.Y & 1) == ParityX && (Cell.Z & 1) == ParityX;
+		};
+
+		FStateGeneratorParams Params;
+		Params.Type = EStateGeneratorType::SolidSphere;
+		Params.Radius = 9;
+		Params.ParityFilter = ECellParityFilter::SameParity;
+
+		TArray<FIntVector> SeedCells;
+		StateGenerators::FGenerateStats Stats;
+		FString Error;
+
+		if (!StateGenerators::Generate(Params, /*Seed=*/11, MAX_int64, SeedCells, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("не удалось построить ОЦК-затравку - %s"), *Error));
+			return true;
+		}
+
+		for (const FIntVector& Cell : SeedCells)
+		{
+			if (!IsSameParity(Cell))
+			{
+				AddError(FString::Printf(TEXT("ОЦК-затравка: клетка (%d,%d,%d) не одной чётности"),
+					Cell.X, Cell.Y, Cell.Z));
+				break;
+			}
+		}
+
+		const TArray<int32> Birth = { 1, 2, 3 };
+		const TArray<int32> Survival = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
+
+		struct FBccCase
+		{
+			ENeighborhood Neighborhood;
+			bool bExpectPreserved;
+			const TCHAR* Name;
+		};
+
+		// Corners - восемь диагоналей куба, ближайшие соседи ОЦК; вместе с
+		// FarAxes (шесть осевых на расстоянии 2) получается четырнадцать, то
+		// есть ровно число граней усечённого октаэдра. Moore снова встречная
+		// проверка: он ломает условие заведомо, и если тест проходит и для него,
+		// значит он вырожденный.
+		const FBccCase Cases[] = {
+			{ ENeighborhood::Corners,        true,  TEXT("Corners") },
+			{ ENeighborhood::CornersFarAxes, true,  TEXT("CornersFarAxes") },
+			{ ENeighborhood::Moore,          false, TEXT("Moore") },
+		};
+
+		for (const FBccCase& Case : Cases)
+		{
+			const FCellularAutomatonRule Rule(Birth, Survival, Case.Neighborhood, /*States=*/2);
+			const FCpuComputeStrategy Strategy;
+
+			FDenseCellGrid Current(CellSize, ChunkSize, /*bEnableDecay=*/false);
+			for (const FIntVector& Cell : SeedCells)
+			{
+				Current.SetAlive(Cell, true);
+			}
+
+			FDenseCellGrid Next(CellSize, ChunkSize, /*bEnableDecay=*/false);
+			Strategy.Step(Current, Next, Rule);
+
+			TArray<FIntVector> Alive;
+			Next.GetAliveCells(Alive);
+
+			if (Alive.Num() == 0)
+			{
+				AddError(FString::Printf(TEXT("ОЦК %s: после шага пусто - проверка была бы вырожденной"), Case.Name));
+				continue;
+			}
+
+			int32 StrayCount = 0;
+			for (const FIntVector& Cell : Alive)
+			{
+				if (!IsSameParity(Cell))
+				{
+					++StrayCount;
+				}
+			}
+
+			if (Case.bExpectPreserved && StrayCount != 0)
+			{
+				AddError(FString::Printf(
+					TEXT("ОЦК %s: подрешётка не замкнута - %d из %d клеток ушли с неё"),
+					Case.Name, StrayCount, Alive.Num()));
+			}
+			else if (!Case.bExpectPreserved && StrayCount == 0)
+			{
+				AddError(FString::Printf(
+					TEXT("ОЦК %s: условие неожиданно сохранилось - встречная проверка выродилась"), Case.Name));
+			}
+			else
+			{
+				AddInfo(FString::Printf(TEXT("ОЦК %s: %d клеток, ушедших с подрешётки %d"),
+					Case.Name, Alive.Num(), StrayCount));
+			}
+		}
+	}
+
 	return true;
 }
 
