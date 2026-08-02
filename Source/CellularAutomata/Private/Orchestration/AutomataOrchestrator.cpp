@@ -148,27 +148,17 @@ void AAutomataOrchestrator::BeginPlay()
 	EnsureSelectionMeshComponent();
 
 	// Стартуем ТЕМ генератором, что выбран в GenerationParams (то же, что даёт
-	// хоткей Y), а не безусловным случайным шаром. Иначе настроенная в панели
-	// решётка - ГЦК, ОЦК, любая другая - при запуске игры молча подменялась бы
-	// кубическим шаром, и первое, что видит пользователь, не соответствовало бы
-	// его же настройкам.
+	// хоткей Y). Случайный шар - не отдельный путь, а обычное значение
+	// EStateGeneratorType::RandomBall, поэтому и запасной ветки здесь больше
+	// нет: падать было бы некуда и незачем.
 	//
-	// Случайный шар никуда не делся: он остался значением
-	// EStateGeneratorType::RandomBall, так что прежнее поведение получается
-	// выбором типа генератора, а не отдельным переключателем.
-	//
-	// Запасной путь обязателен: GenerateState() умеет ОТКАЗАТЬСЯ - по бюджету
-	// MaxGeneratedCells или на ошибке генератора - и оставить сетку нетронутой.
-	// Для кнопки это правильно (лучше сохранить текущее состояние, чем стереть
-	// его), но на старте "нетронутая сетка" означает пустой мир, поэтому здесь
-	// падаем обратно на GenerateRandom(), который живёт на своих параметрах и
-	// отказаться не может.
+	// GenerateState() умеет ОТКАЗАТЬСЯ - по бюджету MaxGeneratedCells или на
+	// ошибке генератора - и оставить сетку нетронутой. На старте это значит
+	// пустой мир, но зато с внятным сообщением на экране (см. ShowStatusMessage()
+	// внутри), а не с молча подменённой фигурой: если настройки генератора
+	// заведомо не влезают, честнее показать это сразу, чем нарисовать что-то
+	// другое и оставить пользователя гадать, почему.
 	GenerateState();
-	if (!Grid || Grid->Num() == 0)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("BeginPlay: генератор не построил состояние - откат на случайный шар"));
-		GenerateRandom();
-	}
 
 	// Раньше вызывалось из PostActorCreated(), который срабатывает при любом
 	// создании актора - в т.ч. просто при расстановке в редакторе вне PIE, не
@@ -513,7 +503,7 @@ void AAutomataOrchestrator::NewSeed()
 {
 	if (bStepInProgress)
 	{
-		// Не отказываем молча (GenerateRandom() ниже всё равно откажется -
+		// Не отказываем молча (GenerateState() ниже всё равно откажется -
 		// фоновый поток читает *Grid), а откладываем до завершения шага, как
 		// это делает R - см. doc-comment bNewSeedPending. Seed намеренно НЕ
 		// перекатывается здесь: он должен смениться ровно один раз, в момент
@@ -526,7 +516,10 @@ void AAutomataOrchestrator::NewSeed()
 	}
 
 	Seed = FMath::Rand();
-	GenerateRandom();
+	// Тем же генератором, что и старт с хоткеем Y: N теперь означает "та же
+	// фигура, другой сид", а не "случайный шар вместо того, что настроено".
+	// Прежнее поведение доступно выбором EStateGeneratorType::RandomBall.
+	GenerateState();
 }
 
 void AAutomataOrchestrator::ApplyRuleString()
@@ -605,14 +598,20 @@ void AAutomataOrchestrator::ApplyRulePreset(int32 PresetIndex, bool bApplySpawnS
 
 	if (bApplySpawnSettings)
 	{
-		SpawnRadius = Preset.SpawnRadius;
-		Amount = Preset.Amount;
+		// Настройки спавна из пресета едут в параметры ГЕНЕРАТОРА, а не в
+		// отдельный блок Automata|Random - того больше нет. Тип выставляется
+		// явно: пресеты каталога описывают именно случайный шар заданной
+		// плотности, и применить их радиус к, скажем, решётке из плит значило бы
+		// молча сменить смысл числа.
+		GenerationParams.Type = EStateGeneratorType::RandomBall;
+		GenerationParams.Radius = Preset.SpawnRadius;
+		GenerationParams.Amount = Preset.Amount;
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("ApplyRulePreset: '%s' (%s)%s"),
 		*Preset.Name, *Preset.RuleString,
 		bApplySpawnSettings
-			? *FString::Printf(TEXT(", SpawnRadius=%d, Amount=%d"), SpawnRadius, Amount)
+			? *FString::Printf(TEXT(", Radius=%d, Amount=%d"), GenerationParams.Radius, GenerationParams.Amount)
 			: TEXT(""));
 }
 
@@ -2088,9 +2087,11 @@ void AAutomataOrchestrator::ResetToInitialState()
 	if (InitialStateCells.Num() == 0)
 	{
 		// StartFromSelection() ещё ни разу не вызывался в этой сессии (и
-		// файл не загружался) - нет сохранённой точки возврата, ведём себя
-		// как раньше.
-		GenerateRandom();
+		// файл не загружался) - нет сохранённой точки возврата, поэтому
+		// строим заново тем же генератором, что и старт. На практике сюда не
+		// попадают: BeginPlay() зовёт GenerateState(), а тот заполняет
+		// InitialStateCells - ветка защитная.
+		GenerateState();
 		return;
 	}
 
@@ -2164,9 +2165,15 @@ FAutomatonSaveHeader AAutomataOrchestrator::BuildSaveHeader() const
 	Header.ChunkSize = ChunkSize;
 	Header.GridSize = GridSize;
 	Header.Seed = Seed;
-	Header.Amount = Amount;
-	Header.SpawnRadius = SpawnRadius;
-	Header.ClusterFactor = ClusterFactor;
+	// Amount/SpawnRadius пишутся из параметров ГЕНЕРАТОРА - отдельного блока
+	// Automata|Random больше нет. Поля в заголовке оставлены как есть, чтобы
+	// файлы читались и старой сборкой: для неё это по-прежнему радиус и число
+	// клеток случайного шара, а смысл совпадает, когда выбран RandomBall.
+	// ClusterFactor не пишется вовсе - он не влиял на генерацию уже давно
+	// (GenerateRandom() передавал в генератор только радиус и количество), так
+	// что в заголовке остаётся его значение по умолчанию.
+	Header.Amount = GenerationParams.Amount;
+	Header.SpawnRadius = GenerationParams.Radius;
 	// Header.CellCount выставит WriteSave() из фактического набора клеток.
 	return Header;
 }
@@ -2194,9 +2201,13 @@ void AAutomataOrchestrator::ApplySaveHeader(const FAutomatonSaveHeader& Header)
 	GridSize.Y = FMath::Max(1, Header.GridSize.Y);
 	GridSize.Z = FMath::Max(1, Header.GridSize.Z);
 	Seed = Header.Seed;
-	Amount = FMath::Max(1, Header.Amount);
-	SpawnRadius = FMath::Max(1, Header.SpawnRadius);
-	ClusterFactor = FMath::Clamp(Header.ClusterFactor, 0.0f, 1.0f);
+	// Едут в параметры генератора. Тип при этом НЕ трогается: файл хранит
+	// начальный набор клеток целиком (InitialCells), поэтому что именно им
+	// когда-то построили, значения не имеет, а сбрасывать выбранный
+	// пользователем генератор при загрузке было бы неожиданно.
+	GenerationParams.Amount = FMath::Max(1, Header.Amount);
+	GenerationParams.Radius = FMath::Max(1, Header.SpawnRadius);
+	// Header.ClusterFactor намеренно игнорируется - см. BuildSaveHeader().
 }
 
 bool AAutomataOrchestrator::CaptureThumbnailPng(TArray64<uint8>& OutPngBytes) const
@@ -2778,40 +2789,6 @@ void AAutomataOrchestrator::RebuildGridFromCells(TArray<FIntVector>&& Cells)
 	RenderGridImmediate();
 }
 
-void AAutomataOrchestrator::GenerateRandom()
-{
-	if (!CanGenerateNewState(TEXT("GenerateRandom")))
-	{
-		return;
-	}
-
-	// Параметры ЛОКАЛЬНЫЕ, а не GenerationParams, и это принципиально: этот
-	// путь - автостарт в BeginPlay(), хоткей N (NewSeed()) и запасная ветка
-	// ResetToInitialState(). Читай он панель генераторов, накрученный там
-	// каркас тихо переопределил бы смысл всех трёх.
-	FStateGeneratorParams RandomBallParams;
-	RandomBallParams.Type = EStateGeneratorType::RandomBall;
-	RandomBallParams.Radius = SpawnRadius;
-	RandomBallParams.Amount = Amount;
-
-	TArray<FIntVector> Cells;
-	StateGenerators::FGenerateStats Stats;
-	FString Error;
-
-	// Без потолка: исторически этот путь ничего не ограничивал, и добавлять
-	// ему отказ значило бы менять наблюдаемое поведение.
-	if (!StateGenerators::Generate(RandomBallParams, Seed, MAX_int64, Cells, Stats, Error))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("GenerateRandom: %s"), *Error);
-		return;
-	}
-
-	RebuildGridFromCells(MoveTemp(Cells));
-
-	UE_LOG(LogTemp, Log, TEXT("GenerateRandom: заспавнено %d клеток в радиусе %d (генерация: %.2f мс)"),
-		Grid->Num(), SpawnRadius, Stats.Seconds * 1000.0);
-}
-
 void AAutomataOrchestrator::GenerateState()
 {
 	if (!CanGenerateNewState(TEXT("GenerateState")))
@@ -3335,7 +3312,8 @@ void AAutomataOrchestrator::WriteSeriesManifest()
 	Lines.Add(TEXT(""));
 	Lines.Add(FString::Printf(TEXT("Правило:              %s"), *GetActiveRuleString()));
 	Lines.Add(FString::Printf(TEXT("Seed:                 %d"), Seed));
-	Lines.Add(FString::Printf(TEXT("SpawnRadius / Amount: %d / %d"), SpawnRadius, Amount));
+	Lines.Add(FString::Printf(TEXT("Генератор: %s, Radius / Amount: %d / %d"),
+		*StateGenerators::GetDisplayName(GenerationParams.Type), GenerationParams.Radius, GenerationParams.Amount));
 	Lines.Add(FString::Printf(TEXT("CellSize / ChunkSize: %.1f / %d"), CellSize, ChunkSize));
 	Lines.Add(TEXT(""));
 	Lines.Add(FString::Printf(TEXT("Поколение на старте:  %lld"), StartGeneration));
@@ -3535,7 +3513,7 @@ void AAutomataOrchestrator::Next()
 
 	if (!Grid)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Next: сетка не инициализирована - сначала вызовите GenerateRandom"));
+		UE_LOG(LogTemp, Warning, TEXT("Next: сетка не инициализирована - сначала постройте состояние (хоткей Y / GenerateState)"));
 		return;
 	}
 
@@ -3702,7 +3680,7 @@ void AAutomataOrchestrator::StepAsync()
 {
 	if (!Grid)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("StepAsync: сетка не инициализирована - сначала вызовите GenerateRandom"));
+		UE_LOG(LogTemp, Warning, TEXT("StepAsync: сетка не инициализирована - сначала постройте состояние (хоткей Y / GenerateState)"));
 		return;
 	}
 
@@ -5079,7 +5057,9 @@ void AAutomataOrchestrator::Start()
 
 	if (!Grid)
 	{
-		GenerateRandom();
+		// Play по пустой сцене сначала строит состояние - тем же генератором,
+		// что старт и N.
+		GenerateState();
 	}
 
 	TimeSinceLastStep = 0.0f;

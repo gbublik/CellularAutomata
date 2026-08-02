@@ -499,11 +499,10 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void Clear();
 	
-	/** Сгенерировать новое случайное состояние */
-	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
-	void GenerateRandom();
-
-	/** Сгенерировать новое случайное состояние с новым сидом */
+	/** Перекатить Seed и перестроить состояние выбранным генератором (хоткей N).
+	 *  Не "новое случайное состояние", а "та же фигура, другой сид":
+	 *  GenerateRandom() больше не существует, случайный шар - это обычное
+	 *  значение EStateGeneratorType::RandomBall. */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void NewSeed();
 
@@ -2043,25 +2042,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automata")
 	void ScaleStepsPerRender(bool bDouble);
 
-	/** Количество живых клеток при генерации */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",
-			  meta = (ClampMin = "1"))
-	int32 Amount = 1000;
-
-	/** Радиус (в клетках) вокруг центра, в котором генерируются случайные клетки */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",
-			  meta = (ClampMin = "1", UIMin = "1", UIMax = "500"))
-	int32 SpawnRadius = 10;
-
-	/** Сид для генератора случайных чисел */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random", 
+	/** Сид генератора случайных чисел. Читают его ВСЕ генераторы, а не только
+	 *  случайный шар - см. GenerationParams и StateGenerators::Generate().
+	 *
+	 *  Раньше жил в блоке Automata|Random вместе с Amount/SpawnRadius/
+	 *  ClusterFactor; тех больше нет - случайный шар перестал быть отдельным
+	 *  путём генерации и стал обычным значением EStateGeneratorType::RandomBall
+	 *  со своими Radius/Amount внутри GenerationParams. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
 			  meta = (DisplayName = "Random Seed"))
 	int32 Seed = 0;
-
-	/** Фактор кластеризации (0 - равномерно, 1 - максимальная кластеризация) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Random",
-			  meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float ClusterFactor = 0.7f;
 
 	/** Количества живых соседей, при которых мёртвая клетка рождается. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
