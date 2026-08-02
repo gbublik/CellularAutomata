@@ -38,8 +38,9 @@ namespace StateGenerators
 	};
 
 	/** Распределение числа живых соседей - см.
-	 *  FStateGeneratorParams::bAnalyzeNeighborCounts. Обе таблицы длиной 27
-	 *  (максимум для Moore), индекс - число живых соседей. */
+	 *  FStateGeneratorParams::bAnalyzeNeighborCounts. Длина обеих таблиц -
+	 *  "число соседей + 1" для запрошенной пары (соседство, радиус), то есть
+	 *  27 для привычного Moore-26; индекс - число живых соседей. */
 	struct FNeighborHistogram
 	{
 		/** Сколько живых клеток видит ровно N живых соседей. */
@@ -97,7 +98,7 @@ namespace StateGenerators
 	 *  симуляция, - это геометрия набора, а не правило: ни BirthCounts, ни
 	 *  SurvivalCounts здесь не участвуют. */
 	CELLULARAUTOMATA_API void AnalyzeNeighborCounts(const TArray<FIntVector>& Cells, ENeighborhood Neighborhood,
-													int32 MaxSampleExtent, FNeighborHistogram& OutHistogram);
+													int32 NeighborRadius, int32 MaxSampleExtent, FNeighborHistogram& OutHistogram);
 
 	/** Гистограмма одной строкой для лога: перечисляет только ненулевые
 	 *  колонки, отдельно живые и примыкающие пустые. */

@@ -31,13 +31,39 @@ class CELLULARAUTOMATA_API FCellularAutomatonRule
 public:
 	/** InStates=2 (дефолт) - классический бинарный автомат, HasDecayStates()
 	 *  возвращает false и ничего Generations-специфичного не задействуется
-	 *  ни на одном из compute-путей (см. AAutomataOrchestrator::States). */
-	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, ENeighborhood InNeighborhood, int32 InStates = 2);
+	 *  ни на одном из compute-путей (см. AAutomataOrchestrator::States).
+	 *
+	 *  InRadius=1 (дефолт) - соседство в одну клетку, как было до появления
+	 *  радиуса: набор офсетов и их порядок совпадают с прежними побайтово для
+	 *  обеих метрик (см. BuildNeighborOffsets()). */
+	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, ENeighborhood InNeighborhood, int32 InStates = 2, int32 InRadius = 1);
 
 	const TArray<FIntVector>& GetNeighborOffsets() const { return NeighborOffsets; }
 	const TSet<int32>& GetBirthCounts() const { return BirthCounts; }
 	const TSet<int32>& GetSurvivalCounts() const { return SurvivalCounts; }
 	int32 GetStates() const { return States; }
+
+	/** Радиус соседства в клетках. Спрашивается не ради самих офсетов (те
+	 *  уже развёрнуты в GetNeighborOffsets()), а ради ГАЛО GPU-пачки: за
+	 *  поколение структура вырастает максимум на радиус клеток в каждую
+	 *  сторону, поэтому пачке из K поколений нужно гало Radius*K, а не K
+	 *  (см. FGpuComputeStrategy::StepBatch() - гало меньше нужного молча
+	 *  теряет пограничные клетки). */
+	int32 GetNeighborRadius() const { return NeighborRadius; }
+
+	/** Смещения соседей по метрике InNeighborhood в пределах радиуса Radius,
+	 *  без центральной клетки. Публичная и статическая, потому что это чистая
+	 *  геометрия, нужная и вне правила: StateGenerators::
+	 *  AnalyzeNeighborCounts() считает по ней гистограмму соседей набора,
+	 *  никаких BirthCounts/SurvivalCounts при этом не читая (раньше там лежал
+	 *  свой дубликат этой таблицы).
+	 *
+	 *  При Radius == 1 обе ветки отдают ровно прежний набор в прежнем порядке -
+	 *  специально, чтобы появление радиуса не могло ничего сдвинуть в уже
+	 *  сохранённых прогонах. Порядок офсетов сам по себе ни на что не влияет
+	 *  (и CPU-, и GPU-путь только суммируют по нему), но проверять это
+	 *  рассуждением каждый раз дороже, чем сохранить его дословно. */
+	static TArray<FIntVector> BuildNeighborOffsets(ENeighborhood InNeighborhood, int32 Radius = 1);
 
 	/** true, если правило задействует Generations-угасание (States > 2) -
 	 *  единственная точка входа, которую спрашивают CPU/GPU compute-стратегии
@@ -48,10 +74,9 @@ public:
 	bool HasDecayStates() const { return States > 2; }
 
 private:
-	static TArray<FIntVector> BuildNeighborOffsets(ENeighborhood InNeighborhood);
-
 	TArray<FIntVector> NeighborOffsets;
 	TSet<int32> BirthCounts;
 	TSet<int32> SurvivalCounts;
 	int32 States;
+	int32 NeighborRadius;
 };

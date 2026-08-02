@@ -219,6 +219,101 @@ bool FDenseCellGridNegativeCoordsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FNeighborhoodRadiusTest,
+	"CellularAutomata.Rules.NeighborhoodRadius",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FNeighborhoodRadiusTest::RunTest(const FString& Parameters)
+{
+	// Числа соседей - это и есть всё содержание радиуса, и каждое из них
+	// упирается в конкретный потолок в другом месте кода: 24 у фон Неймана
+	// радиуса 2 обязаны остаться <= 26 (шейдерный массив, см.
+	// GpuComputeStrategy.cpp::MaxShaderNeighborOffsets) и < 32 (маски правила
+	// там же). 124 у Moore радиуса 2 приведены не потому, что поддержаны, а
+	// потому, что именно это число обе границы и ломает.
+	const TArray<FIntVector> VN1 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::VonNeumann, 1);
+	const TArray<FIntVector> M1 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Moore, 1);
+	const TArray<FIntVector> VN2 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::VonNeumann, 2);
+	const TArray<FIntVector> M2 = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::Moore, 2);
+
+	TestEqual(TEXT("фон Нейман радиуса 1 - 6 соседей"), VN1.Num(), 6);
+	TestEqual(TEXT("Moore радиуса 1 - 26 соседей"), M1.Num(), 26);
+	TestEqual(TEXT("фон Нейман радиуса 2 - 24 соседа"), VN2.Num(), 24);
+	TestEqual(TEXT("Moore радиуса 2 - 124 соседа"), M2.Num(), 124);
+
+	TestTrue(TEXT("фон Нейман радиуса 2 влезает в шейдерный массив и в 32-битные маски"), VN2.Num() <= 26);
+
+	// Радиус 1 обязан давать РОВНО прежний набор в прежнем порядке - иначе
+	// появление радиуса могло бы незаметно сдвинуть уже сохранённые прогоны.
+	// Порядок сам по себе ни на что не влияет (оба compute-пути только
+	// суммируют по нему), но проверить дешевле, чем каждый раз доказывать.
+	const TArray<FIntVector> ExpectedVN1 = {
+		FIntVector(1, 0, 0), FIntVector(-1, 0, 0),
+		FIntVector(0, 1, 0), FIntVector(0, -1, 0),
+		FIntVector(0, 0, 1), FIntVector(0, 0, -1)
+	};
+	TestTrue(TEXT("фон Нейман радиуса 1 - прежний набор в прежнем порядке"), VN1 == ExpectedVN1);
+
+	TArray<FIntVector> ExpectedM1;
+	for (int32 dx = -1; dx <= 1; ++dx)
+	{
+		for (int32 dy = -1; dy <= 1; ++dy)
+		{
+			for (int32 dz = -1; dz <= 1; ++dz)
+			{
+				if (dx != 0 || dy != 0 || dz != 0)
+				{
+					ExpectedM1.Add(FIntVector(dx, dy, dz));
+				}
+			}
+		}
+	}
+	TestTrue(TEXT("Moore радиуса 1 - прежний набор в прежнем порядке"), M1 == ExpectedM1);
+
+	// Метрики: фон Нейман - Манхэттен, Moore - Чебышёв. Проверяется не только
+	// "не больше радиуса", но и что ни один офсет не повторяется и центра нет.
+	auto CheckSet = [this](const TArray<FIntVector>& Offsets, int32 Radius, bool bMoore, const TCHAR* Label)
+	{
+		TSet<FIntVector> Unique;
+		bool bMetricOk = true;
+		for (const FIntVector& Offset : Offsets)
+		{
+			Unique.Add(Offset);
+			const int32 Chebyshev = FMath::Max3(FMath::Abs(Offset.X), FMath::Abs(Offset.Y), FMath::Abs(Offset.Z));
+			const int32 Manhattan = FMath::Abs(Offset.X) + FMath::Abs(Offset.Y) + FMath::Abs(Offset.Z);
+			const int32 Distance = bMoore ? Chebyshev : Manhattan;
+			if (Distance < 1 || Distance > Radius)
+			{
+				bMetricOk = false;
+			}
+		}
+		TestTrue(FString::Printf(TEXT("%s: офсеты не повторяются"), Label), Unique.Num() == Offsets.Num());
+		TestTrue(FString::Printf(TEXT("%s: все офсеты в пределах радиуса и без центра"), Label), bMetricOk);
+	};
+	CheckSet(VN2, 2, /*bMoore=*/false, TEXT("фон Нейман радиуса 2"));
+	CheckSet(M2, 2, /*bMoore=*/true, TEXT("Moore радиуса 2"));
+
+	// Поддержанность пар: радиус > 1 только у фон Неймана, и только до 2.
+	TestTrue(TEXT("VN радиуса 1 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 1));
+	TestTrue(TEXT("Moore радиуса 1 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::Moore, 1));
+	TestTrue(TEXT("VN радиуса 2 поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 2));
+	TestFalse(TEXT("Moore радиуса 2 не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::Moore, 2));
+	TestFalse(TEXT("радиус 0 не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, 0));
+	TestFalse(TEXT("радиус за потолком не поддержан"), IsNeighborhoodRadiusSupported(ENeighborhood::VonNeumann, MaxNeighborhoodRadius + 1));
+
+	// Правило доносит радиус до GPU-гало - без этого пачка теряла бы
+	// пограничные клетки молча.
+	const FCellularAutomatonRule Rule({ 1 }, { 2 }, ENeighborhood::VonNeumann, 2, 2);
+	TestEqual(TEXT("правило помнит радиус"), Rule.GetNeighborRadius(), 2);
+	TestEqual(TEXT("правило построило офсеты по радиусу"), Rule.GetNeighborOffsets().Num(), 24);
+
+	const FCellularAutomatonRule DefaultRule({ 1 }, { 2 }, ENeighborhood::Moore, 2);
+	TestEqual(TEXT("радиус по умолчанию - 1"), DefaultRule.GetNeighborRadius(), 1);
+	TestEqual(TEXT("правило без радиуса - прежние 26 офсетов"), DefaultRule.GetNeighborOffsets().Num(), 26);
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRuleStringRoundTripTest,
 	"CellularAutomata.Rules.RuleStringRoundTrip",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
@@ -238,6 +333,21 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Birth содержит 3"), Parsed.BirthCounts.Contains(3));
 		TestEqual(TEXT("States"), Parsed.States, 2);
 		TestTrue(TEXT("Neighborhood"), Parsed.Neighborhood == ENeighborhood::VonNeumann);
+		TestEqual(TEXT("радиус без цифры - 1"), Parsed.Radius, 1);
+	}
+
+	// Хвостовая цифра радиуса. Отдельным блоком, потому что проверяется не
+	// только само число, но и что имя соседства при этом разобрано верно -
+	// цифра отрезается с конца, а не отделяется разделителем.
+	{
+		RuleStringParser::FParsedRule Parsed;
+		FString Error;
+		TestTrue(TEXT("'0-6/1,3/2/VN2' разбирается"), RuleStringParser::ParseRuleString(TEXT("0-6/1,3/2/VN2"), Parsed, Error));
+		TestEqual(TEXT("радиус 2"), Parsed.Radius, 2);
+		TestTrue(TEXT("соседство при радиусе 2"), Parsed.Neighborhood == ENeighborhood::VonNeumann);
+
+		TestTrue(TEXT("'0-6/1,3/2/VonNeumann' разбирается"), RuleStringParser::ParseRuleString(TEXT("0-6/1,3/2/VonNeumann"), Parsed, Error));
+		TestEqual(TEXT("длинное имя без цифры - радиус 1"), Parsed.Radius, 1);
 	}
 
 	// Round-trip: Parse -> Format -> Parse даёт то же самое. Проверяем на
@@ -249,6 +359,7 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TEXT("0-6/1,3/2/VN"),
 		TEXT("8,11,13-26/13-26/5/M"),
 		TEXT("6-8/6-8/3/M"),
+		TEXT("0-6/1,3/2/VN2"),
 	};
 
 	for (const FString& Rule : Rules)
@@ -260,7 +371,7 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 			continue;
 		}
 
-		const FString Formatted = RuleStringParser::FormatRuleString(First.SurvivalCounts, First.BirthCounts, First.States, First.Neighborhood);
+		const FString Formatted = RuleStringParser::FormatRuleString(First.SurvivalCounts, First.BirthCounts, First.States, First.Neighborhood, First.Radius);
 
 		RuleStringParser::FParsedRule Second;
 		if (!TestTrue(FString::Printf(TEXT("'%s' (из '%s') разбирается обратно"), *Formatted, *Rule),
@@ -275,6 +386,15 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("'%s': Birth после round-trip"), *Rule), Second.BirthCounts == First.BirthCounts);
 		TestEqual(FString::Printf(TEXT("'%s': States после round-trip"), *Rule), Second.States, First.States);
 		TestTrue(FString::Printf(TEXT("'%s': Neighborhood после round-trip"), *Rule), Second.Neighborhood == First.Neighborhood);
+		TestEqual(FString::Printf(TEXT("'%s': радиус после round-trip"), *Rule), Second.Radius, First.Radius);
+
+		// Строки радиуса 1 обязаны печататься БАЙТ В БАЙТ как раньше: иначе
+		// каждая уже написанная строка (и каждая запись RulePresets) начала бы
+		// возвращаться из round-trip'а в другом виде.
+		if (First.Radius == 1)
+		{
+			TestFalse(FString::Printf(TEXT("'%s': радиус 1 не печатает цифру"), *Rule), Formatted.EndsWith(TEXT("1")));
+		}
 	}
 
 	// Сжатие обратно в диапазоны - не косметика: без него строка растёт с
@@ -283,6 +403,13 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		RuleStringParser::FormatRuleString({ 1, 2, 3, 7 }, { 4 }, 2, ENeighborhood::Moore), FString(TEXT("1-3,7/4/2/M")));
 	TestEqual(TEXT("повторы схлопываются"),
 		RuleStringParser::FormatRuleString({ 5, 5, 5 }, { 4 }, 2, ENeighborhood::VonNeumann), FString(TEXT("5/4/2/VN")));
+
+	// Радиус в печати: 1 - отсутствием цифры (в т.ч. когда его передали явно),
+	// 2 - цифрой.
+	TestEqual(TEXT("явный радиус 1 цифры не печатает"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::VonNeumann, 1), FString(TEXT("5/4/2/VN")));
+	TestEqual(TEXT("радиус 2 печатается цифрой"),
+		RuleStringParser::FormatRuleString({ 5 }, { 4 }, 2, ENeighborhood::VonNeumann, 2), FString(TEXT("5/4/2/VN2")));
 
 	// Битые строки обязаны отвергаться ЦЕЛИКОМ и с внятной ошибкой - принцип
 	// "никогда не применять частично" (см. ApplyRuleString()).
@@ -294,6 +421,13 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 		TEXT("1/2/1/M"),
 		TEXT("1/2/2/X"),
 		TEXT("1//2/M"),
+		// Радиус вне [1, MaxNeighborhoodRadius]...
+		TEXT("1/2/2/VN0"),
+		TEXT("1/2/2/VN3"),
+		// ...и радиус у Moore: 124 соседа не влезают ни в шейдерный массив,
+		// ни в 32-битные маски правила, поэтому это отказ, а не тихое
+		// приведение к радиусу 1 (см. IsNeighborhoodRadiusSupported()).
+		TEXT("1/2/2/M2"),
 	};
 
 	for (const FString& Bad : BadRules)
@@ -332,17 +466,25 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		TArray<int32> Survival;
 		ENeighborhood Neighborhood;
 		int32 States;
+		int32 Radius = 1;
 	};
 
 	const TArray<FRuleCase> Cases = {
 		{ TEXT("бинарное 4/4/2/M"), { 4 }, { 4 }, ENeighborhood::Moore, 2 },
 		{ TEXT("Generations 4/4/5/M"), { 4 }, { 4 }, ENeighborhood::Moore, 5 },
 		{ TEXT("Generations 1-3/1-3/5/VN"), { 1, 2, 3 }, { 1, 2, 3 }, ENeighborhood::VonNeumann, 5 },
+		// Радиус 2: единственная автоматическая защита от неверно посчитанного
+		// гало (пограничные клетки терялись бы молча) и от счётчиков соседей,
+		// не влезающих в 32-битные маски. Правило подобрано под плотность
+		// затравки (~10 живых соседей из 24), чтобы за 4 поколения ничего не
+		// вымерло - на пустой сетке любые две реализации совпадают.
+		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann, 2, 2 },
+		{ TEXT("Generations 6-16/12-13/5/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, ENeighborhood::VonNeumann, 5, 2 },
 	};
 
 	for (const FRuleCase& Case : Cases)
 	{
-		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States);
+		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States, Case.Radius);
 
 		FDenseCellGrid Source(CellSize, ChunkSize, Rule.HasDecayStates());
 		AutomataTestUtils::SeedSphere(Source, /*Seed=*/1337, /*Radius=*/12, /*Amount=*/4000);
@@ -378,6 +520,9 @@ bool FCpuGpuParityTest::RunTest(const FString& Parameters)
 		if (CpuGrid.IsValid())
 		{
 			AddInfo(FString::Printf(TEXT("%s: %d живых клеток после 4 поколений"), Case.Name, CpuGrid->Num()));
+			// Совпадение на вымершей сетке ничего не доказывает - две пустые
+			// сетки равны при любой ошибке в подсчёте соседей.
+			TestTrue(FString::Printf(TEXT("%s: сетка не вымерла (иначе сравнение пустое)"), Case.Name), CpuGrid->Num() > 0);
 		}
 	}
 
@@ -411,16 +556,23 @@ bool FGpuBatchParityTest::RunTest(const FString& Parameters)
 		TArray<int32> Birth;
 		TArray<int32> Survival;
 		int32 States;
+		ENeighborhood Neighborhood = ENeighborhood::Moore;
+		int32 Radius = 1;
 	};
 
 	const TArray<FRuleCase> Cases = {
 		{ TEXT("бинарное 4/4/2/M"), { 4 }, { 4 }, 2 },
 		{ TEXT("Generations 4/4/5/M"), { 4 }, { 4 }, 5 },
+		// Радиус 2 именно здесь важнее всего: гало пачки равно радиус*поколений,
+		// то есть при радиусе 2 оно вдвое больше, чем было. Ошибка в этом
+		// множителе не роняет ничего - она молча теряет пограничные клетки, и
+		// расхождение с пошаговым прогоном единственное, что её показывает.
+		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, 2, ENeighborhood::VonNeumann, 2 },
 	};
 
 	for (const FRuleCase& Case : Cases)
 	{
-		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, ENeighborhood::Moore, Case.States);
+		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States, Case.Radius);
 		const FGpuComputeStrategy GpuStrategy(VolumeLimit);
 
 		FDenseCellGrid Source(CellSize, ChunkSize, Rule.HasDecayStates());
@@ -457,6 +609,7 @@ bool FGpuBatchParityTest::RunTest(const FString& Parameters)
 		}
 
 		AddInfo(FString::Printf(TEXT("%s: %d живых клеток после %d поколений, пачка совпала"), Case.Name, Batched->Num(), BatchSize));
+		TestTrue(FString::Printf(TEXT("%s: сетка не вымерла (иначе сравнение пустое)"), Case.Name), Batched->Num() > 0);
 	}
 
 	return true;
@@ -624,7 +777,7 @@ bool FLatticeNeighborUniformityTest::RunTest(const FString& Parameters)
 		// Полуразмер выборки заметно меньше области построения - иначе в неё
 		// попали бы клетки у самого края, у которых соседей меньше просто
 		// потому, что структура там кончается.
-		StateGenerators::AnalyzeNeighborCounts(Cells, ENeighborhood::Moore, /*MaxSampleExtent=*/20, Histogram);
+		StateGenerators::AnalyzeNeighborCounts(Cells, ENeighborhood::Moore, /*NeighborRadius=*/1, /*MaxSampleExtent=*/20, Histogram);
 
 		if (Histogram.SampledAlive == 0)
 		{

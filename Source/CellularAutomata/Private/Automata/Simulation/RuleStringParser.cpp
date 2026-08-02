@@ -154,26 +154,65 @@ namespace RuleStringParser
 
 		FString NeighborhoodToken = Fields[3];
 		NeighborhoodToken.TrimStartAndEndInline();
-		if (NeighborhoodToken.Equals(TEXT("M"), ESearchCase::IgnoreCase) || NeighborhoodToken.Equals(TEXT("Moore"), ESearchCase::IgnoreCase))
+
+		// Хвост из цифр - радиус ("VN2"). Отрезается с конца, а не ищется
+		// разделителем: имена соседств цифр не содержат, так что граница
+		// однозначна, и "VonNeumann" разбирается тем же кодом, что "VN".
+		int32 RadiusStart = NeighborhoodToken.Len();
+		while (RadiusStart > 0 && FChar::IsDigit(NeighborhoodToken[RadiusStart - 1]))
+		{
+			--RadiusStart;
+		}
+		const FString RadiusToken = NeighborhoodToken.Mid(RadiusStart);
+		const FString NameToken = NeighborhoodToken.Left(RadiusStart);
+
+		if (NameToken.Equals(TEXT("M"), ESearchCase::IgnoreCase) || NameToken.Equals(TEXT("Moore"), ESearchCase::IgnoreCase))
 		{
 			Parsed.Neighborhood = ENeighborhood::Moore;
 		}
-		else if (NeighborhoodToken.Equals(TEXT("VN"), ESearchCase::IgnoreCase) || NeighborhoodToken.Equals(TEXT("VonNeumann"), ESearchCase::IgnoreCase))
+		else if (NameToken.Equals(TEXT("VN"), ESearchCase::IgnoreCase) || NameToken.Equals(TEXT("VonNeumann"), ESearchCase::IgnoreCase))
 		{
 			Parsed.Neighborhood = ENeighborhood::VonNeumann;
 		}
 		else
 		{
-			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается 'M'/'Moore' или 'VN'/'VonNeumann'"), *NeighborhoodToken);
+			OutError = FString::Printf(TEXT("Neighborhood: '%s' - ожидается 'M'/'Moore' или 'VN'/'VonNeumann' с необязательным радиусом ('VN2')"), *NeighborhoodToken);
 			return false;
 		}
+
+		// Отсутствие цифры - радиус 1 (прежнее поведение), а не ошибка.
+		const int32 ParsedRadius = RadiusToken.IsEmpty() ? 1 : FCString::Atoi(*RadiusToken);
+		if (ParsedRadius < 1 || ParsedRadius > MaxNeighborhoodRadius)
+		{
+			OutError = FString::Printf(TEXT("Neighborhood: радиус %d - должен быть от 1 до %d"), ParsedRadius, MaxNeighborhoodRadius);
+			return false;
+		}
+		if (!IsNeighborhoodRadiusSupported(Parsed.Neighborhood, ParsedRadius))
+		{
+			// Единственный непокрытый диапазоном случай - Moore с радиусом > 1.
+			// Отказ явный: приведение к радиусу 1 дало бы совсем другое
+			// правило под именем запрошенного.
+			OutError = FString::Printf(TEXT("Neighborhood: радиус %d поддержан только для 'VN'/'VonNeumann' (Moore радиуса %d - это %d соседей, не влезает ни в шейдерный массив, ни в 32-битные маски правила)"),
+				ParsedRadius, ParsedRadius, (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) * (2 * ParsedRadius + 1) - 1);
+			return false;
+		}
+		Parsed.Radius = ParsedRadius;
 
 		OutResult = MoveTemp(Parsed);
 		return true;
 	}
 
-	FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood)
+	FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood, int32 Radius)
 	{
+		// Радиус 1 печатается ОТСУТСТВИЕМ цифры, а не единицей: иначе каждая
+		// уже написанная строка правила (включая все записи RulePresets)
+		// начала бы возвращаться из round-trip'а в изменённом виде.
+		FString NeighborhoodToken = (Neighborhood == ENeighborhood::Moore) ? TEXT("M") : TEXT("VN");
+		if (Radius > 1)
+		{
+			NeighborhoodToken += FString::FromInt(Radius);
+		}
+
 		// Порядок полей - Survival, затем Birth: тот же, что читает
 		// ParseRuleString(), и обратный порядку объявления BirthCounts/
 		// SurvivalCounts в AAutomataOrchestrator (см. предупреждение в
@@ -183,6 +222,6 @@ namespace RuleStringParser
 			*FormatCountListField(SurvivalCounts),
 			*FormatCountListField(BirthCounts),
 			States,
-			Neighborhood == ENeighborhood::Moore ? TEXT("M") : TEXT("VN"));
+			*NeighborhoodToken);
 	}
 }

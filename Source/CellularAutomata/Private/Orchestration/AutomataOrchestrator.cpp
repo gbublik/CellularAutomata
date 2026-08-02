@@ -520,6 +520,10 @@ bool AAutomataOrchestrator::TryApplyRuleString(const FString& InRuleString, FStr
 	BirthCounts = Parsed.BirthCounts;
 	States = Parsed.States;
 	Neighborhood = Parsed.Neighborhood;
+	// Радиус присваивается всегда, а не только когда в строке была цифра:
+	// её отсутствие означает радиус 1, и без этой строки правило "13-26/.../M"
+	// молча унаследовало бы радиус от предыдущего применённого правила.
+	NeighborhoodRadius = Parsed.Radius;
 
 	// Строку, пришедшую параметром (из HUD или из пресета), кладём в
 	// UPROPERTY - иначе Details panel показывал бы прежнее правило, хотя
@@ -529,16 +533,25 @@ bool AAutomataOrchestrator::TryApplyRuleString(const FString& InRuleString, FStr
 
 	OutError.Reset();
 
-	UE_LOG(LogTemp, Log, TEXT("TryApplyRuleString: '%s' -> BirthCounts=%d знач., SurvivalCounts=%d знач., States=%d, Neighborhood=%s"),
+	UE_LOG(LogTemp, Log, TEXT("TryApplyRuleString: '%s' -> BirthCounts=%d знач., SurvivalCounts=%d знач., States=%d, Neighborhood=%s, радиус=%d"),
 		*InRuleString, BirthCounts.Num(), SurvivalCounts.Num(), States,
-		Neighborhood == ENeighborhood::Moore ? TEXT("Moore") : TEXT("VonNeumann"));
+		Neighborhood == ENeighborhood::Moore ? TEXT("Moore") : TEXT("VonNeumann"),
+		NeighborhoodRadius);
 
 	return true;
 }
 
 FString AAutomataOrchestrator::GetActiveRuleString() const
 {
-	return RuleStringParser::FormatRuleString(SurvivalCounts, BirthCounts, States, Neighborhood);
+	// Радиус берётся приведённый, а не сырой: строка обязана описывать то, по
+	// чему СЧИТАЕТСЯ симуляция (в этом весь смысл функции), а считается она по
+	// GetEffectiveNeighborhoodRadius() - см. места сборки правила.
+	return RuleStringParser::FormatRuleString(SurvivalCounts, BirthCounts, States, Neighborhood, GetEffectiveNeighborhoodRadius());
+}
+
+int32 AAutomataOrchestrator::GetEffectiveNeighborhoodRadius() const
+{
+	return IsNeighborhoodRadiusSupported(Neighborhood, NeighborhoodRadius) ? NeighborhoodRadius : 1;
 }
 
 TArray<FRulePreset> AAutomataOrchestrator::GetRulePresets() const
@@ -2128,6 +2141,7 @@ FAutomatonSaveHeader AAutomataOrchestrator::BuildSaveHeader() const
 	Header.BirthCounts = BirthCounts;
 	Header.SurvivalCounts = SurvivalCounts;
 	Header.Neighborhood = Neighborhood;
+	Header.NeighborhoodRadius = NeighborhoodRadius;
 	Header.States = States;
 	// CellSize - из сетки, не из UPROPERTY: сетка могла быть создана со
 	// старым значением, а файл фиксирует её фактическую геометрию.
@@ -2149,6 +2163,12 @@ void AAutomataOrchestrator::ApplySaveHeader(const FAutomatonSaveHeader& Header)
 	BirthCounts = Header.BirthCounts;
 	SurvivalCounts = Header.SurvivalCounts;
 	Neighborhood = Header.Neighborhood;
+	// Клампом одного диапазона тут не обойтись: поддержанность зависит ещё и
+	// от соседства (Moore радиуса > 1 нет), а поле в файле могли и не менять
+	// вовсе - старые сохранения приходят с дефолтом 1.
+	NeighborhoodRadius = IsNeighborhoodRadiusSupported(Header.Neighborhood, Header.NeighborhoodRadius)
+		? Header.NeighborhoodRadius
+		: 1;
 	States = FMath::Max(2, Header.States);
 	CellSize = FMath::Max(1.0f, Header.CellSize);
 	ChunkSize = FMath::Max(1, Header.ChunkSize);
@@ -2814,7 +2834,7 @@ void AAutomataOrchestrator::GenerateState()
 	if (GenerationParams.bAnalyzeNeighborCounts)
 	{
 		StateGenerators::FNeighborHistogram Histogram;
-		StateGenerators::AnalyzeNeighborCounts(Cells, Neighborhood, NeighborAnalysisSampleExtent, Histogram);
+		StateGenerators::AnalyzeNeighborCounts(Cells, Neighborhood, GetEffectiveNeighborhoodRadius(), NeighborAnalysisSampleExtent, Histogram);
 		HistogramText = StateGenerators::DescribeHistogram(Histogram);
 	}
 
@@ -3420,7 +3440,7 @@ void AAutomataOrchestrator::Next()
 	// SurvivalCounts/Neighborhood в Details panel подхватывались немедленно
 	// (аналогично тому, как GenerateRandom() каждый раз пересоздаёт Grid,
 	// а не кэширует его)
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
+	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States, GetEffectiveNeighborhoodRadius());
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 
 	// Ручной шаг считает StepsPerRender поколений за одно нажатие (то же
@@ -3589,7 +3609,7 @@ void AAutomataOrchestrator::StepAsync()
 	// которые могут одновременно редактироваться в Details panel. После этой
 	// точки фоновый поток их больше не касается - только *Grid (на чтение) и
 	// NextGridBuffer (на запись, свежесозданный, ни с кем не общий).
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
+	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States, GetEffectiveNeighborhoodRadius());
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 	TUniquePtr<FCellGrid> NextGridBuffer = CreateGrid();
 

@@ -9,7 +9,13 @@
  *  (на основе Softology): Survival/Birth - списки через запятую, каждый
  *  элемент либо одно число, либо включительный диапазон "x-y"; States -
  *  общее число состояний клетки (>= 2, см. AAutomataOrchestrator::States);
- *  Neighborhood - "M"/"Moore" или "VN"/"VonNeumann" (регистронезависимо).
+ *  Neighborhood - "M"/"Moore" или "VN"/"VonNeumann" (регистронезависимо) с
+ *  необязательной хвостовой цифрой радиуса: "VN2" - фон Нейман радиуса 2,
+ *  "VN"/"M" без цифры - радиус 1, как и было. Именно "без цифры", а не "1":
+ *  FormatRuleString() тоже опускает единицу, поэтому все ранее написанные
+ *  строки (и все 14 записей RulePresets) продолжают и разбираться, и
+ *  печататься ровно так же, как до появления радиуса. Радиус > 1 поддержан
+ *  только для фон Неймана - см. IsNeighborhoodRadiusSupported().
  *
  *  ВАЖНО: это НЕ отмена решения "никакого строкового формата и парсинга" из
  *  doc-comment'а FCellularAutomatonRule - та формулировка была конкретно
@@ -32,6 +38,10 @@ namespace RuleStringParser
 		TArray<int32> BirthCounts;
 		int32 States = 2;
 		ENeighborhood Neighborhood = ENeighborhood::Moore;
+
+		/** Радиус соседства из хвостовой цифры поля Neighborhood ("VN2"), 1
+		 *  при её отсутствии ("VN"/"M"). */
+		int32 Radius = 1;
 	};
 
 	/** Возвращает true и заполняет OutResult при успешном разборе; иначе
@@ -52,5 +62,5 @@ namespace RuleStringParser
 	 *  диапазоны ("1,2,3,7" -> "1-3,7"), так что для строки, полученной из
 	 *  ParseRuleString(), результат совпадает с исходной с точностью до
 	 *  нормализации порядка/формы диапазонов. */
-	CELLULARAUTOMATA_API FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood);
+	CELLULARAUTOMATA_API FString FormatRuleString(const TArray<int32>& SurvivalCounts, const TArray<int32>& BirthCounts, int32 States, ENeighborhood Neighborhood, int32 Radius = 1);
 }

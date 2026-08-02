@@ -1930,10 +1930,31 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	TArray<int32> SurvivalCounts = { 2, 3 };
 
-	/** Тип соседства для подсчёта живых соседей: Von Neumann (6, грани)
-	 *  или Moore (26, полный куб 3x3x3). */
+	/** Метрика соседства: Von Neumann (Манхэттен - грани) или Moore (Чебышёв -
+	 *  полный куб). Сколько это соседей, зависит ещё и от NeighborhoodRadius
+	 *  ниже: при радиусе 1 - 6 и 26 соответственно. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
+
+	/** Дальность соседства в клетках. 1 (дефолт) - прежнее поведение во всём.
+	 *  2 по фон Нейману - 24 соседа, то есть внутренний цикл даже чуть дешевле
+	 *  нынешнего Moore-26, но фронт роста шагает по ДВЕ клетки за поколение,
+	 *  чего радиусом 1 не получить никак.
+	 *
+	 *  Доступно только при Neighborhood == VonNeumann, отсюда EditCondition:
+	 *  Moore радиуса 2 - это 124 соседа, что ломает и шейдерный массив, и
+	 *  32-битные маски правила, и потолок памяти CPU-стратегии (см.
+	 *  IsNeighborhoodRadiusSupported() в Neighborhood.h). ClampMax дублирует
+	 *  MaxNeighborhoodRadius числом - meta-теги UPROPERTY не умеют ссылаться
+	 *  на constexpr.
+	 *
+	 *  Единственная реальная плата - длина GPU-пачки: гало равно
+	 *  радиус*поколений, так что StepsPerRender начинает урезаться примерно
+	 *  вдвое раньше (см. FGpuComputeStrategy::StepBatch()). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules",
+			  meta = (ClampMin = "1", ClampMax = "2", UIMin = "1", UIMax = "2",
+					  EditCondition = "Neighborhood == ENeighborhood::VonNeumann"))
+	int32 NeighborhoodRadius = 1;
 
 	/** Общее число состояний клетки - 2 (дефолт) значит классический
 	 *  бинарный автомат (жива/мертва), поведение не отличается от того, что
@@ -2553,6 +2574,21 @@ private:
 	 *  Details panel - зеркалит CreateGrid()'s switch-паттерн. Используется
 	 *  и Next(), и StepAsync(). */
 	TUniquePtr<FCellularAutomatonComputeStrategy> CreateComputeStrategy() const;
+
+	/** NeighborhoodRadius, приведённый к тому, что реально поддержано для
+	 *  текущего Neighborhood (см. IsNeighborhoodRadiusSupported()) - то есть
+	 *  1 для Moore при любом значении поля.
+	 *
+	 *  Нужна как последний рубеж, а не как основная проверка: строка правила
+	 *  отвергает Moore с радиусом на разборе, а в Details panel поле скрыто
+	 *  EditCondition'ом - но свойство BlueprintReadWrite, и Blueprint (или
+	 *  старый ассет, где радиус выставили до смены соседства) может записать
+	 *  туда что угодно. Без приведения такое сочетание построило бы правило
+	 *  на 124 офсета: GPU увёл бы шаг на CPU, а CPU попытался бы выделить
+	 *  буфер кандидатов в 4.8 раза больше нынешнего. Молчаливого приведения
+	 *  здесь не стесняемся: Moore радиуса 1 - ровно то, чем он был всегда,
+	 *  никакая уже работающая конфигурация от этого не меняется. */
+	int32 GetEffectiveNeighborhoodRadius() const;
 
 	/** UPROPERTY (не голый указатель) - иначе после реинстансинга через
 	 *  Live Coding во время активного PIE значение не переживает пересборку

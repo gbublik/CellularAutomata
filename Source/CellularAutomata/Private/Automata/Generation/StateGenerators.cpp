@@ -1,5 +1,6 @@
 #include "Automata/Generation/StateGenerators.h"
 
+#include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Algo/Sort.h"
 #include "Algo/Unique.h"
 #include "Math/RandomStream.h"
@@ -1041,47 +1042,26 @@ namespace StateGenerators
 	}
 
 	void AnalyzeNeighborCounts(const TArray<FIntVector>& Cells, ENeighborhood Neighborhood,
-							   int32 MaxSampleExtent, FNeighborHistogram& OutHistogram)
+							   int32 NeighborRadius, int32 MaxSampleExtent, FNeighborHistogram& OutHistogram)
 	{
-		// 27 колонок: максимум для Moore - 26 соседей, плюс колонка нуля.
-		OutHistogram.AliveByCount.Init(0, 27);
-		OutHistogram.EmptyByCount.Init(0, 27);
+		// Смещения соседей берутся у самого правила: это чистая геометрия
+		// (никакие BirthCounts/SurvivalCounts здесь не читаются), и раньше
+		// тут лежал её дубликат - с обратным порядком циклов и без всякого
+		// понятия о радиусе. Считать гистограмму по одной таблице, а
+		// симуляцию по другой - ровно тот способ разъехаться, ради которого
+		// эта функция и существует.
+		const TArray<FIntVector> Offsets = FCellularAutomatonRule::BuildNeighborOffsets(Neighborhood, NeighborRadius);
+
+		// Колонка на каждое возможное число соседей плюс колонка нуля - для
+		// привычного Moore-26 это прежние 27.
+		OutHistogram.AliveByCount.Init(0, Offsets.Num() + 1);
+		OutHistogram.EmptyByCount.Init(0, Offsets.Num() + 1);
 		OutHistogram.SampledAlive = 0;
 		OutHistogram.SampledEmpty = 0;
 
 		if (Cells.Num() == 0)
 		{
 			return;
-		}
-
-		// Смещения соседей - те же, что строит FCellularAutomatonRule, но здесь
-		// они нужны как чистая геометрия: никакие BirthCounts/SurvivalCounts не
-		// читаются.
-		TArray<FIntVector> Offsets;
-		if (Neighborhood == ENeighborhood::VonNeumann)
-		{
-			Offsets = {
-				FIntVector(1, 0, 0), FIntVector(-1, 0, 0),
-				FIntVector(0, 1, 0), FIntVector(0, -1, 0),
-				FIntVector(0, 0, 1), FIntVector(0, 0, -1)
-			};
-		}
-		else
-		{
-			Offsets.Reserve(26);
-			for (int32 dz = -1; dz <= 1; ++dz)
-			{
-				for (int32 dy = -1; dy <= 1; ++dy)
-				{
-					for (int32 dx = -1; dx <= 1; ++dx)
-					{
-						if (dx != 0 || dy != 0 || dz != 0)
-						{
-							Offsets.Add(FIntVector(dx, dy, dz));
-						}
-					}
-				}
-			}
 		}
 
 		// Весь набор в TSet на миллионах клеток стоил бы сотни мегабайт, а
