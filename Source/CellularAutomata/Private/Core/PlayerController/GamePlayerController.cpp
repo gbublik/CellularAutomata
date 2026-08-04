@@ -1032,7 +1032,7 @@ void AGamePlayerController::OnIncreaseSpeed()
 		return;
 	}
 
-	Orchestrator->AdjustSpeed(SpeedAdjustStep);
+	Orchestrator->AdjustSpeed(IsShiftHeld() ? SpeedAdjustStepFast : SpeedAdjustStep);
 }
 
 void AGamePlayerController::OnDecreaseSpeed()
@@ -1049,7 +1049,7 @@ void AGamePlayerController::OnDecreaseSpeed()
 		return;
 	}
 
-	Orchestrator->AdjustSpeed(-SpeedAdjustStep);
+	Orchestrator->AdjustSpeed(IsShiftHeld() ? -SpeedAdjustStepFast : -SpeedAdjustStep);
 }
 
 void AGamePlayerController::OnFrameAllCells()

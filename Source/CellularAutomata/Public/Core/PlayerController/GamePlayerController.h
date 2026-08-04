@@ -351,9 +351,14 @@ protected:
 	void OnToggleGhostShape();
 
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
-	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). Удержание
-	 *  повторяет шаг не каждый кадр, а с частотой автоповтора - см.
-	 *  ShouldFireRepeat(). */
+	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(), а с зажатым
+	 *  Shift - на SpeedAdjustStepFast. Удержание повторяет шаг не каждый кадр, а
+	 *  с частотой автоповтора - см. ShouldFireRepeat().
+	 *
+	 *  Shift здесь НЕ уводит в другой обработчик (в отличие от Shift+T/Shift+G,
+	 *  где он меняет саму операцию): крупный шаг - это тот же шаг, просто
+	 *  крупнее, и разводить его по разным событиям привязки незачем. Модификатор
+	 *  проверяется внутри - Enhanced Input не умеет требовать его в маппинге. */
 	void OnIncreaseSpeed();
 	void OnDecreaseSpeed();
 
@@ -738,6 +743,13 @@ protected:
 
 	/** Шаг изменения Speed за одно нажатие +/-. */
 	static constexpr float SpeedAdjustStep = 0.5f;
+
+	/** Шаг под Shift - вдесятеро крупнее. Speed доходит до 100 (кламп в
+	 *  AAutomataOrchestrator::AdjustSpeed() шире, чем UIMax свойства), и полста
+	 *  нажатий по полшага от одного конца диапазона до другого - это ровно тот
+	 *  случай, ради которого Shift+T/Shift+G ходят по степеням двойки. Здесь
+	 *  хватает и множителя: шкала Speed линейная, а не степенная. */
+	static constexpr float SpeedAdjustStepFast = 5.0f;
 
 	/** Состояние автоповтора одного хоткея, привязанного на Triggered (см.
 	 *  ShouldFireRepeat()). По одному экземпляру на КЛАВИШУ, а не на пару:
