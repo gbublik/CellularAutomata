@@ -71,11 +71,54 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Graph")
 	bool bLogScaleY = false;
 
+	/** Нормировка: рисовать не популяцию, а популяцию, делённую на
+	 *  n^NormalizationExponent (n - номер поколения).
+	 *
+	 *  Голая популяция растущей фигуры идёт как объём, и её график - парабола,
+	 *  одинаковая у любого растущего правила: всё различие спрятано в
+	 *  коэффициенте. Деление убирает главный член и показывает то, что он
+	 *  прятал, - см. GenerationHistory::NormalizedValue(). Приём взят с графика
+	 *  U(n)/n^2 в статье про автомат Улама-Варбертона, где он показывает, что
+	 *  отношение не сходится вовсе, а вечно колеблется между 0.9026... и 4/3,
+	 *  касаясь потолка ровно при n = 2^k.
+	 *
+	 *  Выключено по умолчанию: обычный график населения - то, ради чего виджет
+	 *  клали на HUD, а нормировка отвечает на отдельный вопрос. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Graph")
+	bool bNormalizePopulation = false;
+
+	/** Показатель нормировки. Тройка по умолчанию - размерность пространства,
+	 *  то есть гипотеза "фигура плотная": при ней у сплошного растущего тела
+	 *  отношение выходит на константу, а у фрактальной губки уползает в ноль.
+	 *  Измеренное значение показывает GetFittedGrowthExponent() - его и имеет
+	 *  смысл сюда вписывать, чтобы кривая легла горизонтально и стало видно
+	 *  колебания вокруг неё. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Graph",
+		meta = (ClampMin = "0.1", UIMax = "4.0", EditCondition = "bNormalizePopulation"))
+	float NormalizationExponent = 3.0f;
+
 	/** Текущий потолок по Y - для подписи оси в UMG. Уже сглаженный
 	 *  ("красивый", с гистерезисом), а не сырой максимум окна: см.
-	 *  UpdateYMax(). */
+	 *  UpdateYRange(). */
 	UFUNCTION(BlueprintPure, Category = "Automata|Graph")
 	float GetWindowYMax() const { return float(CachedYMax); }
+
+	/** Текущее дно по Y - для подписи оси. Ноль у обычного графика населения;
+	 *  у нормированного дно поднято, иначе узкая полоса значений выглядит
+	 *  прямой линией (см. GenerationHistory::ComputeNiceRange()). */
+	UFUNCTION(BlueprintPure, Category = "Automata|Graph")
+	float GetWindowYMin() const { return float(CachedYMin); }
+
+	/** Показатель роста, измеренный по текущему окну (наклон log P по log n).
+	 *  Считается ВСЕГДА, включена нормировка или нет: это самостоятельный
+	 *  результат прогона, а не служебное число графика.
+	 *
+	 *  Читается как размерность структуры, пока фронт расползается с постоянной
+	 *  скоростью: 3 - сплошное тело, около 2 - оболочка или плоская фигура,
+	 *  между ними - фрактал. 0 означает "измерить не по чему" (окно короче двух
+	 *  замеров или сетка вымерла), а не нулевой рост. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Graph")
+	float GetFittedGrowthExponent() const { return float(CachedFittedExponent); }
 
 	UFUNCTION(BlueprintPure, Category = "Automata|Graph")
 	int64 GetWindowFirstGeneration() const { return CachedMinGeneration; }
@@ -112,12 +155,22 @@ private:
 	 *  может ещё не быть (виджет создаётся раньше) или он мог быть уничтожен. */
 	AAutomataOrchestrator* GetOrchestrator();
 
-	/** Сглаживает потолок по Y: сырой максимум, пересчитываемый каждый кадр,
-	 *  заставляет всю кривую непрерывно дышать. Округляет до "красивого"
-	 *  (1/2/5 * 10^k), растёт немедленно, падает только когда сырой максимум
-	 *  ушёл ниже половины текущего - гистерезис, иначе на границе округления
-	 *  масштаб мигал бы туда-сюда каждый кадр. */
-	void UpdateYMax(int32 RawMaxY);
+	/** Сглаживает отрезок оси Y: сырые границы, пересчитываемые каждый кадр,
+	 *  заставляют всю кривую непрерывно дышать.
+	 *
+	 *  Два режима, и они несводимы друг к другу. Обычный график населения -
+	 *  дно в нуле (иначе кривая врёт о том, во сколько раз что-то выросло),
+	 *  потолок округляется до "красивого" (1/2/5 * 10^k), растёт немедленно, а
+	 *  падает только когда сырой максимум ушёл ниже половины текущего:
+	 *  гистерезис, иначе на границе округления масштаб мигал бы туда-сюда
+	 *  каждый кадр. Нормированный - отрезок по обеим границам окна
+	 *  (GenerationHistory::ComputeNiceRange()), потому что всё значение там
+	 *  лежит в узкой полосе, а от нуля она выглядит прямой линией. */
+	void UpdateYRange(double RawMinY, double RawMaxY);
+
+	/** Показатель, который реально уходит в нормировку: 0, когда она выключена
+	 *  (в этом виде его понимает вся математика в GenerationHistory). */
+	double GetActiveExponent() const;
 
 	/** Синтетическая кривая для Designer: без PIE оркестратора не существует,
 	 *  и виджет был бы пустым прямоугольником, который нечем мерить. */
@@ -127,7 +180,9 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<AAutomataOrchestrator> CachedOrchestrator = nullptr;
 
+	double CachedYMin = 0.0;
 	double CachedYMax = 1.0;
+	double CachedFittedExponent = 0.0;
 	int64 CachedMinGeneration = 0;
 	int64 CachedMaxGeneration = 0;
 

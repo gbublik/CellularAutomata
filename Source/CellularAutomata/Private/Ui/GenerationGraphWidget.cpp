@@ -58,20 +58,39 @@ AAutomataOrchestrator* UGenerationGraphWidget::GetOrchestrator()
 	return CachedOrchestrator;
 }
 
-void UGenerationGraphWidget::UpdateYMax(int32 RawMaxY)
+double UGenerationGraphWidget::GetActiveExponent() const
+{
+	return bNormalizePopulation ? double(NormalizationExponent) : 0.0;
+}
+
+void UGenerationGraphWidget::UpdateYRange(double RawMinY, double RawMaxY)
 {
 	if (!bAutoScaleY)
 	{
+		// FixedMaxY целочисленный и по смыслу про количество клеток - для
+		// нормированного отношения (обычно единицы) он бесполезен, но и не
+		// вреден: ручной масштаб на то и ручной.
+		CachedYMin = 0.0;
 		CachedYMax = FMath::Max(1, FixedMaxY);
 		return;
 	}
 
-	const double Target = GenerationHistory::NiceCeiling(double(FMath::Max(RawMaxY, 1)));
+	if (bNormalizePopulation)
+	{
+		// Отрезок выровнен по "красивому" шагу, и это же работает гистерезисом:
+		// он меняется, только когда данные переходят через границу шага.
+		GenerationHistory::ComputeNiceRange(RawMinY, RawMaxY, CachedYMin, CachedYMax);
+		return;
+	}
+
+	CachedYMin = 0.0;
+
+	const double Target = GenerationHistory::NiceCeiling(FMath::Max(RawMaxY, 1.0));
 
 	// Вверх - сразу (иначе пик уехал бы за край кадра), вниз - только когда
 	// сырой максимум ушёл ниже половины текущего потолка. Без этого зазора
 	// масштаб мигал бы туда-сюда на каждом колебании вокруг границы округления.
-	if (Target > CachedYMax || double(RawMaxY) < CachedYMax * 0.5)
+	if (Target > CachedYMax || RawMaxY < CachedYMax * 0.5)
 	{
 		CachedYMax = Target;
 	}
@@ -125,18 +144,25 @@ bool UGenerationGraphWidget::BuildPlotPoints(const FVector2f& PlotSize, const FV
 	}
 
 	const TArray<FGenerationSample>& Samples = Orchestrator->GetGenerationSamples();
+	const double Exponent = GetActiveExponent();
 
-	int32 RawMaxY = 0;
-	if (!GenerationHistory::ComputeBounds(Samples, CachedMinGeneration, CachedMaxGeneration, RawMaxY))
+	// Считается независимо от того, включена ли нормировка: показатель - это
+	// самостоятельный результат прогона, который в UMG выводят подписью.
+	CachedFittedExponent = GenerationHistory::FitGrowthExponent(Samples);
+
+	double RawMinY = 0.0;
+	double RawMaxY = 0.0;
+	if (!GenerationHistory::ComputeBounds(Samples, Exponent,
+		CachedMinGeneration, CachedMaxGeneration, RawMinY, RawMaxY))
 	{
 		return false;
 	}
 
-	UpdateYMax(RawMaxY);
+	UpdateYRange(RawMinY, RawMaxY);
 
 	GenerationHistory::MapToPoints(Samples, PlotSize, PlotOrigin,
-		CachedMinGeneration, CachedMaxGeneration, CachedYMax, bLogScaleY,
-		OutAlivePoints, OutRenderedPoints);
+		CachedMinGeneration, CachedMaxGeneration, CachedYMin, CachedYMax,
+		bLogScaleY, Exponent, OutAlivePoints, OutRenderedPoints);
 
 	// Одна точка - это не ломаная: MakeLines по ней ничего не нарисует, а
 	// звать его дважды впустую незачем.

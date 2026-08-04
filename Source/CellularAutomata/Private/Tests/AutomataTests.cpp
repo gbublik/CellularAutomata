@@ -1841,23 +1841,121 @@ bool FGenerationHistoryTest::RunTest(const FString& Parameters)
 		TArray<FGenerationSample> History;
 		int64 MinGeneration = -1;
 		int64 MaxGeneration = -1;
-		int32 MaxY = -1;
+		double MinY = -1.0;
+		double MaxY = -1.0;
 
 		TestFalse(TEXT("на пустой истории границ нет"),
-			GenerationHistory::ComputeBounds(History, MinGeneration, MaxGeneration, MaxY));
+			GenerationHistory::ComputeBounds(History, 0.0, MinGeneration, MaxGeneration, MinY, MaxY));
 
 		GenerationHistory::NoteRendered(History, 5, 100, 900, 512);
 		TestTrue(TEXT("границы одного замера"),
-			GenerationHistory::ComputeBounds(History, MinGeneration, MaxGeneration, MaxY));
+			GenerationHistory::ComputeBounds(History, 0.0, MinGeneration, MaxGeneration, MinY, MaxY));
 		TestEqual(TEXT("вырожденное окно"), MinGeneration, MaxGeneration);
-		TestEqual(TEXT("потолок берётся по обоим рядам"), MaxY, 900);
+		TestEqual(TEXT("потолок берётся по обоим рядам"), MaxY, 900.0);
+		TestEqual(TEXT("дно берётся по обоим рядам"), MinY, 100.0);
 
 		GenerationHistory::Append(History, 9, 2000, 512);
 		TestTrue(TEXT("границы двух замеров"),
-			GenerationHistory::ComputeBounds(History, MinGeneration, MaxGeneration, MaxY));
+			GenerationHistory::ComputeBounds(History, 0.0, MinGeneration, MaxGeneration, MinY, MaxY));
 		TestEqual(TEXT("левый край"), MinGeneration, (int64)5);
 		TestEqual(TEXT("правый край"), MaxGeneration, (int64)9);
-		TestEqual(TEXT("потолок поднялся до живых"), MaxY, 2000);
+		TestEqual(TEXT("потолок поднялся до живых"), MaxY, 2000.0);
+	}
+
+	// Нормировка: поколение 0 делить не на что, и такой замер выпадает целиком -
+	// вместе с левым краем окна, который до этого был просто концом массива.
+	{
+		TArray<FGenerationSample> History;
+		GenerationHistory::NoteRendered(History, 0, 1000, 1000, 512);
+		GenerationHistory::NoteRendered(History, 2, 80, 80, 512);
+		GenerationHistory::NoteRendered(History, 4, 640, 640, 512);
+
+		int64 MinGeneration = -1;
+		int64 MaxGeneration = -1;
+		double MinY = -1.0;
+		double MaxY = -1.0;
+
+		TestTrue(TEXT("границы при нормировке"),
+			GenerationHistory::ComputeBounds(History, 3.0, MinGeneration, MaxGeneration, MinY, MaxY));
+		// Поколение 0 выброшено - иначе левый край остался бы нулём, а деление
+		// на него ушло бы в бесконечность и утащило бы в NaN всю ломаную.
+		TestEqual(TEXT("левый край сдвинулся"), MinGeneration, (int64)2);
+		TestEqual(TEXT("правый край на месте"), MaxGeneration, (int64)4);
+		// 80/8 = 10, 640/64 = 10 - ровное плато, ради которого нормировка и
+		// затевалась: население выросло в восемь раз, отношение не шелохнулось.
+		TestTrue(TEXT("плато по нормированному значению"), FMath::IsNearlyEqual(MinY, 10.0, 1e-9));
+		TestTrue(TEXT("плато не разъехалось"), FMath::IsNearlyEqual(MaxY, 10.0, 1e-9));
+
+		// История из одного лишь нулевого поколения при нормировке нерисуема.
+		TArray<FGenerationSample> ZeroOnly;
+		GenerationHistory::NoteRendered(ZeroOnly, 0, 1000, 1000, 512);
+		TestFalse(TEXT("одно нулевое поколение - рисовать нечего"),
+			GenerationHistory::ComputeBounds(ZeroOnly, 3.0, MinGeneration, MaxGeneration, MinY, MaxY));
+		TestTrue(TEXT("а без нормировки оно рисуемо"),
+			GenerationHistory::ComputeBounds(ZeroOnly, 0.0, MinGeneration, MaxGeneration, MinY, MaxY));
+	}
+
+	// Само нормированное значение и подгонка показателя - то, ради чего вся
+	// затея: по чистой степени наклон обязан выйти точно.
+	{
+		TestEqual(TEXT("без нормировки значение не трогают"),
+			GenerationHistory::NormalizedValue(4, 640, 0.0), 640.0);
+		TestTrue(TEXT("деление на n^d"),
+			FMath::IsNearlyEqual(GenerationHistory::NormalizedValue(4, 640, 3.0), 10.0, 1e-9));
+		// Ноль вместо бесконечности: одна inf в массиве точек уводит в NaN всю
+		// ломаную, и график пропадает целиком.
+		TestEqual(TEXT("поколение 0 не даёт бесконечность"),
+			GenerationHistory::NormalizedValue(0, 640, 3.0), 0.0);
+
+		TArray<FGenerationSample> History;
+		for (int64 Generation = 1; Generation <= 16; ++Generation)
+		{
+			// Ровно n^3 - подгонка обязана вернуть тройку.
+			GenerationHistory::Append(History, Generation,
+				int32(Generation * Generation * Generation), 512);
+		}
+		TestTrue(TEXT("показатель куба измерен"),
+			FMath::IsNearlyEqual(GenerationHistory::FitGrowthExponent(History), 3.0, 1e-6));
+
+		// Вымершая сетка (log 0) и поколение 0 (log 0 по X) не участвуют, но и
+		// не роняют подгонку в NaN.
+		GenerationHistory::Append(History, 17, 0, 512);
+		TestTrue(TEXT("нули не портят подгонку"),
+			FMath::IsNearlyEqual(GenerationHistory::FitGrowthExponent(History), 3.0, 1e-6));
+
+		TArray<FGenerationSample> TooShort;
+		GenerationHistory::Append(TooShort, 5, 100, 512);
+		TestEqual(TEXT("по одной точке наклона нет"),
+			GenerationHistory::FitGrowthExponent(TooShort), 0.0);
+
+		// Все замеры на одном поколении - окно из одной вертикали.
+		TArray<FGenerationSample> OneGeneration;
+		GenerationHistory::Append(OneGeneration, 5, 100, 512);
+		GenerationHistory::Append(OneGeneration, 5, 200, 512);
+		TestEqual(TEXT("вертикаль не даёт наклона"),
+			GenerationHistory::FitGrowthExponent(OneGeneration), 0.0);
+	}
+
+	// Отрезок оси для нормированного графика: узкую полосу нельзя мерить от
+	// нуля - от него она выглядит прямой линией.
+	{
+		double Min = -1.0;
+		double Max = -1.0;
+
+		GenerationHistory::ComputeNiceRange(0.9026, 1.3333, Min, Max);
+		TestTrue(TEXT("дно поднято над нулём"), Min > 0.0);
+		TestTrue(TEXT("дно не выше данных"), Min <= 0.9026);
+		TestTrue(TEXT("потолок не ниже данных"), Max >= 1.3333);
+		// Полоса шириной 0.43 внутри отрезка шириной не больше 1 - иначе от
+		// колебаний, ради которых всё и делается, остаётся плоская линия.
+		TestTrue(TEXT("отрезок не растянут"), (Max - Min) <= 1.0);
+
+		// Вырожденные данные не должны давать нулевой ширины: на неё делят.
+		GenerationHistory::ComputeNiceRange(5.0, 5.0, Min, Max);
+		TestTrue(TEXT("плато не даёт нулевого отрезка"), Max > Min);
+
+		GenerationHistory::ComputeNiceRange(0.0, 0.0, Min, Max);
+		TestTrue(TEXT("нули не дают нулевого отрезка"), Max > Min);
 	}
 
 	// Раскладка по X идёт по ЗНАЧЕНИЮ поколения, а не по индексу: один заход
@@ -1871,7 +1969,8 @@ bool FGenerationHistoryTest::RunTest(const FString& Parameters)
 
 		TArray<FVector2f> Alive, Rendered;
 		GenerationHistory::MapToPoints(History, FVector2f(110.0f, 100.0f), FVector2f::ZeroVector,
-			0, 11, 100.0, /*bLogScale=*/false, Alive, Rendered);
+			0, 11, /*MinY=*/0.0, /*MaxY=*/100.0, /*bLogScale=*/false, /*Exponent=*/0.0,
+			Alive, Rendered);
 
 		TestEqual(TEXT("точек столько же, сколько замеров"), Alive.Num(), 3);
 		TestEqual(TEXT("левый край"), Alive[0].X, 0.0f);
@@ -1891,11 +1990,40 @@ bool FGenerationHistoryTest::RunTest(const FString& Parameters)
 
 		TArray<FVector2f> Alive, Rendered;
 		GenerationHistory::MapToPoints(History, FVector2f(100.0f, 100.0f), FVector2f::ZeroVector,
-			3, 3, 20.0, /*bLogScale=*/false, Alive, Rendered);
+			3, 3, /*MinY=*/0.0, /*MaxY=*/20.0, /*bLogScale=*/false, /*Exponent=*/0.0,
+			Alive, Rendered);
 
 		TestEqual(TEXT("точки построены"), Alive.Num(), 2);
 		TestTrue(TEXT("X конечен"), FMath::IsFinite(Alive[0].X) && FMath::IsFinite(Alive[1].X));
 		TestTrue(TEXT("Y конечен"), FMath::IsFinite(Alive[0].Y) && FMath::IsFinite(Alive[1].Y));
+	}
+
+	// Поднятое дно и нормировка в самой раскладке: замер на поколении 0
+	// выбрасывается из ОБОИХ рядов сразу, иначе они разъедутся по длине и
+	// вторая ломаная поедет по чужим X.
+	{
+		TArray<FGenerationSample> History;
+		GenerationHistory::NoteRendered(History, 0, 1000, 1000, 512);
+		GenerationHistory::NoteRendered(History, 2, 80, 40, 512);
+		GenerationHistory::NoteRendered(History, 4, 640, 320, 512);
+
+		TArray<FVector2f> Alive, Rendered;
+		// Значения после нормировки: живые - ровно 10, видимые - ровно 5.
+		// Отрезок [5, 10] кладёт первую линию на верх области, вторую - на низ.
+		GenerationHistory::MapToPoints(History, FVector2f(100.0f, 100.0f), FVector2f::ZeroVector,
+			2, 4, /*MinY=*/5.0, /*MaxY=*/10.0, /*bLogScale=*/false, /*Exponent=*/3.0,
+			Alive, Rendered);
+
+		TestEqual(TEXT("нулевое поколение выброшено"), Alive.Num(), 2);
+		TestEqual(TEXT("ряды одной длины"), Rendered.Num(), Alive.Num());
+		TestTrue(TEXT("левый край - первое пригодное поколение"),
+			FMath::IsNearlyEqual(Alive[0].X, 0.0f, 0.01f));
+		TestTrue(TEXT("значение на потолке - верх области"),
+			FMath::IsNearlyEqual(Alive[0].Y, 0.0f, 0.01f));
+		// Дно отрезка, а не ноль: на обычном графике эта линия ушла бы в
+		// середину области и полоса значений выглядела бы вдвое шире.
+		TestTrue(TEXT("значение на дне - низ области"),
+			FMath::IsNearlyEqual(Rendered[0].Y, 100.0f, 0.01f));
 	}
 
 	// "Красивый" потолок: 1/2/5 * 10^k, и ноль не роняет масштаб в ноль.
