@@ -34,6 +34,18 @@ public:
 	 *  ни на одном из compute-путей (см. AAutomataOrchestrator::States). */
 	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, ENeighborhood InNeighborhood, int32 InStates = 2);
 
+	/** То же правило, но смещения соседей заданы СПИСКОМ, в обход ENeighborhood.
+	 *  Нужно наборам, которые не выражаются оболочками по d^2 - у форм клетки
+	 *  за пределами простой кубической решётки число граней (оно же число
+	 *  соседей) не совпадает ни с одним объединением оболочек. См.
+	 *  ELatticeNeighborhood.
+	 *
+	 *  Ниже правила эта разница не видна вовсе: обе стратегии счёта и шейдер
+	 *  работают со списком целочисленных смещений и не спрашивают, откуда он
+	 *  взялся. Единственное ограничение - длина: у шейдера массив на 26
+	 *  элементов, за ним FGpuComputeStrategy откатывается на CPU. */
+	FCellularAutomatonRule(const TArray<int32>& BirthCounts, const TArray<int32>& SurvivalCounts, const TArray<FIntVector>& InNeighborOffsets, int32 InStates = 2);
+
 	const TArray<FIntVector>& GetNeighborOffsets() const { return NeighborOffsets; }
 	const TSet<int32>& GetBirthCounts() const { return BirthCounts; }
 	const TSet<int32>& GetSurvivalCounts() const { return SurvivalCounts; }

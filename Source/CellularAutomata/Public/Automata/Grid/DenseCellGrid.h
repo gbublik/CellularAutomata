@@ -23,6 +23,12 @@ public:
 	 *  канал угасания (см. AAutomataOrchestrator::States > 2), вызывается
 	 *  из CreateGrid() как States > 2. */
 	explicit FDenseCellGrid(float InCellSize, int32 InChunkSize = DefaultChunkSize, bool bInEnableDecayStates = false);
+
+	/** То же, но с явно заданной геометрией решётки - шаг по осям может быть
+	 *  неравным (см. FLatticeTransform). Хранилище от этого не меняется
+	 *  ничем: чанки, биты, возрасты и угасание адресуются целыми
+	 *  координатами и геометрии не видят вовсе. */
+	explicit FDenseCellGrid(const FLatticeTransform& InLattice, int32 InChunkSize = DefaultChunkSize, bool bInEnableDecayStates = false);
 	virtual ~FDenseCellGrid() override = default;
 
 	virtual bool IsAlive(const FIntVector& Cell) const override;
@@ -56,7 +62,7 @@ public:
 	/** Дёшево - Chunks уже хранит нужные ключи, никакого нового
 	 *  сканирования клеток (см. doc-comment в FCellGrid). */
 	virtual void GetOccupiedChunkCoords(TArray<FIntVector>& OutChunkCoords) const override;
-	virtual float GetChunkWorldSize() const override { return ChunkSize * CellSize; }
+	virtual FVector GetChunkWorldExtent() const override { return Lattice.GetCellWorldExtent() * static_cast<double>(ChunkSize); }
 
 private:
 	/** Плотный чанк ChunkSize^3 клеток. AliveCount кэширует число живых

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Automata/Grid/LatticeTransform.h"
 
 /**
  * Абстрактное хранилище клеток клеточного автомата, адресуемых целыми
@@ -9,8 +10,16 @@
 class CELLULARAUTOMATA_API FCellGrid
 {
 public:
+	/** Кубическая решётка с равным шагом - прежнее и самое частое поведение;
+	 *  оставлен, чтобы наследники и тесты, знающие только про одно число, не
+	 *  правились вовсе. */
 	explicit FCellGrid(float InCellSize)
-		: CellSize(InCellSize)
+		: Lattice(FLatticeTransform::MakeOrthogonal(InCellSize))
+	{
+	}
+
+	explicit FCellGrid(const FLatticeTransform& InLattice)
+		: Lattice(InLattice)
 	{
 	}
 
@@ -114,15 +123,34 @@ public:
 	 *  чтобы не копировать внутреннее хранилище на каждый вызов). */
 	virtual void GetAliveCells(TArray<FIntVector>& OutCells) const = 0;
 
-	float GetCellSize() const { return CellSize; }
+	/** Шаг решётки в плоскости. На решётке с неравным шагом по осям это уже
+	 *  НЕ полный ответ о геометрии - брать GetLattice(), а не достраивать
+	 *  формулы на одном этом числе. */
+	float GetCellSize() const { return Lattice.GetPlanarCellSize(); }
 
-	/** Преобразование координат клетки в мировые координаты. Виртуальный,
-	 *  т.к. зависит не только от CellSize, но и от топологии сетки
-	 *  (кубическая, гексагональная и т.д.) - реализация по умолчанию
-	 *  предполагает кубическую решётку. */
+	/** Геометрия решётки целиком. Невиртуальный и по ссылке: горячие циклы
+	 *  берут копию ОДИН раз перед собой и дальше зовут инлайновый
+	 *  GridToWorld() значения, не платя виртуальным вызовом на клетку - см.
+	 *  AAutomataOrchestrator::BuildCellRenderData().
+	 *
+	 *  ВАЖНО, где так можно: только там, где тип сетки известен статически.
+	 *  Ни одна из вьюх (FChunkGridView, FFilteredCellGridView) сегодня не
+	 *  переопределяет GridToWorld() - первая выражает свою поправку через
+	 *  Origin решётки, вторая просто передаёт запрос источнику, - поэтому
+	 *  значение и виртуальный метод дают один и тот же ответ, и тест
+	 *  Lattice.OrthogonalRoundTrip это фиксирует. Появится вьюха, которая
+	 *  переопределит GridToWorld() иначе, - приём станет неверным именно
+	 *  там, а не везде. */
+	const FLatticeTransform& GetLattice() const { return Lattice; }
+
+	/** Преобразование координат клетки в мировые координаты. Оставлен
+	 *  виртуальным ради вызывающих, которые работают с FCellGrid& и не знают
+	 *  конкретного типа; вся математика при этом живёт в FLatticeTransform,
+	 *  так что переопределять его больше незачем - вьюхе достаточно
+	 *  подставить свою решётку. */
 	virtual FVector GridToWorld(const FIntVector& Cell) const
 	{
-		return FVector(Cell.X, Cell.Y, Cell.Z) * CellSize;
+		return Lattice.GridToWorld(Cell);
 	}
 
 	/** Как GetAliveCells(), но только клетки, чей мировой GridToWorld()
@@ -162,13 +190,22 @@ public:
 		OutChunkCoords.Reset();
 	}
 
-	/** Мировой размер одного чанка (ChunkSize * CellSize у FDenseCellGrid) -
-	 *  0, если чанкинг не поддерживается (см. GetOccupiedChunkCoords()). */
-	virtual float GetChunkWorldSize() const
+	/** Мировой габарит одного чанка по каждой оси (ChunkSize * шаг решётки у
+	 *  FDenseCellGrid) - нулевой вектор, если чанкинг не поддерживается (см.
+	 *  GetOccupiedChunkCoords()). Вектор, а не одно число: на решётке с
+	 *  неравным шагом чанк - коробка, а не куб, и вызывающие, которым нужен
+	 *  радиус, обязаны брать максимум компоненты, иначе луч недолетает по
+	 *  вытянутой оси. */
+	virtual FVector GetChunkWorldExtent() const
 	{
-		return 0.0f;
+		return FVector::ZeroVector;
 	}
 
 protected:
-	float CellSize;
+	/** Вся геометрия решётки. Заменило прежнее поле float CellSize -
+	 *  сознательно заменило, а не дополнило: обратное преобразование было
+	 *  продублировано вручную в четырёх местах, и удаление поля превратило
+	 *  каждое из них в ошибку компиляции (см. doc-comment
+	 *  FLatticeTransform). */
+	FLatticeTransform Lattice;
 };

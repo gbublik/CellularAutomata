@@ -97,6 +97,12 @@ namespace StateGenerators
 	 *  сотни мегабайт). Соседство берётся то же, по которому считает
 	 *  симуляция, - это геометрия набора, а не правило: ни BirthCounts, ни
 	 *  SurvivalCounts здесь не участвуют. */
+	/** То же, но соседство задано СПИСКОМ смещений - для наборов, не
+	 *  выражаемых оболочками (см. ELatticeNeighborhood). Версия от
+	 *  ENeighborhood делегирует сюда, так что обе меряют одним кодом. */
+	CELLULARAUTOMATA_API void AnalyzeNeighborCounts(const TArray<FIntVector>& Cells, const TArray<FIntVector>& Offsets,
+													int32 MaxSampleExtent, FNeighborHistogram& OutHistogram);
+
 	CELLULARAUTOMATA_API void AnalyzeNeighborCounts(const TArray<FIntVector>& Cells, ENeighborhood Neighborhood,
 													int32 MaxSampleExtent, FNeighborHistogram& OutHistogram);
 

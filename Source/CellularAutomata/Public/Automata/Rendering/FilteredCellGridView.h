@@ -29,8 +29,11 @@
 class CELLULARAUTOMATA_API FFilteredCellGridView : public FCellGrid
 {
 public:
+	/** Решётка берётся у источника ЦЕЛИКОМ, а не по одному числу CellSize:
+	 *  иначе вью с неравным шагом по осям молча выпрямился бы в кубический и
+	 *  DDA-пик через него бил бы мимо. */
 	FFilteredCellGridView(const FCellGrid& InSourceGrid, TArray<FIntVector> InFilteredCells)
-		: FCellGrid(InSourceGrid.GetCellSize())
+		: FCellGrid(InSourceGrid.GetLattice())
 		, SourceGrid(InSourceGrid)
 		, FilteredCells(MoveTemp(InFilteredCells))
 	{
@@ -52,7 +55,12 @@ public:
 	virtual uint8 GetAge(const FIntVector& Cell) const override { return SourceGrid.GetAge(Cell); }
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) override {}
 
-	virtual FVector GridToWorld(const FIntVector& Cell) const override { return SourceGrid.GridToWorld(Cell); }
+	// GridToWorld() СПЕЦИАЛЬНО не переопределён: вью хранит копию решётки
+	// источника, поэтому базовая реализация даёт тот же ответ. Прежний
+	// override просто передавал вызов дальше и стоил ВТОРОГО виртуального
+	// вызова на клетку - в DDA-обходе луча это была диспетчеризация ради
+	// диспетчеризации. Заодно это то, что делает законным приём "взять
+	// GetLattice() один раз перед горячим циклом" (см. FCellGrid).
 
 private:
 	const FCellGrid& SourceGrid;

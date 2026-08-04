@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "Automata/Simulation/Neighborhood.h"
+#include "Automata/Simulation/LatticeNeighborhood.h"
+#include "Automata/Generation/CellParityFilter.h"
 #include "AutomatonSaveHeader.generated.h"
 
 /** JSON-шапка файла сохранения (.casave): правила автомата + геометрия сетки +
@@ -65,6 +67,30 @@ struct FAutomatonSaveHeader
 
 	UPROPERTY()
 	float CellSize = 100.0f;
+
+	/** Растяжение решётки по Z (см. AAutomataOrchestrator::LatticeZScale).
+	 *  Аддитивное поле - ни версия контейнера, ни версия формата не бампаются
+	 *  (тот же довод, что у States выше): файл, записанный до его появления,
+	 *  восстановится с дефолтом 1.0, а это в точности его тогдашняя
+	 *  семантика - решётка с равным шагом по осям. */
+	UPROPERTY()
+	float LatticeZScale = 1.0f;
+
+	/** Какие узлы решётки заселены (см. FStateGeneratorParams::ParityFilter).
+	 *  Тоже аддитивное поле, и оно закрывает существовавшую дыру: сами клетки
+	 *  сохранялись всегда, поэтому подрешётка переживала загрузку, а вот
+	 *  первое же нажатие N/Y после загрузки пересевало по ФИЛЬТРУ ИЗ ПАНЕЛИ -
+	 *  то есть, как правило, на простой кубической решётке вместо ГЦК/ОЦК, и
+	 *  структура молча теряла форму. */
+	UPROPERTY()
+	ECellParityFilter ParityFilter = ECellParityFilter::None;
+
+	/** Соседство, заданное списком смещений вместо оболочки (см.
+	 *  ELatticeNeighborhood). Аддитивное поле; дефолт Shells означает "берём
+	 *  Neighborhood выше", то есть в точности поведение файлов, записанных до
+	 *  его появления. */
+	UPROPERTY()
+	ELatticeNeighborhood NeighborhoodShape = ELatticeNeighborhood::Shells;
 
 	UPROPERTY()
 	int32 ChunkSize = 16;

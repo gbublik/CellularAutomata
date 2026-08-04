@@ -78,17 +78,30 @@ void FInstancedMeshCellGridRenderer::BeginRender(const FCellGrid& Grid, TArray<F
 	Comp->SetNumCustomDataFloats(CellCustomDataFloats);
 	LastTimings.ClearSeconds = FPlatformTime::Seconds() - ClearStartSeconds;
 
-	// Масштабируем меш так, чтобы его bounding box совпадал с размером клетки -
-	// иначе при несовпадении реального размера меша и CellSize сетка получается
-	// неровной (щели или наложение соседних кубов).
+	// Масштабируем меш так, чтобы его габарит ПО ОСИ X совпал с шагом решётки
+	// в плоскости - иначе при несовпадении реального размера меша и шага
+	// сетка получается неровной (щели или наложение соседних ячеек).
+	//
+	// Нормировка именно по одной оси, а не покомпонентная. Покомпонентная
+	// принудительно делала мировой габарит инстанса КУБОМ и раздавливала
+	// любой меш с неквадратным bounding box - а ячейки Вороного решёток за
+	// пределами простой кубической как раз неквадратные (у удлинённого
+	// додекаэдра 2:2:3, у гексагональной призмы 1:1.1547:1). Для всех трёх
+	// решёток, что были до них, габарит меша кубический, поэтому оба
+	// варианта дают тождественно один и тот же масштаб - куб, ромбододекаэдр
+	// и усечённый октаэдр выглядят ровно как раньше.
+	//
+	// Отсюда и точный смысл множителя ниже: CellMeshScaleMultiplier - это
+	// ширина клетки по X в единицах шага решётки, а собственные пропорции
+	// меша сохраняются как есть.
 	const double ScaleStartSeconds = FPlatformTime::Seconds();
 	FVector InstanceScale = FVector::OneVector;
 	if (const UStaticMesh* MeshPtr = Mesh.Get())
 	{
-		const FVector MeshSize = MeshPtr->GetBounds().BoxExtent * 2.0;
-		if (!MeshSize.IsNearlyZero())
+		const double MeshReferenceSize = MeshPtr->GetBounds().BoxExtent.X * 2.0;
+		if (!FMath::IsNearlyZero(MeshReferenceSize))
 		{
-			InstanceScale = FVector(Grid.GetCellSize()) / MeshSize;
+			InstanceScale = FVector(Grid.GetLattice().GetPlanarCellSize() / MeshReferenceSize);
 		}
 	}
 	// Поверх точной подгонки под CellSize - см. SetScaleMultiplier() (1.0

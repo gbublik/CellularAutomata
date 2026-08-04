@@ -58,22 +58,32 @@ bool CellSelection::PickCellAlongRay(
 	double MaxDistance,
 	FIntVector& OutCell)
 {
-	const double CellSize = Grid.GetCellSize();
-	if (CellSize <= 0.0 || MaxDistance <= 0.0)
+	const FLatticeTransform& Lattice = Grid.GetLattice();
+	const FVector CellStep = Lattice.GetCellWorldExtent();
+	if (CellStep.GetMin() <= 0.0 || MaxDistance <= 0.0)
 	{
 		return false;
 	}
 
-	const FVector Direction = RayDirection.GetSafeNormal();
-	if (Direction.IsNearlyZero())
+	const FVector WorldDirection = RayDirection.GetSafeNormal();
+	if (WorldDirection.IsNearlyZero())
 	{
 		return false;
 	}
 
-	// Переходим в клеточное пространство: GridToWorld() по умолчанию даёт
-	// Cell * CellSize как ЦЕНТР клетки, т.е. клетка i занимает
-	// [i - 0.5, i + 0.5) в этих координатах - границы клеток на полуцелых.
-	const FVector Position = RayOrigin / CellSize;
+	// Переходим в клеточное пространство: GridToWorld() даёт ЦЕНТР клетки,
+	// т.е. клетка i занимает [i - 0.5, i + 0.5) в этих координатах - границы
+	// клеток на полуцелых, на чём и стоит весь Amanatides-Woo ниже.
+	const FVector Position = Lattice.WorldToGridFractional(RayOrigin);
+
+	// Направление переводим ПОКОМПОНЕНТНЫМ делением на шаг решётки и
+	// СОЗНАТЕЛЬНО не нормируем заново. Мировое направление уже единичное,
+	// поэтому пройденный параметр T остаётся в МИРОВЫХ единицах, и лимит
+	// дальности берётся как есть (раньше он делился на CellSize). На решётке
+	// с неравным шагом по осям это единственный способ сохранить смысл
+	// MaxDistance: нормировка в индексном пространстве растянула бы его по
+	// каждой оси по-своему.
+	const FVector Direction = WorldDirection / CellStep;
 
 	FIntVector Cell(
 		FMath::RoundToInt(Position.X),
@@ -101,9 +111,9 @@ bool CellSelection::PickCellAlongRay(
 		TDelta[Axis] = 1.0 / FMath::Abs(Direction[Axis]);
 	}
 
-	// T - в клеточных единицах (Direction нормализован, Position поделён на
-	// CellSize), поэтому и лимит переводим в клетки.
-	const double MaxT = MaxDistance / CellSize;
+	// T - уже в мировых единицах: Direction поделён на шаг решётки ровно
+	// затем, чтобы лимит не пришлось переводить (см. выше).
+	const double MaxT = MaxDistance;
 	double T = 0.0;
 
 	while (T <= MaxT)

@@ -88,7 +88,11 @@ CellMeshBuilder::FCellMeshData CellMeshBuilder::BuildFromCells(const FCellGrid& 
 	{
 		CellSet.Append(Cells);
 	}
-	const double HalfSize = Grid.GetCellSize() * 0.5;
+	// Полугабарит ячейки ПО КАЖДОЙ ОСИ, а не одно число: на решётке с
+	// неравным шагом (и в масштабе чанков у FChunkGridView) ячейка - коробка,
+	// а не куб. Оси граней в GFaces единичные, поэтому покомпонентное
+	// умножение ниже сразу даёт нужную полудлину вдоль каждой из них.
+	const FVector HalfExtent = Grid.GetLattice().GetCellWorldExtent() * 0.5;
 
 	// Первый проход - точный подсчёт наружных граней для Reserve: при
 	// миллионах клеток многократные переаллокации массивов вершин дороже,
@@ -113,9 +117,9 @@ CellMeshBuilder::FCellMeshData CellMeshBuilder::BuildFromCells(const FCellGrid& 
 				continue;
 			}
 
-			const FVector FaceCenter = Center + Face.Normal * HalfSize;
-			const FVector U = Face.U * HalfSize;
-			const FVector V = Face.V * HalfSize;
+			const FVector FaceCenter = Center + Face.Normal * HalfExtent;
+			const FVector U = Face.U * HalfExtent;
+			const FVector V = Face.V * HalfExtent;
 
 			const int32 BaseIndex = MeshData.Vertices.Num();
 			MeshData.Vertices.Add(FaceCenter - U + V);

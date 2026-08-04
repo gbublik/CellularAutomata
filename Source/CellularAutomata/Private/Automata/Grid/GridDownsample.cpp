@@ -12,7 +12,9 @@ TUniquePtr<FDenseCellGrid> GridDownsample::Downsample(const FCellGrid& Source, c
 	const int32 SafeFactor = (Factor <= 1) ? 1 : (int32)FMath::RoundUpToPowerOfTwo((uint32)Factor);
 	const int32 Shift = FMath::FloorLog2((uint32)SafeFactor);
 
-	TUniquePtr<FDenseCellGrid> Coarse = MakeUnique<FDenseCellGrid>(Source.GetCellSize() * SafeFactor, ChunkSize);
+	// Решётка источника целиком, а не одно число: огрубление должно растянуть
+	// шаг по каждой оси одинаково, сохранив пропорции решётки.
+	TUniquePtr<FDenseCellGrid> Coarse = MakeUnique<FDenseCellGrid>(Source.GetLattice().Scaled(SafeFactor), ChunkSize);
 
 	// "Хоть одна живая" получается само собой: повторные SetAlive() по той же
 	// крупной координате идемпотентны, никакого подсчёта голосов не нужно.

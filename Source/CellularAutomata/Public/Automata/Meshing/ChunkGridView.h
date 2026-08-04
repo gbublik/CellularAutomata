@@ -13,16 +13,21 @@
  *  считать координаты чанков, получается ровно та же геометрия, но в
  *  масштабе чанков.
  *
- *  А вот GridToWorld() переопределить ПРИДЁТСЯ, и это не мелочь: базовая
- *  реализация (Cell * CellSize) ставила бы куб чанка центром в
- *  Чанк*РазмерЧанка, тогда как настоящий центр чанка лежит на полчанка
- *  дальше - минус полклетки, потому что GridToWorld() у клеток даёт их
- *  ЦЕНТРЫ, а не углы. Чанк C занимает клетки от C*ChunkSize до
- *  C*ChunkSize+ChunkSize-1, то есть в мире тянется от
- *  C*РазмерЧанка - CellSize/2 до C*РазмерЧанка + РазмерЧанка - CellSize/2.
- *  Без этой поправки ghost-силуэт уезжает на (РазмерЧанка - CellSize)/2 по
- *  каждой оси - при ChunkSize=16 и CellSize=100 это 750 юнитов, что и
- *  наблюдалось живьём как зазор между силуэтом и детальными клетками.
+ *  Поправка на центр чанка - не мелочь: наивное Чанк*РазмерЧанка ставило бы
+ *  куб чанка центром в его угол, тогда как настоящий центр лежит на полчанка
+ *  дальше минус полклетки, потому что GridToWorld() у клеток даёт их ЦЕНТРЫ,
+ *  а не углы. Чанк C занимает клетки от C*ChunkSize до C*ChunkSize+ChunkSize-1,
+ *  то есть в мире тянется от C*РазмерЧанка - Клетка/2 до
+ *  C*РазмерЧанка + РазмерЧанка - Клетка/2. Без неё ghost-силуэт уезжает на
+ *  (РазмерЧанка - Клетка)/2 по каждой оси - при ChunkSize=16 и CellSize=100
+ *  это 750 юнитов, что и наблюдалось живьём как зазор между силуэтом и
+ *  детальными клетками.
+ *
+ *  Раньше ради этого переопределялся GridToWorld(), а поправка хранилась
+ *  отдельным скалярным полем. Теперь она - Origin решётки чанков
+ *  (FLatticeTransform::MakeChunkView()), override исчез, и поправка стала
+ *  ПОКОМПОНЕНТНОЙ: на решётке с неравным шагом по осям скаляр был бы верен
+ *  только по одной из них, а силуэт разъезжался бы по остальным.
  *
  *  Тот же идиом, что и у FFilteredCellGridView (Automata/Rendering/
  *  FilteredCellGridView.h) - мутирующие методы no-op, реальных данных
@@ -38,23 +43,19 @@ public:
 	 *  чанк, который задел луч, включая пустые. Множество на десятки тысяч
 	 *  чанков стоит микросекунды, но строить его в гост-рендере, где оно не
 	 *  нужно, незачем - отсюда флаг. */
-	FChunkGridView(float InChunkWorldSize, float InCellSize, TArray<FIntVector> InOccupiedChunkCoords, bool bBuildOccupancySet = false)
-		: FCellGrid(InChunkWorldSize)
-		, ChunkCenterOffset((InChunkWorldSize - InCellSize) * 0.5f)
+	/** ChunkWorldExtent/CellWorldExtent - мировые габариты чанка и клетки по
+	 *  каждой оси (Grid->GetChunkWorldExtent() и
+	 *  Grid->GetLattice().GetCellWorldExtent()). Решётка этой вьюхи - шаг в
+	 *  размер чанка со сдвигом в его центр, поэтому базовый GridToWorld()
+	 *  сразу даёт что надо и переопределять его не требуется. */
+	FChunkGridView(const FVector& InChunkWorldExtent, const FVector& InCellWorldExtent, TArray<FIntVector> InOccupiedChunkCoords, bool bBuildOccupancySet = false)
+		: FCellGrid(FLatticeTransform(InChunkWorldExtent, (InChunkWorldExtent - InCellWorldExtent) * 0.5))
 		, OccupiedChunkCoords(MoveTemp(InOccupiedChunkCoords))
 	{
 		if (bBuildOccupancySet)
 		{
 			OccupiedChunkSet.Append(OccupiedChunkCoords);
 		}
-	}
-
-	/** См. doc-comment класса: центр куба чанка, а не его угол. CellSize
-	 *  базового класса здесь хранит РАЗМЕР ЧАНКА (так задумано), поэтому
-	 *  первое слагаемое и есть Чанк*РазмерЧанка. */
-	virtual FVector GridToWorld(const FIntVector& Chunk) const override
-	{
-		return FVector(Chunk.X, Chunk.Y, Chunk.Z) * CellSize + FVector(ChunkCenterOffset);
 	}
 
 	/** true всегда, если множество занятости не строилось (так было изначально
@@ -72,9 +73,6 @@ public:
 	virtual void SetAge(const FIntVector& Cell, uint8 Age) override {}
 
 private:
-	/** (РазмерЧанка - CellSize)/2 - см. GridToWorld() выше. */
-	float ChunkCenterOffset;
-
 	TArray<FIntVector> OccupiedChunkCoords;
 
 	/** Пустое, если конструктор звали без bBuildOccupancySet - см. IsAlive(). */

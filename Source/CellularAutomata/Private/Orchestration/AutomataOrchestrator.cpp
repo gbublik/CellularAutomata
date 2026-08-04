@@ -615,6 +615,95 @@ void AAutomataOrchestrator::ApplyRulePreset(int32 PresetIndex, bool bApplySpawnS
 			: TEXT(""));
 }
 
+TArray<FCellShapePreset> AAutomataOrchestrator::GetCellShapePresets() const
+{
+	return CellShapePresets::GetAll();
+}
+
+void AAutomataOrchestrator::ApplyCellShapePreset(int32 PresetIndex)
+{
+	const TArray<FCellShapePreset>& Presets = CellShapePresets::GetAll();
+	if (!Presets.IsValidIndex(PresetIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: индекс %d вне диапазона (форм: %d)"), PresetIndex, Presets.Num());
+		return;
+	}
+
+	const FCellShapePreset& Preset = Presets[PresetIndex];
+
+	// Гексагональная призма требует скошенного отображения в мир, которого
+	// сейчас нет. Отказываемся вслух, а не выставляем настройки, которые
+	// нарисуют шестиугольники на кубической решётке - это выглядело бы
+	// правдоподобно и было бы неверно, ровно та ошибка, из-за которой прошлая
+	// попытка гекс-решётки была отменена.
+	if (Preset.bRequiresCustomMesh && Preset.ExpectedMeshAabb.Y > Preset.ExpectedMeshAabb.X + UE_KINDA_SMALL_NUMBER)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: '%s' требует скошенной решётки, которая ещё не реализована"), *Preset.Name);
+		ShowStatusMessage(StatusKey_CellShape, FString::Printf(
+			TEXT("Форма '%s' ещё не поддержана: нужна скошенная решётка"), *Preset.Name));
+		return;
+	}
+
+	// Пишем поля напрямую, а не через сеттеры: каждый из них перерисовывает
+	// сетку, и четыре вызова стоили бы трёх лишних полных рендеров на
+	// миллионах инстансов. Рендер один, в самом конце.
+	GenerationParams.ParityFilter = Preset.ParityFilter;
+	Neighborhood = Preset.Neighborhood;
+	NeighborhoodShape = Preset.NeighborhoodShape;
+	LatticeZScale = Preset.LatticeZScale;
+	CellMeshScaleMultiplier = Preset.CellMeshScaleMultiplier;
+	ActiveCellShapePresetIndex = PresetIndex;
+
+	// Движок пропорции меша не проверяет никак: неверный ассет даёт щели или
+	// наложение, а это неотличимо от неверно выбранной решётки. Поэтому
+	// сверяем и говорим вслух - в статус-строку, а не только в лог (прецедент
+	// - CellMaterial без ноды PerInstanceCustomData3Vector, который молча не
+	// работает).
+	FString MeshWarning;
+	if (CellMesh)
+	{
+		const FVector MeshAabb = CellMesh->GetBounds().BoxExtent * 2.0;
+		if (!MeshAabb.IsNearlyZero())
+		{
+			// Сравниваем ПРОПОРЦИИ, а не абсолютный размер: рендерер всё равно
+			// нормирует меш по его X-габариту, так что важно лишь отношение
+			// сторон.
+			const FVector Normalized = MeshAabb / MeshAabb.X;
+			const FVector Expected = Preset.ExpectedMeshAabb / Preset.ExpectedMeshAabb.X;
+			if (!Normalized.Equals(Expected, 0.01))
+			{
+				MeshWarning = FString::Printf(TEXT(" | меш имеет пропорции %.2f:%.2f:%.2f вместо %.2f:%.2f:%.2f"),
+					Normalized.X, Normalized.Y, Normalized.Z, Expected.X, Expected.Y, Expected.Z);
+				UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: '%s' ожидает меш с габаритом %s, а назначенный имеет %s - будут щели или наложение"),
+					*Preset.Name, *Preset.ExpectedMeshAabb.ToCompactString(), *MeshAabb.ToCompactString());
+			}
+		}
+	}
+
+	// Число соседей берётся тем же способом, что и симуляцией (BuildRule()), а
+	// не пересчётом из пресета: если они разойдутся, увидеть это надо здесь, а
+	// не по странной картинке.
+	const int32 ActualNeighborCount = BuildNeighborOffsetsForAnalysis().Num();
+	UE_LOG(LogTemp, Log, TEXT("ApplyCellShapePreset: '%s' - %d граней, соседей %d, чётность %d, Z x%.3f, меш x%.1f"),
+		*Preset.Name, Preset.FaceCount, ActualNeighborCount, static_cast<int32>(Preset.ParityFilter),
+		Preset.LatticeZScale, Preset.CellMeshScaleMultiplier);
+	if (ActualNeighborCount != Preset.FaceCount)
+	{
+		// Одна грань на соседа - это определение ячейки Вороного, а не
+		// пожелание. Расхождение значит, что узор растёт туда, где клетки
+		// визуально не соприкасаются (или наоборот).
+		UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: у формы '%s' %d граней, а соседей %d - рост не совпадёт с видимыми контактами"),
+			*Preset.Name, Preset.FaceCount, ActualNeighborCount);
+	}
+
+	ShowStatusMessage(StatusKey_CellShape, FString::Printf(TEXT("Форма клетки: %s (%d граней)%s"),
+		*Preset.Name, Preset.FaceCount, *MeshWarning));
+
+	// Решётка поменялась - сетку надо построить заново: старая хранит прежний
+	// шаг внутри себя, и клетки в ней стоят по прежней геометрии.
+	GenerateState();
+}
+
 void AAutomataOrchestrator::SpawnRuleVerificationPattern()
 {
 	if (bStepInProgress)
@@ -1403,7 +1492,10 @@ void AAutomataOrchestrator::SelectCellUnderCursor(const FVector& RayOrigin, cons
 		UE_LOG(LogTemp, Log, TEXT("SelectCellUnderCursor: живых клеток нет - выделять нечего"));
 		return;
 	}
-	const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + Grid->GetCellSize();
+	// Запас - НАИБОЛЬШИЙ габарит клетки: на решётке, растянутой по оси,
+	// занижение до шага в плоскости давало бы недолёт луча вдоль вытянутой
+	// оси, то есть промах по последней клетке.
+	const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + Grid->GetLattice().GetMaxCellWorldExtent();
 
 	// Тот же принцип, что у SelectCellsInScreenRect() выше - если куб
 	// активен, клик должен "видеть" ровно то подмножество клеток, которое
@@ -1446,10 +1538,10 @@ bool AAutomataOrchestrator::MoveCullVolumeToChunkUnderCursor(const FVector& RayO
 		return false;
 	}
 
-	const float ChunkWorldSize = Grid->GetChunkWorldSize();
-	if (ChunkWorldSize <= 0.0f)
+	const FVector ChunkWorldExtent = Grid->GetChunkWorldExtent();
+	if (ChunkWorldExtent.GetMin() <= 0.0)
 	{
-		// Сетка без чанков - выбирать нечего (см. FCellGrid::GetChunkWorldSize()).
+		// Сетка без чанков - выбирать нечего (см. FCellGrid::GetChunkWorldExtent()).
 		return false;
 	}
 
@@ -1467,7 +1559,7 @@ bool AAutomataOrchestrator::MoveCullVolumeToChunkUnderCursor(const FVector& RayO
 	{
 		return false;
 	}
-	const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + ChunkWorldSize;
+	const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + ChunkWorldExtent.GetMax();
 
 	// Тот же DDA, что ищет клетку под курсором - он принимает абстрактный
 	// FCellGrid и не знает, клетки в нём или чанки. FChunkGridView - это и
@@ -1481,7 +1573,7 @@ bool AAutomataOrchestrator::MoveCullVolumeToChunkUnderCursor(const FVector& RayO
 		return false;
 	}
 
-	const FChunkGridView ChunkView(ChunkWorldSize, Grid->GetCellSize(), MoveTemp(OccupiedChunks), /*bBuildOccupancySet=*/true);
+	const FChunkGridView ChunkView(ChunkWorldExtent, Grid->GetLattice().GetCellWorldExtent(), MoveTemp(OccupiedChunks), /*bBuildOccupancySet=*/true);
 
 	FIntVector PickedChunk;
 	if (!CellSelection::PickCellAlongRay(ChunkView, RayOrigin, RayDirection, MaxDistance, PickedChunk))
@@ -1751,11 +1843,11 @@ void AAutomataOrchestrator::RefreshGhostShape()
 
 	TArray<FIntVector> OccupiedChunks;
 	Grid->GetOccupiedChunkCoords(OccupiedChunks);
-	const float ChunkWorldSize = Grid->GetChunkWorldSize();
-	if (OccupiedChunks.Num() == 0 || ChunkWorldSize <= 0.0f)
+	const FVector ChunkWorldExtent = Grid->GetChunkWorldExtent();
+	if (OccupiedChunks.Num() == 0 || ChunkWorldExtent.GetMin() <= 0.0)
 	{
-		// ChunkWorldSize <= 0 - грид не поддерживает чанкинг (см. doc-comment
-		// FCellGrid::GetChunkWorldSize()) - фича молча ничего не делает.
+		// Нулевой габарит - грид не поддерживает чанкинг (см. doc-comment
+		// FCellGrid::GetChunkWorldExtent()) - фича молча ничего не делает.
 		ClearGhostShape();
 		return;
 	}
@@ -1780,8 +1872,8 @@ void AAutomataOrchestrator::RefreshGhostShape()
 		ChunksToGhost.Reserve(OccupiedChunks.Num());
 		for (const FIntVector& ChunkCoord : OccupiedChunks)
 		{
-			const FVector ChunkOrigin = FVector(ChunkCoord) * ChunkWorldSize;
-			const FBox ChunkBounds(ChunkOrigin, ChunkOrigin + FVector(ChunkWorldSize));
+			const FVector ChunkOrigin = FVector(ChunkCoord) * ChunkWorldExtent;
+			const FBox ChunkBounds(ChunkOrigin, ChunkOrigin + ChunkWorldExtent);
 			if (!CullBounds.Intersect(ChunkBounds))
 			{
 				ChunksToGhost.Add(ChunkCoord);
@@ -1810,7 +1902,7 @@ void AAutomataOrchestrator::RefreshGhostShape()
 	}
 
 	const double BuildStartSeconds = FPlatformTime::Seconds();
-	FChunkGridView ChunkView(ChunkWorldSize, Grid->GetCellSize(), ChunksToGhost);
+	FChunkGridView ChunkView(ChunkWorldExtent, Grid->GetLattice().GetCellWorldExtent(), ChunksToGhost);
 	CellMeshBuilder::FCellMeshData MeshData = CellMeshBuilder::BuildFromCells(ChunkView, ChunksToGhost);
 	const double BuildSeconds = FPlatformTime::Seconds() - BuildStartSeconds;
 
@@ -1861,6 +1953,25 @@ void AAutomataOrchestrator::BakeCellsToMesh()
 	if (!Grid)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: сетка не инициализирована"));
+		return;
+	}
+
+	// Запекание отсекает грани по ШЕСТИ ОСЕВЫМ соседям (CellMeshBuilder.cpp,
+	// таблица GFaces) - то есть предполагает, что клетка касается соседей
+	// именно по осям и что все они принадлежат тому же набору. На любой
+	// подрешётке это неверно в самой основе: сосед Cell+(1,0,0) там НИКОГДА не
+	// жив, потому что у него другая чётность, поэтому не отсекается ни одна
+	// грань. На выходе получается 6*N граней россыпью отдельных кубиков вместо
+	// цельной оболочки - и вшестеро больше собственной оценки бюджета.
+	//
+	// Отказ здесь - осознанная СМЕНА ПОВЕДЕНИЯ: раньше на ГЦК/ОЦК запекание
+	// "работало" в том смысле, что не падало, но результат был мусорным уже
+	// тогда. Молчаливый мусор, съедающий гигабайты, хуже честного отказа.
+	if (GenerationParams.ParityFilter != ECellParityFilter::None)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("BakeCellsToMesh: запекание не поддерживает подрешётку (ParityFilter=%d) - отсечение граней идёт по 6 осевым соседям, которых на ней нет"),
+			static_cast<int32>(GenerationParams.ParityFilter));
+		ShowStatusMessage(StatusKey_Bake, TEXT("[M] Запекание работает только на простой кубической решётке (форма \"Куб\")"));
 		return;
 	}
 
@@ -2162,6 +2273,16 @@ FAutomatonSaveHeader AAutomataOrchestrator::BuildSaveHeader() const
 	// CellSize - из сетки, не из UPROPERTY: сетка могла быть создана со
 	// старым значением, а файл фиксирует её фактическую геометрию.
 	Header.CellSize = Grid ? Grid->GetCellSize() : CellSize;
+	// Растяжение по Z - тоже из сетки и по той же причине. Берётся отношением
+	// шагов, а не копированием UPROPERTY: в сетке лежит фактическая геометрия,
+	// с которой клетки и расставлены.
+	Header.LatticeZScale = Grid
+		? static_cast<float>(Grid->GetLattice().GetCellWorldExtent().Z / FMath::Max(Grid->GetLattice().GetCellWorldExtent().X, UE_DOUBLE_SMALL_NUMBER))
+		: LatticeZScale;
+	// Фильтр чётности - часть геометрии не меньше, чем шаг: без него первое же
+	// пересевание после загрузки (N/Y) уйдёт на другую подрешётку.
+	Header.ParityFilter = GenerationParams.ParityFilter;
+	Header.NeighborhoodShape = NeighborhoodShape;
 	Header.ChunkSize = ChunkSize;
 	Header.GridSize = GridSize;
 	Header.Seed = Seed;
@@ -2196,6 +2317,11 @@ void AAutomataOrchestrator::ApplySaveHeader(const FAutomatonSaveHeader& Header)
 	}
 	States = FMath::Max(2, Header.States);
 	CellSize = FMath::Max(1.0f, Header.CellSize);
+	// Кламп повторяет ClampMin/UIMax самого UPROPERTY: шапка правится руками,
+	// а нулевое или отрицательное растяжение схлопнуло бы решётку в плоскость.
+	LatticeZScale = FMath::Clamp(Header.LatticeZScale, 0.1f, 10.0f);
+	GenerationParams.ParityFilter = Header.ParityFilter;
+	NeighborhoodShape = Header.NeighborhoodShape;
 	ChunkSize = FMath::Max(1, Header.ChunkSize);
 	GridSize.X = FMath::Max(1, Header.GridSize.X);
 	GridSize.Y = FMath::Max(1, Header.GridSize.Y);
@@ -2694,16 +2820,52 @@ bool AAutomataOrchestrator::ComputeCellsBounds(const TArray<FIntVector>& AliveCe
 	}
 
 	OutCenter = Center;
-	// Запас на полклетки - GridToWorld() даёт координаты центра клетки, а не
-	// её края (тот же запас, что был у прежней AABB-версии).
-	OutRadius = static_cast<float>(Radius) + Grid->GetCellSize() * 0.5f;
+	// Запас на полклетки - GridToWorld() даёт координаты ЦЕНТРА клетки, а не
+	// её края. Считается от НАРИСОВАННОГО габарита (шаг решётки, умноженный
+	// на CellMeshScaleMultiplier), а не от одного шага: на подрешётке (ГЦК,
+	// ОЦК) заселён каждый второй узел, ячейка Вороного там вдвое крупнее
+	// шага, и прежний запас в полшага занижал радиус ровно вдвое - кадр по
+	// Home подрезал крайние клетки. Максимум по осям - потому что запас
+	// добавляется к радиусу СФЕРЫ, и по вытянутой оси он должен покрывать
+	// самый крупный габарит.
+	const double HalfCellWorldSize = Grid->GetLattice().GetMaxCellWorldExtent() * 0.5 * FMath::Max(1.0f, CellMeshScaleMultiplier);
+	OutRadius = static_cast<float>(Radius + HalfCellWorldSize);
 
 	return true;
 }
 
 TUniquePtr<FCellGrid> AAutomataOrchestrator::CreateGrid() const
 {
-	return MakeUnique<FDenseCellGrid>(CellSize, ChunkSize, States > 2);
+	return MakeUnique<FDenseCellGrid>(BuildLatticeTransform(), ChunkSize, States > 2);
+}
+
+FLatticeTransform AAutomataOrchestrator::BuildLatticeTransform() const
+{
+	return FLatticeTransform::MakeOrthogonal(CellSize, LatticeZScale);
+}
+
+FCellularAutomatonRule AAutomataOrchestrator::BuildRule() const
+{
+	// ЕДИНСТВЕННОЕ место, где решается, каким набором соседей считать. Это
+	// не стилистика: правило строится в трёх местах (Next(), StepAsync() и
+	// гистограмма Ctrl+Y), и если ветвление размножить, Ctrl+Y начнёт мерить
+	// одно соседство, пока симуляция идёт по другому. Расхождение без всяких
+	// симптомов, кроме "числа выглядят неправильно без причины".
+	const TArray<FIntVector> LatticeOffsets = BuildLatticeNeighborOffsets(NeighborhoodShape);
+	if (LatticeOffsets.Num() > 0)
+	{
+		return FCellularAutomatonRule(BirthCounts, SurvivalCounts, LatticeOffsets, States);
+	}
+
+	return FCellularAutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
+}
+
+TArray<FIntVector> AAutomataOrchestrator::BuildNeighborOffsetsForAnalysis() const
+{
+	// Ровно тот же выбор, что в BuildRule(), - гистограмма обязана мерить то
+	// же соседство, по которому идёт симуляция.
+	const TArray<FIntVector> LatticeOffsets = BuildLatticeNeighborOffsets(NeighborhoodShape);
+	return LatticeOffsets.Num() > 0 ? LatticeOffsets : FCellularAutomatonRule::BuildNeighborOffsets(Neighborhood);
 }
 
 TUniquePtr<FCellularAutomatonComputeStrategy> AAutomataOrchestrator::CreateComputeStrategy() const
@@ -2829,7 +2991,7 @@ void AAutomataOrchestrator::GenerateState()
 	if (GenerationParams.bAnalyzeNeighborCounts)
 	{
 		StateGenerators::FNeighborHistogram Histogram;
-		StateGenerators::AnalyzeNeighborCounts(Cells, Neighborhood, NeighborAnalysisSampleExtent, Histogram);
+		StateGenerators::AnalyzeNeighborCounts(Cells, BuildNeighborOffsetsForAnalysis(), NeighborAnalysisSampleExtent, Histogram);
 		HistogramText = StateGenerators::DescribeHistogram(Histogram);
 	}
 
@@ -2874,7 +3036,7 @@ void AAutomataOrchestrator::AnalyzeLiveStructure()
 	const double StartSeconds = FPlatformTime::Seconds();
 
 	StateGenerators::FNeighborHistogram Histogram;
-	StateGenerators::AnalyzeNeighborCounts(AliveCells, Neighborhood, LiveAnalysisSampleExtent, Histogram);
+	StateGenerators::AnalyzeNeighborCounts(AliveCells, BuildNeighborOffsetsForAnalysis(), LiveAnalysisSampleExtent, Histogram);
 
 	const double ElapsedSeconds = FPlatformTime::Seconds() - StartSeconds;
 
@@ -3087,7 +3249,7 @@ bool AAutomataOrchestrator::BuildSliceCapture(TArray<FColor>& OutPixels, int32& 
 	}
 
 	CellRasterizer::FRasterParams RasterParams;
-	RasterParams.CellSize = Grid->GetCellSize();
+	RasterParams.CellWorldStep = Grid->GetLattice().GetCellWorldExtent();
 	RasterParams.PixelsPerCell = FMath::Max(SliceCaptureParams.PixelsPerCell, 1);
 	RasterParams.Mode = SliceCaptureParams.Mode;
 	RasterParams.ForegroundColor = SliceCaptureParams.ForegroundColor;
@@ -3145,7 +3307,7 @@ bool AAutomataOrchestrator::EstimateSliceCaptureSize(int32& OutWidth, int32& Out
 	LastRenderStats = SavedRenderStats;
 
 	CellRasterizer::FRasterParams RasterParams;
-	RasterParams.CellSize = Grid->GetCellSize();
+	RasterParams.CellWorldStep = Grid->GetLattice().GetCellWorldExtent();
 	RasterParams.PixelsPerCell = FMath::Max(SliceCaptureParams.PixelsPerCell, 1);
 
 	FVector CameraForward = FVector::ForwardVector;
@@ -3539,7 +3701,7 @@ void AAutomataOrchestrator::Next()
 	// SurvivalCounts/Neighborhood в Details panel подхватывались немедленно
 	// (аналогично тому, как GenerateRandom() каждый раз пересоздаёт Grid,
 	// а не кэширует его)
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
+	FCellularAutomatonRule AutomatonRule = BuildRule();
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 
 	// Ручной шаг считает StepsPerRender поколений за одно нажатие (то же
@@ -3553,9 +3715,9 @@ void AAutomataOrchestrator::Next()
 	// считал синхронно на game thread, и с NumSteps > 1 нажатие F замораживало
 	// экран на всё время счёта (в Play такого нет именно потому, что там счёт
 	// фоновый). Промежуточные буферы поколений создаются уже в фоне, поэтому
-	// CellSize/ChunkSize (UPROPERTY, могут править в Details panel) снимаем
-	// здесь - фоновый поток не должен их читать.
-	const float CellSizeSnapshot = CellSize;
+	// геометрию решётки и ChunkSize (UPROPERTY, могут править в Details panel)
+	// снимаем здесь - фоновый поток не должен их читать.
+	const FLatticeTransform LatticeSnapshot = BuildLatticeTransform();
 	const int32 ChunkSizeSnapshot = ChunkSize;
 
 	bStepInProgress = true;
@@ -3568,7 +3730,7 @@ void AAutomataOrchestrator::Next()
 	// остальные пути замены Grid отказываются работать при bStepInProgress.
 	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
 		[AutomatonRule = MoveTemp(AutomatonRule), ComputeStrategy = MoveTemp(ComputeStrategy),
-		 CurrentGridPtr, WeakThis, NumSteps, CellSizeSnapshot, ChunkSizeSnapshot]() mutable
+		 CurrentGridPtr, WeakThis, NumSteps, LatticeSnapshot, ChunkSizeSnapshot]() mutable
 		{
 			const double StepStartSeconds = FPlatformTime::Seconds();
 
@@ -3582,7 +3744,7 @@ void AAutomataOrchestrator::Next()
 			int32 StepsDone = 0;
 			while (StepsDone < NumSteps)
 			{
-				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
+				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(LatticeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
 				const int32 StepsAdvanced = ComputeStrategy->StepBatch(*SourceGrid, *NextGrid, AutomatonRule, NumSteps - StepsDone);
 
 				// Оба прохода умеют продвинуть состояние только с одного
@@ -3708,7 +3870,7 @@ void AAutomataOrchestrator::StepAsync()
 	// которые могут одновременно редактироваться в Details panel. После этой
 	// точки фоновый поток их больше не касается - только *Grid (на чтение) и
 	// NextGridBuffer (на запись, свежесозданный, ни с кем не общий).
-	FCellularAutomatonRule AutomatonRule(BirthCounts, SurvivalCounts, Neighborhood, States);
+	FCellularAutomatonRule AutomatonRule = BuildRule();
 	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
 	TUniquePtr<FCellGrid> NextGridBuffer = CreateGrid();
 
@@ -3726,10 +3888,10 @@ void AAutomataOrchestrator::StepAsync()
 		: 1;
 
 	// Промежуточные буферы поколений (нужны только при BatchGenerations > 1)
-	// создаются уже в фоне, поэтому CellSize/ChunkSize - живые UPROPERTY,
-	// которые фоновому потоку трогать нельзя - снимаем здесь. Тот же приём,
-	// что в Next().
-	const float CellSizeSnapshot = CellSize;
+	// создаются уже в фоне, поэтому геометрия решётки и ChunkSize - живые
+	// UPROPERTY, которые фоновому потоку трогать нельзя - снимаем здесь. Тот
+	// же приём, что в Next().
+	const FLatticeTransform LatticeSnapshot = BuildLatticeTransform();
 	const int32 ChunkSizeSnapshot = ChunkSize;
 
 	bStepInProgress = true;
@@ -3743,7 +3905,7 @@ void AAutomataOrchestrator::StepAsync()
 	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
 		[AutomatonRule = MoveTemp(AutomatonRule), ComputeStrategy = MoveTemp(ComputeStrategy),
 		 NextGridBuffer = MoveTemp(NextGridBuffer), CurrentGridPtr, WeakThis,
-		 BatchGenerations, CellSizeSnapshot, ChunkSizeSnapshot]() mutable
+		 BatchGenerations, LatticeSnapshot, ChunkSizeSnapshot]() mutable
 		{
 			const double StepStartSeconds = FPlatformTime::Seconds();
 
@@ -3790,7 +3952,7 @@ void AAutomataOrchestrator::StepAsync()
 				// поэтому владение переезжает в PreviousGrid, а не теряется.
 				PreviousGrid = MoveTemp(NextGridBuffer);
 				SourceGrid = PreviousGrid.Get();
-				NextGridBuffer = MakeUnique<FDenseCellGrid>(CellSizeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
+				NextGridBuffer = MakeUnique<FDenseCellGrid>(LatticeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
 			}
 
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
@@ -4953,7 +5115,12 @@ void AAutomataOrchestrator::MoveCullVolumeByCells(const FIntVector& CellDelta)
 		return;
 	}
 
-	const FVector WorldDelta = FVector(CellDelta) * CellSize;
+	// Через решётку, а не умножением на CellSize вручную: сдвиг на клетку
+	// вдоль растянутой оси длиннее, чем в плоскости, иначе куб уезжал бы на
+	// полклетки и вставал между слоями. GridDeltaToWorld(), а не
+	// GridToWorld(), потому что это РАЗНОСТЬ - начало координат решётки в ней
+	// обязано сократиться.
+	const FVector WorldDelta = Grid ? Grid->GetLattice().GridDeltaToWorld(CellDelta) : FVector(CellDelta) * CellSize;
 	const FVector NewLocation = CullVolume->GetActorLocation() + WorldDelta;
 	CullVolume->SetActorLocation(NewLocation);
 

@@ -5,7 +5,10 @@
 #include "Automata/Capture/CellRasterizer.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Grid/DenseCellGrid.h"
+#include "Automata/Grid/LatticeTransform.h"
+#include "Automata/Meshing/ChunkGridView.h"
 #include "Automata/Rendering/ColorRamp.h"
+#include "Automata/Simulation/LatticeNeighborhood.h"
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
@@ -1527,7 +1530,7 @@ bool FSliceCaptureOrientationTest::RunTest(const FString& Parameters)
 	// Взгляд сверху вниз, "север" камеры направлен по +X - то же, что даёт
 	// NumPad8 при нулевом рыскании.
 	CellRasterizer::FRasterParams Params;
-	Params.CellSize = CellSize;
+	Params.CellWorldStep = FVector(CellSize);
 	Params.PixelsPerCell = 1;
 	Params.BackgroundColor = FColor(0, 0, 0, 255);
 	CellRasterizer::BuildAxes(/*CameraForward=*/FVector(0, 0, -1), /*CameraUp=*/FVector(1, 0, 0), Params);
@@ -1595,7 +1598,7 @@ bool FSliceCaptureRasterTest::RunTest(const FString& Parameters)
 	};
 
 	CellRasterizer::FRasterParams Params;
-	Params.CellSize = CellSize;
+	Params.CellWorldStep = FVector(CellSize);
 	Params.BackgroundColor = FColor(0, 0, 0, 255);
 	CellRasterizer::BuildAxes(FVector(0, 0, -1), FVector(1, 0, 0), Params);
 
@@ -1901,6 +1904,288 @@ bool FGenerationHistoryTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("1234 -> 2000"), GenerationHistory::NiceCeiling(1234.0), 2000.0);
 		TestEqual(TEXT("6000 -> 10000"), GenerationHistory::NiceCeiling(6000.0), 10000.0);
 		TestEqual(TEXT("ровное значение не поднимается"), GenerationHistory::NiceCeiling(2000.0), 2000.0);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLatticeOrthogonalRoundTripTest,
+	"CellularAutomata.Lattice.OrthogonalRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FLatticeOrthogonalRoundTripTest::RunTest(const FString& Parameters)
+{
+	// Обратного преобразования в проекте раньше не существовало вовсе - вместо
+	// него в четырёх местах стояло написанное от руки деление на CellSize. Тест
+	// закрывает именно ту дыру: WorldToGrid() обязан быть точной обратной к
+	// GridToWorld() при ЛЮБОМ шаге по осям, включая неравный.
+	const TArray<float> CellSizes = { 1.0f, 100.0f, 37.5f };
+	const TArray<float> ZScales = { 1.0f, 2.0f, 0.5f };
+
+	for (float CellSize : CellSizes)
+	{
+		for (float ZScale : ZScales)
+		{
+			const FLatticeTransform Lattice = FLatticeTransform::MakeOrthogonal(CellSize, ZScale);
+
+			// Диапазон захватывает отрицательные координаты: генерация
+			// центрирована в нуле, так что они норма, а не крайний случай (та
+			// же причина, по которой существует Grid.NegativeCoords).
+			for (int32 X = -40; X <= 40; X += 7)
+			{
+				for (int32 Y = -40; Y <= 40; Y += 11)
+				{
+					for (int32 Z = -40; Z <= 40; Z += 13)
+					{
+						const FIntVector Cell(X, Y, Z);
+						const FIntVector RoundTripped = Lattice.WorldToGrid(Lattice.GridToWorld(Cell));
+						if (RoundTripped != Cell)
+						{
+							AddError(FString::Printf(TEXT("WorldToGrid(GridToWorld(%s)) вернул %s при CellSize=%.1f, ZScale=%.1f"),
+								*Cell.ToString(), *RoundTripped.ToString(), CellSize, ZScale));
+							return false;
+						}
+					}
+				}
+			}
+
+			// Точка ВНУТРИ клетки, а не её центр: клетка занимает полшага в
+			// каждую сторону, и попадание любой внутренней точки в свою клетку -
+			// то, на чём стоит DDA-пик.
+			const FIntVector Probe(3, -5, 7);
+			const FVector Inside = Lattice.GridToWorld(Probe) + Lattice.GetCellWorldExtent() * 0.49;
+			if (Lattice.WorldToGrid(Inside) != Probe)
+			{
+				AddError(FString::Printf(TEXT("Точка внутри клетки %s отнесена к %s (CellSize=%.1f, ZScale=%.1f)"),
+					*Probe.ToString(), *Lattice.WorldToGrid(Inside).ToString(), CellSize, ZScale));
+				return false;
+			}
+		}
+	}
+
+	{
+		// Рамка обязана НАКРЫВАТЬ каждую клетку, чей центр внутри бокса
+		// (проверка надмножеством: она сознательно консервативна, чуть шире
+		// точной, потому что вызывающие после неё проверяют каждую клетку сами,
+		// а вот потерянная клетка была бы дыркой на границе куба отсечения).
+		const FLatticeTransform Lattice = FLatticeTransform::MakeOrthogonal(100.0f, 2.0f);
+		const FBox Bounds(FVector(-250.0, -50.0, -350.0), FVector(180.0, 220.0, 640.0));
+
+		FIntVector MinCell, MaxCell;
+		Lattice.WorldBoundsToCellRange(Bounds, MinCell, MaxCell);
+
+		for (int32 X = -10; X <= 10; ++X)
+		{
+			for (int32 Y = -10; Y <= 10; ++Y)
+			{
+				for (int32 Z = -10; Z <= 10; ++Z)
+				{
+					const FIntVector Cell(X, Y, Z);
+					if (!Bounds.IsInside(Lattice.GridToWorld(Cell)))
+					{
+						continue;
+					}
+
+					const bool bCovered =
+						Cell.X >= MinCell.X && Cell.X <= MaxCell.X &&
+						Cell.Y >= MinCell.Y && Cell.Y <= MaxCell.Y &&
+						Cell.Z >= MinCell.Z && Cell.Z <= MaxCell.Z;
+					if (!bCovered)
+					{
+						AddError(FString::Printf(TEXT("Клетка %s внутри бокса, но не попала в рамку [%s .. %s]"),
+							*Cell.ToString(), *MinCell.ToString(), *MaxCell.ToString()));
+						return false;
+					}
+				}
+			}
+		}
+	}
+
+	{
+		// Виртуальный GridToWorld() сетки обязан совпадать с инлайновым у её
+		// решётки. Именно это делает законным приём "взять GetLattice() один раз
+		// перед горячим циклом и дальше не платить за виртуальный вызов" - если
+		// кто-то оптимизирует одно и забудет другое, разойдутся картинка и
+		// выделение, а причина будет неочевидна.
+		FDenseCellGrid Grid(FLatticeTransform::MakeOrthogonal(100.0f, 2.0f), 16);
+		const FLatticeTransform& Lattice = Grid.GetLattice();
+
+		for (int32 Index = -20; Index <= 20; Index += 3)
+		{
+			const FIntVector Cell(Index, -Index, Index * 2);
+			if (!Grid.GridToWorld(Cell).Equals(Lattice.GridToWorld(Cell)))
+			{
+				AddError(FString::Printf(TEXT("Виртуальный GridToWorld разошёлся с инлайновым на клетке %s"), *Cell.ToString()));
+				return false;
+			}
+		}
+
+		// Габарит чанка - вектор: на растянутой решётке чанк коробка, а не куб,
+		// и вызывающие, берущие из него радиус, обязаны брать максимум.
+		const FVector ChunkExtent = Grid.GetChunkWorldExtent();
+		if (!FMath::IsNearlyEqual(ChunkExtent.Z, ChunkExtent.X * 2.0))
+		{
+			AddError(FString::Printf(TEXT("Габарит чанка %s не отражает растяжение по Z"), *ChunkExtent.ToString()));
+			return false;
+		}
+	}
+
+	{
+		// Вьюха чанков обязана давать ЦЕНТР чанка. Поправка на центр переехала
+		// из отдельного скалярного поля в Origin решётки и стала покомпонентной -
+		// на растянутой решётке скаляр был бы верен лишь по одной оси.
+		constexpr int32 ChunkSize = 16;
+		const FLatticeTransform CellLattice = FLatticeTransform::MakeOrthogonal(100.0f, 2.0f);
+		const FVector CellExtent = CellLattice.GetCellWorldExtent();
+		const FVector ChunkExtent = CellExtent * static_cast<double>(ChunkSize);
+
+		const FChunkGridView ChunkView(ChunkExtent, CellExtent, TArray<FIntVector>{ FIntVector(1, -2, 3) });
+
+		const FIntVector ChunkCoord(1, -2, 3);
+		// Чанк занимает клетки [C*ChunkSize .. C*ChunkSize + ChunkSize-1], его
+		// центр - середина между мировыми позициями крайних из них.
+		const FVector FirstCell = CellLattice.GridToWorld(ChunkCoord * ChunkSize);
+		const FVector LastCell = CellLattice.GridToWorld(ChunkCoord * ChunkSize + FIntVector(ChunkSize - 1));
+		const FVector ExpectedCenter = (FirstCell + LastCell) * 0.5;
+
+		if (!ChunkView.GridToWorld(ChunkCoord).Equals(ExpectedCenter, 0.01))
+		{
+			AddError(FString::Printf(TEXT("Центр чанка %s: вьюха дала %s, ожидалось %s"),
+				*ChunkCoord.ToString(), *ChunkView.GridToWorld(ChunkCoord).ToString(), *ExpectedCenter.ToString()));
+			return false;
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLatticeElongatedDodecahedronFacesTest,
+	"CellularAutomata.Lattice.ElongatedDodecahedronFaces",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FLatticeElongatedDodecahedronFacesTest::RunTest(const FString& Parameters)
+{
+	const TArray<FIntVector> Offsets = BuildLatticeNeighborOffsets(ELatticeNeighborhood::ElongatedDodecahedron12);
+
+	// 12 граней = 12 соседей: одна грань на соседа - это определение ячейки
+	// Вороного, а не пожелание.
+	if (Offsets.Num() != 12)
+	{
+		AddError(FString::Printf(TEXT("Ожидалось 12 смещений, получено %d"), Offsets.Num()));
+		return false;
+	}
+
+	TSet<FIntVector> Unique(Offsets);
+	if (Unique.Num() != Offsets.Num())
+	{
+		AddError(TEXT("В наборе есть повторяющиеся смещения"));
+		return false;
+	}
+
+	// Влезает и в шейдерный массив на 26, и в 32-битные маски Birth/Survival.
+	if (Offsets.Num() > 26)
+	{
+		AddError(TEXT("Набор не влезает в шейдерный массив на 26 смещений"));
+		return false;
+	}
+
+	// Замкнутость на ОЦК-подрешётке: смещение обязано сохранять условие "все
+	// три координаты одной чётности", иначе структура уйдёт с подрешётки за
+	// одно поколение и форма клетки перестанет иметь смысл.
+	for (const FIntVector& Offset : Offsets)
+	{
+		// Чётность через &1, а не %2: у отрицательных %2 даёт -1 (знак идёт за
+		// делимым), и проверка "== 1" молча не сработала бы.
+		const int32 ParityX = Offset.X & 1;
+		if ((Offset.Y & 1) != ParityX || (Offset.Z & 1) != ParityX)
+		{
+			AddError(FString::Printf(TEXT("Смещение %s уводит с ОЦК-подрешётки"), *Offset.ToString()));
+			return false;
+		}
+	}
+
+	// Дальность 2 - из-за дальних осей (+-2,0,0). Гало GPU-пачки считается
+	// именно отсюда, и заниженное молча теряет пограничные клетки.
+	const FCellularAutomatonRule Rule(TArray<int32>{ 1 }, TArray<int32>{ 1 }, Offsets);
+	if (Rule.GetNeighborExtent() != 2)
+	{
+		AddError(FString::Printf(TEXT("Дальность набора %d, ожидалось 2"), Rule.GetNeighborExtent()));
+		return false;
+	}
+
+	// ГЛАВНАЯ проверка, ради которой тест и существует: набор - это именно
+	// ГРАНИ ячейки Вороного при растяжении по Z вдвое, а не произвольная
+	// выборка. Грань к соседу V существует тогда и только тогда, когда середина
+	// отрезка до него ближе к нулю, чем к любому другому узлу подрешётки.
+	// Заодно это фиксирует и порог sqrt(2), и то, что грани к (0,0,+-2) уже нет.
+	constexpr double ZScale = 2.0;
+	const FLatticeTransform Lattice = FLatticeTransform::MakeOrthogonal(1.0f, static_cast<float>(ZScale));
+
+	// Все узлы подрешётки в окрестности - против них и проверяем.
+	TArray<FIntVector> Nodes;
+	for (int32 X = -4; X <= 4; ++X)
+	{
+		for (int32 Y = -4; Y <= 4; ++Y)
+		{
+			for (int32 Z = -4; Z <= 4; ++Z)
+			{
+				if (X == 0 && Y == 0 && Z == 0)
+				{
+					continue;
+				}
+				const int32 ParityX = X & 1;
+				if ((Y & 1) != ParityX || (Z & 1) != ParityX)
+				{
+					continue;
+				}
+				Nodes.Emplace(X, Y, Z);
+			}
+		}
+	}
+
+	auto HasFace = [&Lattice, &Nodes](const FIntVector& Candidate)
+	{
+		const FVector Midpoint = Lattice.GridToWorld(Candidate) * 0.5;
+		const double DistToOrigin = Midpoint.SizeSquared();
+		for (const FIntVector& Node : Nodes)
+		{
+			if (Node == Candidate)
+			{
+				continue;
+			}
+			// Строго ближе - касание в вершине гранью не считается.
+			if (FVector::DistSquared(Midpoint, Lattice.GridToWorld(Node)) < DistToOrigin - UE_DOUBLE_KINDA_SMALL_NUMBER)
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+
+	for (const FIntVector& Offset : Offsets)
+	{
+		if (!HasFace(Offset))
+		{
+			AddError(FString::Printf(TEXT("У смещения %s нет грани: середина отрезка ближе к другому узлу"), *Offset.ToString()));
+			return false;
+		}
+	}
+
+	// Встречная проверка - без неё тест прошёл бы и на наборе "все 14 соседей
+	// ОЦК": при растяжении вдвое грани к (0,0,+-2) НЕТ, и именно поэтому 14
+	// превращается в 12.
+	for (const FIntVector& Excluded : { FIntVector(0, 0, 2), FIntVector(0, 0, -2) })
+	{
+		if (HasFace(Excluded))
+		{
+			AddError(FString::Printf(TEXT("У смещения %s грань есть, хотя при растяжении по Z вдвое её быть не должно"), *Excluded.ToString()));
+			return false;
+		}
+		if (Offsets.Contains(Excluded))
+		{
+			AddError(FString::Printf(TEXT("Смещение %s не должно входить в набор"), *Excluded.ToString()));
+			return false;
+		}
 	}
 
 	return true;

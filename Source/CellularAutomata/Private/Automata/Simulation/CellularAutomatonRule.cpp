@@ -64,3 +64,16 @@ FCellularAutomatonRule::FCellularAutomatonRule(const TArray<int32>& InBirthCount
 	, NeighborExtent(ComputeNeighborExtent(NeighborOffsets))
 {
 }
+
+FCellularAutomatonRule::FCellularAutomatonRule(const TArray<int32>& InBirthCounts, const TArray<int32>& InSurvivalCounts, const TArray<FIntVector>& InNeighborOffsets, int32 InStates)
+	: NeighborOffsets(InNeighborOffsets)
+	, BirthCounts(InBirthCounts)
+	, SurvivalCounts(InSurvivalCounts)
+	, States(InStates)
+	, NeighborExtent(ComputeNeighborExtent(NeighborOffsets))
+{
+	// Дальность считается по фактическим смещениям тем же ComputeNeighborExtent(),
+	// что и у набора оболочек - именно поэтому произвольный список получает
+	// верное гало GPU-пачки даром. Гало меньше нужного молча теряет пограничные
+	// клетки: ни падения, ни строчки в логе (см. GetNeighborExtent()).
+}

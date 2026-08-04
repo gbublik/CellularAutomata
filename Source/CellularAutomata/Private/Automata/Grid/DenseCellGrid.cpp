@@ -22,7 +22,12 @@ int32 FDenseCellGrid::RoundedChunkSize(int32 RequestedChunkSize)
 }
 
 FDenseCellGrid::FDenseCellGrid(float InCellSize, int32 InChunkSize, bool bInEnableDecayStates)
-	: FCellGrid(InCellSize)
+	: FDenseCellGrid(FLatticeTransform::MakeOrthogonal(InCellSize), InChunkSize, bInEnableDecayStates)
+{
+}
+
+FDenseCellGrid::FDenseCellGrid(const FLatticeTransform& InLattice, int32 InChunkSize, bool bInEnableDecayStates)
+	: FCellGrid(InLattice)
 	, ChunkSize(RoundedChunkSize(InChunkSize))
 	, ChunkShift(static_cast<int32>(FMath::FloorLog2(static_cast<uint32>(ChunkSize))))
 	, ChunkMask(ChunkSize - 1)
@@ -336,14 +341,8 @@ void FDenseCellGrid::GetDecayingCellsInBounds(const FBox& WorldBounds, TArray<FI
 	// Та же клеточно-пространственная рамка и та же двухуровневая проверка
 	// (bOverlaps/bFullyContained), что и GetAliveCellsInBounds() - см. её
 	// комментарии за подробностями.
-	const FIntVector MinCell(
-		FMath::FloorToInt(WorldBounds.Min.X / CellSize),
-		FMath::FloorToInt(WorldBounds.Min.Y / CellSize),
-		FMath::FloorToInt(WorldBounds.Min.Z / CellSize));
-	const FIntVector MaxCell(
-		FMath::CeilToInt(WorldBounds.Max.X / CellSize),
-		FMath::CeilToInt(WorldBounds.Max.Y / CellSize),
-		FMath::CeilToInt(WorldBounds.Max.Z / CellSize));
+	FIntVector MinCell, MaxCell;
+	Lattice.WorldBoundsToCellRange(WorldBounds, MinCell, MaxCell);
 
 	for (const TPair<FIntVector, FChunk>& ChunkPair : Chunks)
 	{
@@ -434,18 +433,15 @@ void FDenseCellGrid::GetAliveCellsInBounds(const FBox& WorldBounds, TArray<FIntV
 {
 	OutCells.Reset();
 
-	// WorldBounds -> границы в клеточном пространстве. Min - floor, Max -
-	// ceil, чтобы ни одна частично захваченная клетка не потерялась на
-	// краю (сама по-клеточная проверка ниже, для граничных чанков, уже
-	// точная - здесь достаточно консервативной, чуть более широкой рамки).
-	const FIntVector MinCell(
-		FMath::FloorToInt(WorldBounds.Min.X / CellSize),
-		FMath::FloorToInt(WorldBounds.Min.Y / CellSize),
-		FMath::FloorToInt(WorldBounds.Min.Z / CellSize));
-	const FIntVector MaxCell(
-		FMath::CeilToInt(WorldBounds.Max.X / CellSize),
-		FMath::CeilToInt(WorldBounds.Max.Y / CellSize),
-		FMath::CeilToInt(WorldBounds.Max.Z / CellSize));
+	// WorldBounds -> границы в клеточном пространстве. Рамка намеренно
+	// консервативна (floor/ceil), чтобы ни одна частично захваченная клетка
+	// не потерялась на краю - сама по-клеточная проверка ниже, для граничных
+	// чанков, уже точная. Раньше деление на CellSize стояло здесь открытым
+	// текстом и было одним из четырёх ручных обратных преобразований в
+	// проекте; теперь оно живёт в решётке и потому одинаково для любого шага
+	// по осям (см. FLatticeTransform).
+	FIntVector MinCell, MaxCell;
+	Lattice.WorldBoundsToCellRange(WorldBounds, MinCell, MaxCell);
 
 	for (const TPair<FIntVector, FChunk>& ChunkPair : Chunks)
 	{

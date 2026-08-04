@@ -3,9 +3,9 @@
 namespace
 {
 	/** Целочисленные координаты клетки в системе снимка: X вправо, Y вниз,
-	 *  Z - глубина от камеры. Оси осевые, а позиции кратны CellSize, поэтому
-	 *  деление даёт целое число, и округление здесь лишь снимает погрешность
-	 *  double, а не выбирает между двумя пикселями. */
+	 *  Z - глубина от камеры. Оси осевые, а позиции кратны шагу решётки,
+	 *  поэтому деление даёт целое число, и округление здесь лишь снимает
+	 *  погрешность double, а не выбирает между двумя пикселями. */
 	struct FProjected
 	{
 		int32 X = 0;
@@ -13,16 +13,24 @@ namespace
 		int32 Depth = 0;
 	};
 
+	/** Шаг решётки ВДОЛЬ заданной оси снимка. Оси осевые (их снапит
+	 *  BuildAxes()), поэтому проекция просто выбирает нужную компоненту шага;
+	 *  модуль - потому что ось может смотреть в минус, а шаг сетки знака не
+	 *  имеет. */
+	FORCEINLINE double AxisStep(const FVector& CellWorldStep, const FVector& Axis)
+	{
+		return FMath::Max(FMath::Abs(FVector::DotProduct(CellWorldStep, Axis)), UE_DOUBLE_SMALL_NUMBER);
+	}
+
 	FORCEINLINE FProjected ProjectCell(const FVector3f& Position, const CellRasterizer::FRasterParams& Params)
 	{
 		const FVector World(Position);
-		const double InvCellSize = 1.0 / FMath::Max(Params.CellSize, UE_DOUBLE_SMALL_NUMBER);
 
 		FProjected Result;
-		Result.X = FMath::RoundToInt(FVector::DotProduct(World, Params.RightAxis) * InvCellSize);
+		Result.X = FMath::RoundToInt(FVector::DotProduct(World, Params.RightAxis) / AxisStep(Params.CellWorldStep, Params.RightAxis));
 		// Минус: в изображении ось Y растёт вниз, а UpAxis смотрит вверх.
-		Result.Y = -FMath::RoundToInt(FVector::DotProduct(World, Params.UpAxis) * InvCellSize);
-		Result.Depth = FMath::RoundToInt(FVector::DotProduct(World, Params.ForwardAxis) * InvCellSize);
+		Result.Y = -FMath::RoundToInt(FVector::DotProduct(World, Params.UpAxis) / AxisStep(Params.CellWorldStep, Params.UpAxis));
+		Result.Depth = FMath::RoundToInt(FVector::DotProduct(World, Params.ForwardAxis) / AxisStep(Params.CellWorldStep, Params.ForwardAxis));
 		return Result;
 	}
 

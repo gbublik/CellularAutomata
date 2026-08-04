@@ -19,6 +19,10 @@
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Simulation/Neighborhood.h"
 #include "Automata/Simulation/RulePresets.h"
+#include "Automata/Grid/CellShapePresets.h"
+#include "Automata/Grid/LatticeTransform.h"
+#include "Automata/Simulation/LatticeNeighborhood.h"
+#include "Automata/Simulation/CellularAutomatonRule.h"
 #include "Orchestration/GenerationHistory.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
@@ -486,6 +490,7 @@ public:
 		StatusKey_Generation = 1006,
 		StatusKey_SliceCapture = 1007,
 		StatusKey_PhotoShot = 1008,
+		StatusKey_CellShape = 1009,
 	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
@@ -1202,10 +1207,37 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells")
 	EColorRampCurve ColorRampCurve = EColorRampCurve::Linear;
 
-	/** Размер одной клетки в мировых единицах */
+	/** Размер одной клетки в мировых единицах. Это шаг решётки В ПЛОСКОСТИ -
+	 *  по оси Z он умножается на LatticeZScale (см. ниже). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
 			  meta = (ClampMin = "1.0", UIMin = "1.0", UIMax = "1000.0"))
 	float CellSize = 100.0f;
+
+	/** Растяжение решётки по оси Z относительно шага в плоскости. 1.0 - куб,
+	 *  ГЦК и ОЦК, то есть всё, что было до появления этого поля.
+	 *
+	 *  НЕ КРУТИТЬ КАК ПОЛЗУНОК. Это не "растянуть картинку по вертикали":
+	 *  форма ячейки Вороного зависит от него НЕЛИНЕЙНО, и меш клетки
+	 *  авторится под одно конкретное значение. На ОЦК-подрешётке
+	 *  (ParityFilter = SameParity) вся шкала выглядит так:
+	 *
+	 *    1.0    - усечённый октаэдр, 14 граней (8 шестиугольников + 6 квадратов)
+	 *    sqrt(2) - ромбододекаэдр, 12 ромбов; ОЦК, растянутая на sqrt(2), И ЕСТЬ ГЦК
+	 *    2.0    - удлинённый додекаэдр, 12 граней (8 ромбов + 4 шестиугольника)
+	 *
+	 *  Грань к соседу (0,0,+-2) существует ровно пока Z-растяжение меньше
+	 *  sqrt(2): середина отрезка до него отходит от нуля на это растяжение, а
+	 *  до ближайшего диагонального соседа - всегда на sqrt(2). Поэтому три из
+	 *  пяти параллелоэдров Фёдорова - это одно и то же семейство решёток с
+	 *  разным Z, а не три разных механизма.
+	 *
+	 *  Поле остаётся видимым и редактируемым (иначе его нельзя было бы
+	 *  положить в .casave), но менять его следует через пресет формы клетки -
+	 *  он выставляет заодно фильтр чётности, соседство и множитель меша,
+	 *  которые обязаны соответствовать. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Cells",
+			  meta = (ClampMin = "0.1", UIMin = "0.5", UIMax = "3.0"))
+	float LatticeZScale = 1.0f;
 
 	/** Во сколько раз меш клетки крупнее самой клетки. 1.0 - меш ровно в размер
 	 *  клетки (обычный куб, замощающий кубическую решётку без щелей).
@@ -2069,6 +2101,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
 
+	/** Набор соседей, не выражаемый оболочками (см. ELatticeNeighborhood).
+	 *  Пока здесь Shells (дефолт), соседство берётся из Neighborhood выше;
+	 *  любое другое значение ПЕРЕКРЫВАЕТ его.
+	 *
+	 *  Neighborhood при этом намеренно не прячется (нет EditConditionHides):
+	 *  видеть, что именно перекрыто, полезнее, чем чистую панель - иначе
+	 *  выбранное соседство просто исчезает без объяснений. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
+	ELatticeNeighborhood NeighborhoodShape = ELatticeNeighborhood::Shells;
+
 	/** Общее число состояний клетки - 2 (дефолт) значит классический
 	 *  бинарный автомат (жива/мертва), поведение не отличается от того, что
 	 *  было до появления этого свойства. States > 2 включает режим
@@ -2139,6 +2181,34 @@ public:
 	 *  вызывается на построение списка, не в горячем цикле. */
 	UFUNCTION(BlueprintPure, Category = "Automata|Rules")
 	TArray<FRulePreset> GetRulePresets() const;
+
+	/** Таблица форм клетки - пять многогранников, замощающих пространство
+	 *  параллельными переносами (см. FCellShapePreset). Отдаёт копию, как
+	 *  GetRulePresets(). */
+	UFUNCTION(BlueprintPure, Category = "Automata|Cells")
+	TArray<FCellShapePreset> GetCellShapePresets() const;
+
+	/** Применяет форму клетки по индексу в GetCellShapePresets(): фильтр
+	 *  чётности, соседство, растяжение решётки и множитель меша - все четыре
+	 *  разом, потому что форма есть их следствие и по отдельности они
+	 *  противоречивы.
+	 *
+	 *  В отличие от ApplyRulePreset(), сетку ПЕРЕСОБИРАЕТ: решётка хранится
+	 *  внутри неё, и клетки старой сетки стоят по прежней геометрии. Правило
+	 *  при этом не трогается вовсе - посмотреть одно правило на разных
+	 *  решётках это ровно то, ради чего всё и делалось.
+	 *
+	 *  Индекс вне диапазона - warning в лог, ничего не меняется. Форма,
+	 *  требующая ещё не реализованной скошенной решётки, - отказ со
+	 *  статус-сообщением, тоже без изменений. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Cells")
+	void ApplyCellShapePreset(int32 PresetIndex);
+
+	/** Индекс последней применённой формы (-1, если пресет не применяли).
+	 *  Transient по той же причине, что LastHudStats - реинстансинг Live
+	 *  Coding не должен оставлять индекс, не соответствующий полям. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Automata|Cells")
+	int32 ActiveCellShapePresetIndex = -1;
 
 	/** Применяет пресет по индексу в GetRulePresets(): правило - через тот же
 	 *  TryApplyRuleString(), что и ручной ввод (один путь применения правила,
@@ -2638,6 +2708,26 @@ private:
 	 *  panel. Используется и GenerateRandom() (сетка с нуля), и Next()
 	 *  (буфер для следующего поколения). */
 	TUniquePtr<FCellGrid> CreateGrid() const;
+
+	/** Геометрия решётки по текущим CellSize/LatticeZScale. Единственное
+	 *  место, где эти два UPROPERTY превращаются в отображение координат -
+	 *  всё остальное берёт готовое значение у сетки (Grid->GetLattice()), а
+	 *  не собирает его заново. Отдельный метод, потому что снимать решётку в
+	 *  фоновый поток надо ДО диспетчеризации (см. StepAsync()): UPROPERTY
+	 *  может поменяться из Details panel, пока шаг считается. */
+	FLatticeTransform BuildLatticeTransform() const;
+
+	/** Правило по текущим Birth/Survival/States и ТОМУ соседству, которое
+	 *  выбрано - обычной оболочке ENeighborhood либо явному списку смещений
+	 *  (NeighborhoodShape). Единственное место, где этот выбор делается:
+	 *  правило строится в трёх точках, и размноженное ветвление позволило бы
+	 *  гистограмме Ctrl+Y мерить одно, пока симуляция идёт по другому. */
+	FCellularAutomatonRule BuildRule() const;
+
+	/** Смещения соседей для гистограммы - тот же выбор, что в BuildRule().
+	 *  Отдельным методом, потому что гистограмме нужна только геометрия, без
+	 *  Birth/Survival. */
+	TArray<FIntVector> BuildNeighborOffsetsForAnalysis() const;
 	/** Разворачивает AgeFilterValues (плюс bAgeFilterIncludesOlder) в маску на
 	 *  все 256 возрастов и возвращает true, если фильтр вообще активен.
 	 *
