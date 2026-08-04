@@ -498,6 +498,42 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 		// GamePC/Grid только под null-проверками для диагностического лога.
 		ApplyCellCullDistances();
 	}
+	else if (bAutoGenerateOnParamChange && IsGenerationProperty(PropertyChangedEvent))
+	{
+		// Interactive приходит на КАЖДОМ кадре протяжки ползунка, а генерация
+		// стирает сетку и заново заливает инстансы: на миллионах клеток одна
+		// протяжка радиуса от края до края означала бы сотню полных
+		// перестроений и намертво повешенный редактор. Ждём отпускания
+		// (ValueSet) - тогда за жест платим ровно один раз.
+		if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+		{
+			// Через публичный GenerateState(), а не своим путём: оценка против
+			// MaxGeneratedCells, отказ при фоновом шаге и точка возврата для R
+			// обязаны быть теми же, что у Y. Отказ здесь безвреден - он
+			// оставляет текущее состояние целым и пишет причину на экран.
+			GenerateState();
+		}
+	}
+}
+
+bool AAutomataOrchestrator::IsGenerationProperty(const FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// GenerationParams - структура, и GetPropertyName() отдаёт имя поля ВНУТРИ
+	// неё (Radius, Amount, Type...), а не саму структуру. Спрашиваем внешний
+	// член: одна проверка покрывает все поля разом, включая те, которых в
+	// FStateGeneratorParams ещё нет. Для обычного свойства MemberProperty
+	// совпадает с самим свойством, так что Seed ловится тем же кодом.
+	const FName MemberName = PropertyChangedEvent.MemberProperty
+		? PropertyChangedEvent.MemberProperty->GetFName()
+		: PropertyChangedEvent.GetPropertyName();
+
+	// Seed здесь наравне с параметрами: он входит в ту же формулу и правится в
+	// той же петле подбора. MaxGeneratedCells, наоборот, НЕ входит - это
+	// предохранитель, и его подъём означает "разреши построить", а не "построй
+	// прямо сейчас"; перестроение по нему запускало бы ровно ту генерацию,
+	// которую предохранитель только что отказался пропускать.
+	return MemberName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, GenerationParams)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, Seed);
 }
 #endif
 

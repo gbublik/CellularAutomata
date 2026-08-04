@@ -368,8 +368,15 @@ protected:
 	 *  правки цветовой рампы (CellMaterial/AgeColors/AgeColorMaxAge/
 	 *  DecayColors) - сразу перерисовать текущее поколение: цвет это чистая
 	 *  функция уже посчитанного состояния, ждать следующего шага симуляции
-	 *  (а на паузе - вообще неизвестно чего) незачем. */
+	 *  (а на паузе - вообще неизвестно чего) незачем. А правки параметров
+	 *  генератора при включённом bAutoGenerateOnParamChange - сразу построить
+	 *  состояние, не дожидаясь Y. */
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/** Относится ли правка к параметрам генерации (GenerationParams целиком или
+	 *  Seed). Спрашивает ВНЕШНИЙ член события, а не имя изменённого свойства:
+	 *  у поля внутри структуры это разные имена. */
+	static bool IsGenerationProperty(const FPropertyChangedEvent& PropertyChangedEvent);
 #endif
 
 public:
@@ -556,6 +563,29 @@ public:
 	 *  тоже. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation")
 	FStateGeneratorParams GenerationParams;
+
+	/** Строить состояние сразу, как только правится любое поле GenerationParams
+	 *  или Seed в Details panel, - не дожидаясь Y.
+	 *
+	 *  Генераторы подбирают глазами: покрутил радиус, посмотрел, покрутил ещё.
+	 *  Отдельное нажатие Y между "покрутил" и "посмотрел" - лишний такт ровно в
+	 *  той петле, которая повторяется десятки раз подряд. Y при этом никуда не
+	 *  девается: он работает всегда, в том числе с выключенным флагом и в PIE,
+	 *  где Details panel не под рукой.
+	 *
+	 *  Перестроение идёт через тот же GenerateState(), то есть с той же оценкой
+	 *  против MaxGeneratedCells и тем же отказом при фоновом шаге. Seed не
+	 *  перебрасывается, поэтому правка одного поля - это честное сравнение "то
+	 *  же самое, но с другим радиусом", а не новая случайная фигура.
+	 *
+	 *  Только редактор: Details panel в собранной игре не существует, и весь
+	 *  путь живёт под WITH_EDITOR (см. PostEditChangeProperty()).
+	 *
+	 *  Выключать имеет смысл на тяжёлых наборах: на миллионах клеток каждое
+	 *  перестроение - это полный AddInstances(), и правка трёх полей подряд
+	 *  оплачивается трижды. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation")
+	bool bAutoGenerateOnParamChange = true;
 
 	/** Потолок на число клеток, которое разрешено построить генератору.
 	 *
