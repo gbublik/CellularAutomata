@@ -569,6 +569,18 @@ void AAutomataOrchestrator::SetAutoReseedOnExtinction(bool bEnable)
 		++AutoReseedCount;
 		NewSeed();
 	}
+
+	// И сразу запускаем прогон, если он не идёт: на паузе перебирать нечего -
+	// вымирает только то, что считается. "Включил перебор" и "начал
+	// перебирать" - одно действие, а не два, иначе Shift+N в самом типичном
+	// случае (пришёл к мёртвой сетке, включил режим) внешне не делал бы ничего.
+	//
+	// Автошаг по Shift+F не трогаем: он тоже считает поколения, то есть перебор
+	// уже идёт, а Start() при нём всё равно откажется (см. его реализацию).
+	if (!bSimulationRunning && !IsFastStepActive())
+	{
+		Start();
+	}
 }
 
 void AAutomataOrchestrator::ApplyRuleString()
