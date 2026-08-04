@@ -1834,6 +1834,35 @@ bool FGenerationHistoryTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("уменьшение ёмкости подрезает сразу"), History.Num(), 2);
 	}
 
+	// Обрезка хвоста под шаг назад (Ctrl+Z, StepBackward()): точка отката
+	// остаётся, всё, что после неё - уходит, а история ДО отката переживает его.
+	// В этом вся разница с ResetGenerationCounter(), который чистит график
+	// целиком: шаг назад не начинает прогон заново.
+	{
+		TArray<FGenerationSample> History;
+		for (int64 Generation = 0; Generation <= 10; ++Generation)
+		{
+			GenerationHistory::Append(History, Generation, 100 + int32(Generation), 512);
+		}
+
+		GenerationHistory::TrimAfter(History, 7);
+		TestEqual(TEXT("хвост после точки отката срезан"), History.Num(), 8);
+		TestEqual(TEXT("сама точка отката осталась"), History.Last().Generation, (int64)7);
+		TestEqual(TEXT("история до отката не тронута"), History[0].Generation, (int64)0);
+
+		// Откат в самое начало оставляет ровно поколение 0 - не пустой график:
+		// StepBackward() на поколении 1 делегирует в ResetToInitialState(), и
+		// нулевая точка обязана пережить это, иначе линия начнётся с пустоты.
+		GenerationHistory::TrimAfter(History, 0);
+		TestEqual(TEXT("остаётся один нулевой замер"), History.Num(), 1);
+		TestEqual(TEXT("это поколение 0"), History.Last().Generation, (int64)0);
+
+		// Поколение выше всех имеющихся - не трогает ничего (шаг назад сразу
+		// после загрузки файла, когда история ещё короче счётчика).
+		GenerationHistory::TrimAfter(History, 1000);
+		TestEqual(TEXT("обрезка выше окна ничего не меняет"), History.Num(), 1);
+	}
+
 	// Границы окна. При States > 2 угасающие клетки рисуются, но живыми не
 	// считаются - "видимо" ЗАКОННО выше "всего", и масштаб по одному ряду
 	// срезал бы второй.

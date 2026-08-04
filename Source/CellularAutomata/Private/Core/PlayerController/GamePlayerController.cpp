@@ -354,6 +354,20 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// должно попутно выбрасывать из режима. Shift не исключён - это ускорение
 	// полёта, то есть то же самое движение.
 	const bool bCtrlDown = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+
+	// Ctrl+Z - шаг назад (AAutomataOrchestrator::StepBackward()). Голая Z
+	// остаётся за Enhanced Input'ом (чанковый рендер) - тот сам отсеивает
+	// нажатие с Ctrl, потому что выразить "без модификатора" в привязке нельзя
+	// (см. OnToggleChunkedRender()).
+	//
+	// IE_Pressed, а не IE_Repeat, и это не мелочь: каждое нажатие стоит полного
+	// пересчёта от изначального узора, так что авторепит на зажатой клавише
+	// сложился бы в сумму всех номеров поколений, то есть в квадрат.
+	if (Params.Key == EKeys::Z && Params.Event == IE_Pressed && bCtrlDown)
+	{
+		OnStepBackward();
+	}
+
 	if (bSelectionModeActive && Params.Event == IE_Pressed && !bCtrlDown)
 	{
 		static const FKey FlyKeys[] = {
@@ -881,6 +895,14 @@ void AGamePlayerController::OnSpeedBoostEnded()
 
 void AGamePlayerController::OnToggleChunkedRender()
 {
+	// Ctrl+Z - это шаг назад (см. InputKey()), а не переключение чанкового
+	// рендера. Привязка Z остаётся в Enhanced Input, поэтому нажатие с Ctrl
+	// доходит и сюда - отсеиваем его здесь, как Ctrl+S у сохранения.
+	if (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))
+	{
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -889,6 +911,18 @@ void AGamePlayerController::OnToggleChunkedRender()
 	}
 
 	Orchestrator->SetChunkedRenderEnabled(!Orchestrator->IsChunkedRenderEnabled());
+}
+
+void AGamePlayerController::OnStepBackward()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnStepBackward: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->StepBackward();
 }
 
 void AGamePlayerController::OnCycleChunkedRenderOrder()

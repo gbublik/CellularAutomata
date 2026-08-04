@@ -304,8 +304,24 @@ protected:
 	void OnSpeedBoostEnded();
 
 	/** Хоткей (Z) - включает/выключает разлитый по кадрам рендер
-	 *  (AAutomataOrchestrator::SetChunkedRenderEnabled()/IsChunkedRenderEnabled()). */
+	 *  (AAutomataOrchestrator::SetChunkedRenderEnabled()/IsChunkedRenderEnabled()).
+	 *
+	 *  Отказывается работать при зажатом Ctrl: Ctrl+Z - это шаг назад
+	 *  (OnStepBackward()), и Enhanced Input не умеет требовать ОТСУТСТВИЯ
+	 *  модификатора в привязке, поэтому Ctrl+Z доходит и сюда тоже. Проверка
+	 *  внутри обработчика - та же идиома, что у Ctrl+S и Ctrl+Y. */
 	void OnToggleChunkedRender();
+
+	/** Хоткей (Ctrl+Z) - шаг назад: AAutomataOrchestrator::StepBackward()
+	 *  пересчитывает предыдущее поколение от изначального узора, а не достаёт
+	 *  его из истории (истории состояний в проекте нет - см. doc-comment
+	 *  StepBackward()).
+	 *
+	 *  Ловится в InputKey(), а не через Enhanced Input, по двум причинам сразу:
+	 *  модификатор в привязке выразить нельзя, и это ровно тот класс хоткеев
+	 *  (как пробел/R/N/Y), который жмут в момент худшего лага, когда выборка
+	 *  Enhanced Input раз в кадр теряет короткие нажатия. */
+	void OnStepBackward();
 
 	/** Хоткей (X) - переключает порядок реавила разлитого по кадрам рендера
 	 *  на следующий по кругу (AAutomataOrchestrator::CycleChunkedRenderOrder(),

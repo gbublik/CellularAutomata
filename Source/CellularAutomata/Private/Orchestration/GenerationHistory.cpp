@@ -194,6 +194,14 @@ void GenerationHistory::NoteRendered(TArray<FGenerationSample>& History,
 	TrimToCapacity(History, Capacity);
 }
 
+void GenerationHistory::TrimAfter(TArray<FGenerationSample>& History, int64 Generation)
+{
+	History.RemoveAll([Generation](const FGenerationSample& Sample)
+	{
+		return Sample.Generation > Generation;
+	});
+}
+
 bool GenerationHistory::ComputeBounds(const TArray<FGenerationSample>& History, double Exponent,
 	int64& OutMinGeneration, int64& OutMaxGeneration, double& OutMinY, double& OutMaxY)
 {

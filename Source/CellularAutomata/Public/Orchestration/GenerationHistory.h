@@ -79,6 +79,20 @@ namespace GenerationHistory
 	CELLULARAUTOMATA_API void NoteRendered(TArray<FGenerationSample>& History,
 		int64 Generation, int32 AliveCount, int32 RenderedCount, int32 Capacity);
 
+	/** Выбросить замеры о поколениях ПОЗЖЕ Generation, оставив само Generation.
+	 *
+	 *  Нужно ровно одному вызывающему - AAutomataOrchestrator::StepBackward()
+	 *  (Ctrl+Z): шаг назад не начинает прогон заново, поэтому ResetGenerationCounter()
+	 *  с его безусловным GenerationSamples.Reset() тут не годится - история до
+	 *  точки отката остаётся верной и должна пережить откат, иначе график
+	 *  обнулялся бы на каждое нажатие.
+	 *
+	 *  Не бинарный поиск, хотя массив отсортирован по Generation: обрезается
+	 *  хвост окна в несколько тысяч замеров, и делает это ручное нажатие, а не
+	 *  каждый кадр. Линейного прохода тут достаточно, и он не может разойтись
+	 *  с порядком, если Append() когда-нибудь начнёт вставлять иначе. */
+	CELLULARAUTOMATA_API void TrimAfter(TArray<FGenerationSample>& History, int64 Generation);
+
 	/** Значение замера в том виде, в каком оно ложится на график.
 	 *
 	 *  Exponent <= 0 - без нормировки, вернётся сам Count. Иначе Count/n^Exponent:

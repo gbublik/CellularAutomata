@@ -2353,6 +2353,219 @@ void AAutomataOrchestrator::ResetToInitialState()
 	UE_LOG(LogTemp, Log, TEXT("ResetToInitialState: сетка восстановлена из сохранённой точки возврата (%d клеток)"), Grid->Num());
 }
 
+void AAutomataOrchestrator::StepBackward()
+{
+	if (bStepInProgress)
+	{
+		// Откладываем, а не отказываем - как R и N (см. doc-comment
+		// bStepBackwardPending). Оба флага гасим: последнее нажатие выигрывает.
+		bStepBackwardPending = true;
+		bResetToInitialStatePending = false;
+		bNewSeedPending = false;
+		UE_LOG(LogTemp, Warning, TEXT("StepBackward: фоновый шаг ещё считается - шаг назад отложен до его завершения"));
+		return;
+	}
+
+	if (GenerationCount <= 0)
+	{
+		ShowStatusMessage(StatusKey_StepBackward, TEXT("Шаг назад: уже на поколении 0"));
+		return;
+	}
+
+	if (InitialStateCells.Num() == 0)
+	{
+		// Без точки возврата пересчитывать не от чего. На практике недостижимо -
+		// BeginPlay() зовёт GenerateState(), а тот заполняет InitialStateCells.
+		UE_LOG(LogTemp, Warning, TEXT("StepBackward: изначальный узор не сохранён - откатывать не от чего"));
+		return;
+	}
+
+	if (!CellMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StepBackward: CellMesh не задан - назначьте StaticMesh в Details panel"));
+		return;
+	}
+
+	if (!CellMaterial)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StepBackward: CellMaterial не назначен - назначьте материал клеток в Details panel"));
+		return;
+	}
+
+	if (!GetActiveCellsMeshComponent())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("StepBackward: активный CellsMesh-компонент отсутствует"));
+		return;
+	}
+
+	// Непрерывный прогон и откат несовместимы: Tick() запустил бы следующий
+	// StepAsync() сразу после того, как пересчёт вернёт предыдущее поколение, и
+	// нажатие выглядело бы несработавшим (сетка мигнула бы назад и тут же ушла
+	// вперёд). Останавливаем прогон, а не ставим на паузу - Pause() в этом
+	// проекте про управление камерой, симуляцию останавливает Stop().
+	if (bSimulationRunning)
+	{
+		Stop();
+	}
+
+	// Автошаг по удержанию Shift+F - второй потребитель той же ветки Tick() и
+	// ровно та же проблема: он не гейтится bSimulationRunning, так что одного
+	// Stop() выше недостаточно.
+	if (bFastStepActive)
+	{
+		StopFastStep();
+	}
+
+	const int64 TargetGeneration = GenerationCount - 1;
+
+	// Поколение 0 - это ровно InitialStateCells, считать нечего.
+	if (TargetGeneration == 0)
+	{
+		ResetToInitialState();
+		ShowStatusMessage(StatusKey_StepBackward, TEXT("Шаг назад: поколение 0 (изначальный узор)"));
+		return;
+	}
+
+	// Новый прогон убирает запечённый меш-снимок и призрачную оболочку - как
+	// ResetToInitialState() и GenerateState().
+	ClearBakedMesh();
+	ClearGhostShape();
+
+	// Засев строим ЗДЕСЬ, на игровом потоке (CreateGrid() читает живые
+	// UPROPERTY), и отдаём его в фон по значению - Grid при этом не трогаем
+	// вовсе: пока идёт пересчёт, на экране остаётся текущее поколение, а
+	// подменится оно разом в продолжении. Тем же самым это отличается от
+	// ResetToInitialState(), который рисует изначальный узор немедленно.
+	TUniquePtr<FCellGrid> SeedGrid = CreateGrid();
+	for (const FIntVector& Cell : InitialStateCells)
+	{
+		SeedGrid->SetAlive(Cell, true);
+		SeedGrid->SetAge(Cell, 0);
+	}
+
+	// Правило и стратегия - заново, как везде в проекте (см. Next()); геометрия
+	// решётки и ChunkSize снимаются здесь, потому что промежуточные буферы
+	// создаются уже в фоне, а живые UPROPERTY фоновому потоку читать нельзя.
+	FCellularAutomatonRule AutomatonRule = BuildRule();
+	TUniquePtr<FCellularAutomatonComputeStrategy> ComputeStrategy = CreateComputeStrategy();
+	const FLatticeTransform LatticeSnapshot = BuildLatticeTransform();
+	const int32 ChunkSizeSnapshot = ChunkSize;
+
+	bStepInProgress = true;
+
+	ShowStatusMessage(StatusKey_StepBackward,
+		FString::Printf(TEXT("Шаг назад: пересчёт %lld поколений с нуля..."), TargetGeneration));
+
+	TWeakObjectPtr<AAutomataOrchestrator> WeakThis(this);
+
+	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
+		[AutomatonRule = MoveTemp(AutomatonRule), ComputeStrategy = MoveTemp(ComputeStrategy),
+		 SeedGrid = MoveTemp(SeedGrid), WeakThis, TargetGeneration, LatticeSnapshot, ChunkSizeSnapshot]() mutable
+		{
+			const double StepStartSeconds = FPlatformTime::Seconds();
+
+			// Тот же цикл, что в Next(), с одним отличием: источником владеет
+			// сама лямбда (никакого сырого указателя на живой Grid - здесь его
+			// и не нужно, пересчёт идёт от собственного засева), поэтому
+			// предыдущее поколение освобождается сразу после того, как из него
+			// посчитано следующее.
+			TUniquePtr<FCellGrid> ResultGrid = MoveTemp(SeedGrid);
+			int64 StepsDone = 0;
+			while (StepsDone < TargetGeneration)
+			{
+				TUniquePtr<FCellGrid> NextGrid = MakeUnique<FDenseCellGrid>(LatticeSnapshot, ChunkSizeSnapshot, AutomatonRule.HasDecayStates());
+
+				const int32 StepsRequested = static_cast<int32>(FMath::Min<int64>(TargetGeneration - StepsDone, MAX_int32));
+				const int32 StepsAdvanced = ComputeStrategy->StepBatch(*ResultGrid, *NextGrid, AutomatonRule, StepsRequested);
+
+				// Стратегия, продвинувшая больше одного поколения, обязана была
+				// заполнить возрасты и угасание сама - см. Next().
+				if (StepsAdvanced <= 1)
+				{
+					CellAging::ComputeAges(ResultGrid.Get(), *NextGrid);
+					CellDecay::AdvanceDecayStates(ResultGrid.Get(), *NextGrid, AutomatonRule.GetStates());
+				}
+
+				ResultGrid = MoveTemp(NextGrid);
+				StepsDone += FMath::Max(1, StepsAdvanced);
+			}
+
+			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
+			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
+
+			AsyncTask(ENamedThreads::GameThread,
+				[WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, TargetGeneration, ComputeUploadBytes]() mutable
+			{
+				AAutomataOrchestrator* StrongThis = WeakThis.Get();
+				if (!StrongThis)
+				{
+					return;
+				}
+
+				StrongThis->Grid = MoveTemp(ResultGrid);
+				StrongThis->SelectedCells.Reset();
+				StrongThis->bStepInProgress = false;
+
+				// R и N, нажатые пока шёл пересчёт, важнее его результата - оба
+				// всё равно перестроят сетку с нуля (см. ApplyStepResult()).
+				if (StrongThis->bResetToInitialStatePending)
+				{
+					StrongThis->bResetToInitialStatePending = false;
+					StrongThis->ResetToInitialState();
+					return;
+				}
+
+				if (StrongThis->bNewSeedPending)
+				{
+					StrongThis->bNewSeedPending = false;
+					StrongThis->NewSeed();
+					return;
+				}
+
+				// Счётчик выставляется, а не уменьшается: сетка теперь ровно то,
+				// что даёт TargetGeneration шагов от изначального узора.
+				StrongThis->GenerationCount = TargetGeneration;
+				StrongThis->LastGpuComputeUploadBytes = ComputeUploadBytes;
+				StrongThis->StepsSinceLastRender = 0;
+
+				// График теряет только хвост после точки отката - история ДО неё
+				// верна и переживает откат (см. GenerationHistory::TrimAfter()).
+				GenerationHistory::TrimAfter(StrongThis->GenerationSamples, TargetGeneration);
+
+				// Ещё один Ctrl+Z, нажатый пока считался этот - уходим в
+				// следующий откат, не рисуя промежуточный кадр (он всё равно был
+				// бы тут же заменён). Счётчик уже выставлен, так что новый
+				// StepBackward() отсчитает от него.
+				if (StrongThis->bStepBackwardPending)
+				{
+					StrongThis->bStepBackwardPending = false;
+					StrongThis->StepBackward();
+					return;
+				}
+
+				// Оболочка пересчитывается сразу, без своего интервала: она
+				// описывает текущее поколение, а оно только что сменилось на
+				// другое - причём назад, чего интервал не ожидает.
+				if (StrongThis->bEnableGhostShape)
+				{
+					StrongThis->GhostShapeGenerationsSinceRefresh = 0;
+					StrongThis->RefreshGhostShape();
+				}
+
+				// Немедленно и целиком, как ручной шаг: откат - осознанное
+				// одиночное действие, размазывать его по кадрам незачем.
+				StrongThis->RenderGridImmediate();
+
+				StrongThis->ShowStatusMessage(StatusKey_StepBackward,
+					FString::Printf(TEXT("Шаг назад: поколение %lld (пересчёт занял %.2f с)"),
+						TargetGeneration, StepSeconds));
+
+				UE_LOG(LogTemp, Log, TEXT("StepBackward: поколение %lld, живых клеток %d (пересчёт %lld поколений: %.2f мс [фоновый поток])"),
+					TargetGeneration, StrongThis->Grid->Num(), TargetGeneration, StepSeconds * 1000.0);
+			});
+		});
+}
+
 FString AAutomataOrchestrator::EnsureSaveDirectory() const
 {
 	const FString Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("AutomataSaves"));
@@ -3899,6 +4112,15 @@ void AAutomataOrchestrator::Next()
 					return;
 				}
 
+				// Отложенный шаг назад (Ctrl+Z) - до увеличения GenerationCount
+				// ниже, по той же причине, что и в ApplyStepResult().
+				if (StrongThis->bStepBackwardPending)
+				{
+					StrongThis->bStepBackwardPending = false;
+					StrongThis->StepBackward();
+					return;
+				}
+
 				// Вымирание ловится и на ручном шаге - см.
 				// bAutoReseedOnExtinction и ту же проверку в ApplyStepResult().
 				if (StrongThis->TryAutoReseedOnExtinction(NumSteps))
@@ -4455,6 +4677,18 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	{
 		bNewSeedPending = false;
 		NewSeed();
+		return;
+	}
+
+	// То же для Ctrl+Z (см. doc-comment bStepBackwardPending). Стоит ДО
+	// увеличения GenerationCount ниже, и это принципиально: StepBackward()
+	// отсчитывает от него, а поколение, только что посчитанное этим самым
+	// заходом, на экране ещё не было. Учтя его, откат вернул бы ровно то, что
+	// сейчас в Grid, и нажатие не изменило бы ничего видимого.
+	if (bStepBackwardPending)
+	{
+		bStepBackwardPending = false;
+		StepBackward();
 		return;
 	}
 
