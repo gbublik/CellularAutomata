@@ -351,7 +351,9 @@ protected:
 	void OnToggleGhostShape();
 
 	/** Хоткеи (+/-, основной ряд и NumPad) - меняют Speed автомата на
-	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). */
+	 *  SpeedAdjustStep через AAutomataOrchestrator::AdjustSpeed(). Удержание
+	 *  повторяет шаг не каждый кадр, а с частотой автоповтора - см.
+	 *  ShouldFireRepeat(). */
 	void OnIncreaseSpeed();
 	void OnDecreaseSpeed();
 
@@ -364,8 +366,9 @@ protected:
 
 	/** Хоткеи (T и G) - меняют StepsPerRender автомата на ±1 через
 	 *  AAutomataOrchestrator::AdjustStepsPerRender(), привязаны на Triggered
-	 *  (как +/- для Speed), так что удержание повторяет изменение каждый
-	 *  кадр. С зажатым Shift не делают ничего - тогда работают
+	 *  (как +/- для Speed), так что удержание повторяет изменение - с частотой
+	 *  автоповтора, см. ShouldFireRepeat(). С зажатым Shift не делают ничего -
+	 *  тогда работают
 	 *  OnDoubleStepsPerRender()/OnHalveStepsPerRender() ниже. */
 	void OnIncreaseStepsPerRender();
 	void OnDecreaseStepsPerRender();
@@ -735,6 +738,61 @@ protected:
 
 	/** Шаг изменения Speed за одно нажатие +/-. */
 	static constexpr float SpeedAdjustStep = 0.5f;
+
+	/** Состояние автоповтора одного хоткея, привязанного на Triggered (см.
+	 *  ShouldFireRepeat()). По одному экземпляру на КЛАВИШУ, а не на пару:
+	 *  общее состояние на + и - спутало бы удержание одной клавиши с нажатием
+	 *  соседней.
+	 *
+	 *  Обычные поля, не UPROPERTY: после реинстансинга Live Coding здесь будет
+	 *  мусор, но худшее, что из него следует, - одно лишнее (или пропущенное)
+	 *  срабатывание, после которого все три метки переписываются заново. */
+	struct FHotkeyRepeatState
+	{
+		/** Время последнего вызова обработчика - по разрыву в этой метке
+		 *  определяется, что клавишу отпускали. */
+		double LastTriggeredTime = 0.0;
+
+		/** Время, когда началось текущее удержание. */
+		double PressTime = 0.0;
+
+		/** Время последнего РЕЗУЛЬТАТИВНОГО срабатывания (первого нажатия или
+		 *  повтора). */
+		double LastFireTime = 0.0;
+	};
+
+	/** Пауза перед первым автоповтором, в секундах: короткое нажатие меняет
+	 *  значение ровно на один шаг, разгон начинается только если клавишу
+	 *  действительно держат. */
+	static constexpr double HotkeyRepeatDelay = 0.4;
+
+	/** Интервал между автоповторами, в секундах. Без него Triggered срабатывает
+	 *  КАЖДЫЙ кадр, и Speed/StepsPerRender улетали в потолок раньше, чем успеешь
+	 *  отпустить клавишу. */
+	static constexpr double HotkeyRepeatInterval = 0.15;
+
+	/** Разрыв между двумя вызовами обработчика, после которого нажатие считается
+	 *  новым, а не продолжением удержания. Больше кадра, но меньше
+	 *  HotkeyRepeatDelay. На просевшем кадре (а тут это норма - миллионы клеток)
+	 *  удержание распадётся на цепочку "новых нажатий", то есть вернётся к
+	 *  старому поведению "шаг за кадр", - но кадров в секунду в этот момент и так
+	 *  единицы, так что быстрее шага в кадр значение не поедет. */
+	static constexpr double HotkeyRepeatFreshPressGap = 0.25;
+
+	/** Пропускать ли текущий вызов Triggered-обработчика. Возвращает true на
+	 *  первом нажатии и дальше не чаще раза в HotkeyRepeatInterval, начиная с
+	 *  HotkeyRepeatDelay после нажатия - обычный автоповтор клавиатуры.
+	 *
+	 *  Сделано временем, а не отдельной привязкой на Started, чтобы не зависеть
+	 *  от порядка, в котором Enhanced Input раздаёт Started и Triggered на одном
+	 *  и том же кадре: там первое нажатие сработало бы дважды. */
+	bool ShouldFireRepeat(FHotkeyRepeatState& State) const;
+
+	/** Автоповтор для +, -, T и G соответственно. */
+	FHotkeyRepeatState IncreaseSpeedRepeat;
+	FHotkeyRepeatState DecreaseSpeedRepeat;
+	FHotkeyRepeatState IncreaseStepsPerRenderRepeat;
+	FHotkeyRepeatState DecreaseStepsPerRenderRepeat;
 
 	/** Шаг изменения среза вдоль взгляда за одно нажатие [ / ] - в мировых
 	 *  единицах. Намеренно крупный: клетка по умолчанию 100 единиц, так что

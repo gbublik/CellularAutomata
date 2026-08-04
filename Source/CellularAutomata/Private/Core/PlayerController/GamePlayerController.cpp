@@ -243,13 +243,16 @@ void AGamePlayerController::SetupInputComponent()
 		EnhancedInputComp->BindAction(ToggleCellCullingAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleCellCulling);
 		EnhancedInputComp->BindAction(ToggleRenderCullVolumeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleRenderCullVolume);
 		EnhancedInputComp->BindAction(ToggleGhostShapeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleGhostShape);
-		// Triggered - держа +/-, Speed продолжает меняться каждый кадр, а не
-		// только на однократное нажатие (аналогично F/OnStepOnce()).
+		// Triggered - держа +/-, Speed продолжает меняться, а не только на
+		// однократное нажатие (аналогично F/OnStepOnce()). Само событие
+		// приходит каждый кадр, но обработчик прореживает его до частоты
+		// автоповтора - см. ShouldFireRepeat().
 		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
 		EnhancedInputComp->BindAction(DecreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseSpeed);
 		EnhancedInputComp->BindAction(FrameAllCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFrameAllCells);
-		// Triggered - держа T/G, StepsPerRender продолжает меняться каждый
-		// кадр, а не только на однократное нажатие (аналогично +/- для Speed).
+		// Triggered - держа T/G, StepsPerRender продолжает меняться, а не
+		// только на однократное нажатие (аналогично +/- для Speed, с тем же
+		// прореживанием до частоты автоповтора).
 		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseStepsPerRender);
 		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseStepsPerRender);
 		// Те же клавиши ещё раз, но на Started и под Shift - переход к
@@ -987,8 +990,41 @@ void AGamePlayerController::OnToggleGhostShape()
 	Orchestrator->SetGhostShapeEnabled(!Orchestrator->IsGhostShapeEnabled());
 }
 
+bool AGamePlayerController::ShouldFireRepeat(FHotkeyRepeatState& State) const
+{
+	// Не GetWorld()->GetTimeSeconds(): на паузе PIE игровое время стоит, а
+	// клавиши работают, и автоповтор превратился бы в "срабатывает всегда".
+	const double Now = FPlatformTime::Seconds();
+	const double SinceLastCall = Now - State.LastTriggeredTime;
+	State.LastTriggeredTime = Now;
+
+	// Triggered приходит каждый кадр, пока клавиша нажата, поэтому заметный
+	// разрыв означает, что её отпускали: считаем нажатие новым и пропускаем
+	// его без задержки.
+	if (SinceLastCall > HotkeyRepeatFreshPressGap)
+	{
+		State.PressTime = Now;
+		State.LastFireTime = Now;
+		return true;
+	}
+
+	// Клавишу держат: сперва пауза перед разгоном, потом ровный автоповтор.
+	if (Now - State.PressTime < HotkeyRepeatDelay || Now - State.LastFireTime < HotkeyRepeatInterval)
+	{
+		return false;
+	}
+
+	State.LastFireTime = Now;
+	return true;
+}
+
 void AGamePlayerController::OnIncreaseSpeed()
 {
+	if (!ShouldFireRepeat(IncreaseSpeedRepeat))
+	{
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -1001,6 +1037,11 @@ void AGamePlayerController::OnIncreaseSpeed()
 
 void AGamePlayerController::OnDecreaseSpeed()
 {
+	if (!ShouldFireRepeat(DecreaseSpeedRepeat))
+	{
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -1467,6 +1508,11 @@ void AGamePlayerController::OnIncreaseStepsPerRender()
 		return;
 	}
 
+	if (!ShouldFireRepeat(IncreaseStepsPerRenderRepeat))
+	{
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
@@ -1481,6 +1527,11 @@ void AGamePlayerController::OnDecreaseStepsPerRender()
 {
 	// См. одноимённую проверку в OnIncreaseStepsPerRender().
 	if (IsShiftHeld())
+	{
+		return;
+	}
+
+	if (!ShouldFireRepeat(DecreaseStepsPerRenderRepeat))
 	{
 		return;
 	}
