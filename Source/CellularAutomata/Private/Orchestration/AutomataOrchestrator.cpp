@@ -5185,7 +5185,7 @@ void AAutomataOrchestrator::StartFastStep()
 {
 	if (bSimulationRunning)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("StartFastStep: симуляция уже запущена через Play (P) - остановите её сначала"));
+		UE_LOG(LogTemp, Warning, TEXT("StartFastStep: симуляция уже запущена через Play (пробел) - остановите её сначала"));
 		return;
 	}
 

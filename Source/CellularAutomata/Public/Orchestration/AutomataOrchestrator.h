@@ -196,7 +196,7 @@ struct FHudStats
 	// StepsPerRender - "настройка" и "измерение" в этой сводке живут рядом
 	// осознанно (см. SimulationSpeed).
 
-	/** Идёт непрерывный прогон (P) - см. bSimulationRunning. Взаимоисключающ с
+	/** Идёт непрерывный прогон (пробел) - см. bSimulationRunning. Взаимоисключающ с
 	 *  bFastStepActive ниже. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bSimulationRunning = false;
@@ -3069,7 +3069,7 @@ private:
 	/** Досыпает все оставшиеся инстансы чанкового рендера одним вызовом
 	 *  (AdvanceRenderChunk(TNumericLimits<int32>::Max()))
 	 *  вместо того, чтобы ждать, пока AdvanceChunkedRender() доедет по кадрам -
-	 *  вызывается из Stop() (P), чтобы остановка не оставляла сетку висеть
+	 *  вызывается из Stop() (пробел), чтобы остановка не оставляла сетку висеть
 	 *  недорисованной. Не-op, если чанковый рендер сейчас не идёт. */
 	void FinishChunkedRenderImmediately();
 };

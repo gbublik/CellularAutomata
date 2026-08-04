@@ -139,10 +139,10 @@ void AGamePlayerController::SetupInputComponent()
 	LoadStateAction = NewObject<UInputAction>(this, TEXT("IA_LoadState"));
 	LoadStateAction->ValueType = EInputActionValueType::Boolean;
 
-	// P (пауза), R (сброс) и N (новый сид) намеренно не маппятся сюда - см.
+	// Пробел (пауза), R (сброс) и N (новый сид) намеренно не маппятся сюда - см.
 	// InputKey() ниже, все три перехватываются на уровне сырых оконных событий
 	// в обход Enhanced Input (у R и N тот же лаговый баг пропущенного нажатия,
-	// что был у P - см. doc-comment InputKey()).
+	// что был у паузы - см. doc-comment InputKey()).
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
 	// F1-F4, а не 1-4: цифровой ряд отдан фильтру по возрасту (см. InputKey()),
@@ -286,24 +286,29 @@ void AGamePlayerController::SetupInputComponent()
 
 bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
+	// Пауза/продолжение - на пробеле, а не на P: это самая частая клавиша
+	// проекта, и ей место под большим пальцем. Пробел был занят подъёмом камеры
+	// и освобождён в RebindPawnVerticalMovement() - вертикаль осталась на E
+	// (вверх) и Q (вниз), т.е. потеряно дублирование, а не сама возможность.
+	//
 	// Enhanced Input оценивает свои триггеры (Started/Triggered/...) раз за
 	// кадр, по текущему состоянию клавиши "нажата сейчас или нет" - если
 	// игровой поток лагает (тяжёлый AddInstances/перестройка HISM-дерева при
 	// большом числе клеток), один кадр может растянуться настолько, что
-	// короткое нажатие+отпускание P целиком уместится между двумя такими
+	// короткое нажатие+отпускание пробела целиком уместится между двумя такими
 	// выборками и не будет замечено вообще - пауза "не срабатывает", и чем
 	// сильнее лаг, тем чаще. InputKey() же вызывается немедленно на каждое
 	// оконное сообщение (WM_KEYDOWN/WM_KEYUP), независимо от длины кадра, до
 	// периодической выборки Enhanced Input - поэтому пауза обрабатывается
 	// здесь напрямую, в обход маппинга. IE_Pressed (не IE_Repeat) - как и
 	// раньше, срабатывает один раз на нажатие, не повторяется при удержании.
-	if (Params.Key == EKeys::P && Params.Event == IE_Pressed)
+	if (Params.Key == EKeys::SpaceBar && Params.Event == IE_Pressed)
 	{
 		OnToggleSimulation();
 	}
 
 	// R (сброс, OnResetSimulation()) - тот же самый баг и то же решение, что
-	// у P выше: раньше был замаплен через Enhanced Input и мог пропускать
+	// у паузы выше: раньше был замаплен через Enhanced Input и мог пропускать
 	// короткие нажатия под тяжёлым лагом (пользователь сообщил "не всегда
 	// срабатывает" - именно этот симптом). Перенесён сюда, в обход маппинга.
 	if (Params.Key == EKeys::R && Params.Event == IE_Pressed)
@@ -324,7 +329,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 
 	// Y (построить состояние генератором, Shift+Y - следующий тип, Ctrl+Y -
 	// гистограмма соседей живой структуры) - тот же
-	// случай, что P/R/N: генератор нажимают ровно тогда, когда картинка не
+	// случай, что пауза/R/N: генератор нажимают ровно тогда, когда картинка не
 	// нравится и сетка уже разрослась, то есть в момент худшего лага.
 	// Модификатор проверяется внутри обработчика, а не маппингом - Enhanced
 	// Input не умеет требовать модификатор в привязке клавиши (та же идиома,
@@ -332,6 +337,34 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	if (Params.Key == EKeys::Y && Params.Event == IE_Pressed)
 	{
 		OnGenerateState();
+	}
+
+	// Клавиши полёта в режиме выделения (Tab) - выходим из режима, а не молчим.
+	// В нём ввод пешки отключён (SetCameraControlEnabled(false)), поэтому W/A/S/D
+	// и Q/E раньше просто не делали ничего, а жмут их ровно тогда, когда с
+	// выделением и кубом закончили и хотят лететь дальше - лишний Tab был чистой
+	// формальностью. Нажатие не съедается: ось движения опрашивается по
+	// состоянию клавиши каждый кадр, так что уже зажатая клавиша поедет сама,
+	// без повторного нажатия.
+	//
+	// Ctrl исключён: Ctrl+S - это сохранение (см. OnSaveOrSaveAs()), и оно не
+	// должно попутно выбрасывать из режима. Shift не исключён - это ускорение
+	// полёта, то есть то же самое движение.
+	const bool bCtrlDown = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (bSelectionModeActive && Params.Event == IE_Pressed && !bCtrlDown)
+	{
+		static const FKey FlyKeys[] = {
+			EKeys::W, EKeys::A, EKeys::S, EKeys::D, EKeys::Q, EKeys::E
+		};
+
+		for (const FKey& FlyKey : FlyKeys)
+		{
+			if (Params.Key == FlyKey)
+			{
+				SetSelectionModeActive(false);
+				break;
+			}
+		}
 	}
 
 	// F5 - показать/скрыть информационную панель HUD. Здесь, а не через
@@ -371,7 +404,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// Input, по причине, не связанной с лагом: десять клавиш одного вида - это
 	// десять UInputAction, десять MapKey и десять обработчиков ради одного
 	// switch. Читаемость дороже единообразия, а задержки эти клавиши не
-	// критичны, в отличие от P/R/N выше.
+	// критичны, в отличие от паузы/R/N выше.
 	if (Params.Event == IE_Pressed)
 	{
 		static const FKey DigitKeys[10] = {
@@ -498,7 +531,7 @@ void AGamePlayerController::OnFastStepPressed()
 
 	if (Orchestrator->IsSimulationRunning())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("OnFastStepPressed: непрерывная симуляция уже идёт (P) - F игнорируется"));
+		UE_LOG(LogTemp, Warning, TEXT("OnFastStepPressed: непрерывная симуляция уже идёт (пробел) - F игнорируется"));
 		return;
 	}
 
@@ -1598,16 +1631,19 @@ void AGamePlayerController::RebindPawnVerticalMovement()
 	// Своя ось с тем же поведением, но без конфликтующих клавиш. Имя своё, а не
 	// движковое: движковые привязки клавиш к DefaultPawn_MoveUp никуда не
 	// делись, и переиспользование имени вернуло бы Ctrl и C обратно.
+	//
+	// Пробела здесь тоже нет: он отдан паузе (см. InputKey()). Подъём остался на
+	// E, спуск на Q - пробел был третьей клавишей на то же действие, тогда как
+	// пауза без него осталась бы на P, куда рука не тянется.
 	static const FName OwnMoveUpAxis(TEXT("CellularAutomata_MoveUp"));
 	if (PlayerInput)
 	{
-		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::SpaceBar, 1.0f));
 		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::E, 1.0f));
 		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::Q, -1.0f));
 	}
 	PawnInput->BindAxis(OwnMoveUpAxis, FlyingPawn, &ADefaultPawn::MoveUp_World);
 
-	UE_LOG(LogTemp, Log, TEXT("RebindPawnVerticalMovement: снято движковых биндингов оси %s: %d; вертикаль теперь Space/E вверх, Q вниз (Ctrl и C освобождены под хоткеи)"),
+	UE_LOG(LogTemp, Log, TEXT("RebindPawnVerticalMovement: снято движковых биндингов оси %s: %d; вертикаль теперь E вверх, Q вниз (Ctrl и C освобождены под хоткеи, пробел - под паузу)"),
 		*EngineMoveUpAxis.ToString(), RemovedCount);
 }
 
