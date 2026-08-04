@@ -52,7 +52,7 @@ Actor/controller composition, not a monolithic GameMode:
 
 - **`Automata/Selection/`** + **`Automata/Meshing/`** — screen-rect marquee and ray-pick (voxel DDA — engine line traces cannot work here, all cell components have collision disabled) cell selection, the `InitialStateCells` return point behind **R**, and the face-culled mesh builder shared by baking and Ghost Shape. → **`docs/selection-and-baking.md`**
 
-- **`Automata/Generation/`** — geometric generators of the *initial* state: lattices, solids, noise, symmetric seeds. Deliberately **pure geometry** — they never read the rule and never run trial steps; matching a structure to a rule stays manual, made arithmetic by the neighbour-count histogram (Y / Ctrl+Y). Parity filters turn the cubic lattice into FCC or BCC for free. → **`docs/generation.md`**
+- **`Automata/Generation/`** — geometric generators of the *initial* state: lattices, solids, noise, symmetric seeds. Deliberately **pure geometry** — they never read the rule and never run trial steps; matching a structure to a rule stays outside them, made arithmetic by the neighbour-count histogram (Y / Ctrl+Y) and brute-forceable by `bAutoReseedOnExtinction` (Shift+N), which re-rolls the seed whenever the grid dies and lets the run continue unattended — the orchestrator drives that, the generators still know nothing about the rule. Parity filters turn the cubic lattice into FCC or BCC for free. → **`docs/generation.md`**
 
 - **`Automata/Capture/`** — orthogonal PNG slices rasterised **straight out of `FCellGrid`**: no GPU, no `SceneCapture`, so no antialiasing by construction, no resolution limit, and reproducible regardless of camera. F6 for one slice, F7 for a series. → **`docs/capture.md`**
 

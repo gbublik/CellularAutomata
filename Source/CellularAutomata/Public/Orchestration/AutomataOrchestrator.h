@@ -339,6 +339,16 @@ struct FHudStats
 	 *  на пешке, а не на автомате (AGamePlayerController::IsHeadlightEnabled()). */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bHeadlightEnabled = false;
+
+	/** Автоперебор сидов по вымиранию (Shift+N) и сколько сидов он уже
+	 *  перебрал - см. AAutomataOrchestrator::bAutoReseedOnExtinction. Счётчик
+	 *  здесь потому, что режим включают и уходят: единственное, что о нём
+	 *  хочется знать издалека, - идёт ли перебор и на какой он попытке. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bAutoReseedOnExtinction = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	int32 AutoReseedCount = 0;
 };
 
 UCLASS()
@@ -510,6 +520,20 @@ public:
 	 *  значение EStateGeneratorType::RandomBall. */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void NewSeed();
+
+	/** Включён ли автоперекат сида по вымиранию - см. bAutoReseedOnExtinction.
+	 *  Нужен хоткею (Shift+N), чтобы решить, на что переключать, не трогая
+	 *  поле напрямую (та же идиома, что IsGhostShapeEnabled()). */
+	UFUNCTION(BlueprintPure, Category = "Automata")
+	bool IsAutoReseedOnExtinction() const { return bAutoReseedOnExtinction; }
+
+	/** Включает/выключает автоперекат сида по вымиранию (Shift+N, см.
+	 *  bAutoReseedOnExtinction). Не inline, в отличие от геттера выше: обнуляет
+	 *  счётчик попыток и сообщает о переключении на экран, а при включении на
+	 *  УЖЕ мёртвой сетке сразу катит первый сид - иначе режим, включённый после
+	 *  того как всё погасло и прогон остановлен, не начал бы работать вовсе. */
+	UFUNCTION(BlueprintCallable, Category = "Automata")
+	void SetAutoReseedOnExtinction(bool bEnable);
 
 	/** Параметры геометрического генератора начального состояния - что именно
 	 *  построит GenerateState() (хоткей Y). См. FStateGeneratorParams.
@@ -2085,6 +2109,35 @@ public:
 			  meta = (DisplayName = "Random Seed"))
 	int32 Seed = 0;
 
+	/** Автоматически перекатывать сид, как только сетка вымерла (хоткей
+	 *  Shift+N) - брутфорс стабильных структур: запускаешь непрерывный прогон
+	 *  и уходишь, а автомат сам перебирает сиды, пока какой-нибудь не выживет.
+	 *  Вымирание - это самый частый исход случайного узора, и вручную это
+	 *  выглядело как "пробел, смотрю, всё погасло, N, пробел" по кругу.
+	 *
+	 *  Проверяется в ApplyStepResult() по факту посчитанного поколения, а не в
+	 *  Tick() по таймеру: пустая сетка - это результат шага, и заметить её
+	 *  надо ровно там, где новый Grid встал на место, не пропуская ни одного
+	 *  поколения и не дожидаясь рендера (при StepsPerRender > 1 вымирание
+	 *  вообще может не дойти до экрана).
+	 *
+	 *  Работает и на ручном шаге (F), а не только в непрерывном прогоне:
+	 *  режим включают явно, и означает он "не показывай мне мёртвую сетку", а
+	 *  не "делай это только пока идёт Play".
+	 *
+	 *  Не Transient: это настройка прогона, и она обязана переживать
+	 *  реинстансинг Live Coding так же, как Speed или Seed рядом. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (DisplayName = "Auto Reseed On Extinction"))
+	bool bAutoReseedOnExtinction = false;
+
+	/** Сколько сидов перебрал автоперекат с момента включения (см.
+	 *  bAutoReseedOnExtinction) - счётчик попыток брутфорса, обнуляется при
+	 *  каждом включении режима. BlueprintReadOnly, чтобы HUD мог показать
+	 *  "перебрано N", не имея права его крутить. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Generation")
+	int32 AutoReseedCount = 0;
+
 	/** Количества живых соседей, при которых мёртвая клетка рождается. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	TArray<int32> BirthCounts = { 3 };
@@ -2752,6 +2805,20 @@ private:
 	 *  логе оставалась привязана к нажатой кнопке. Отказ - warning и false,
 	 *  никогда наполовину. */
 	bool CanGenerateNewState(const TCHAR* LogPrefix) const;
+	/** Если включён автоперекат (bAutoReseedOnExtinction) и сетка после только
+	 *  что применённого поколения пуста - катит следующий сид и возвращает
+	 *  true; вызывающая сторона должна тогда немедленно выйти, не трогая
+	 *  счётчики и рендер (сетка уже другая). Иначе false и ничего не делает.
+	 *
+	 *  Общая для обоих путей применения результата шага - ApplyStepResult()
+	 *  (Play) и завершения фоновой лямбды Next() (ручной F): вымирание
+	 *  одинаково интересно в обоих, а логика "перебирать сиды, пока не
+	 *  выживет" не должна разъехаться между ними.
+	 *
+	 *  GenerationsAdvanced - сколько поколений принесло это применение; нужен
+	 *  только логу, который печатает прожитый сидом возраст до того, как
+	 *  GenerationCount обнулится вместе с сеткой. */
+	bool TryAutoReseedOnExtinction(int32 GenerationsAdvanced);
 	/** Общая часть "начать новый прогон вот с этого набора клеток": сброс
 	 *  снимков и счётчиков, свежая сетка, последовательная заливка,
 	 *  запоминание точки возврата и немедленный рендер. Общая для

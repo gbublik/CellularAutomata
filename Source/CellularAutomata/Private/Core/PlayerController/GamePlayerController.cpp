@@ -577,6 +577,17 @@ void AGamePlayerController::OnNewSeed()
 		return;
 	}
 
+	// Shift+N - тумблер автоперебора сидов вместо одного реролла: то же самое
+	// нажатие N, но за тебя и до тех пор, пока какая-нибудь структура не
+	// выживет (см. AAutomataOrchestrator::bAutoReseedOnExtinction). Модификатор
+	// проверяется здесь, а не маппингом - клавиша и так ловится в InputKey(), а
+	// Enhanced Input всё равно не умеет требовать модификатор в привязке.
+	if (IsShiftHeld())
+	{
+		Orchestrator->SetAutoReseedOnExtinction(!Orchestrator->IsAutoReseedOnExtinction());
+		return;
+	}
+
 	Orchestrator->NewSeed();
 }
 

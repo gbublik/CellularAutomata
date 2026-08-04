@@ -319,6 +319,8 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bSelectionModeActive = GamePC ? GamePC->IsSelectionModeActive() : false;
 	LastHudStats.bOrthographicCamera = GamePC ? GamePC->IsOrthographicCamera() : false;
 	LastHudStats.bHeadlightEnabled = GamePC ? GamePC->IsHeadlightEnabled() : false;
+	LastHudStats.bAutoReseedOnExtinction = bAutoReseedOnExtinction;
+	LastHudStats.AutoReseedCount = AutoReseedCount;
 	LastHudStats.ComputeMethod = ComputeMethod;
 	LastHudStats.bChunkedRenderEnabled = bEnableChunkedRender;
 	LastHudStats.ChunkedRenderOrder = ChunkedRenderOrder;
@@ -520,6 +522,53 @@ void AAutomataOrchestrator::NewSeed()
 	// фигура, другой сид", а не "случайный шар вместо того, что настроено".
 	// Прежнее поведение доступно выбором EStateGeneratorType::RandomBall.
 	GenerateState();
+}
+
+bool AAutomataOrchestrator::TryAutoReseedOnExtinction(int32 GenerationsAdvanced)
+{
+	if (!bAutoReseedOnExtinction || !Grid.IsValid() || Grid->Num() != 0)
+	{
+		return false;
+	}
+
+	++AutoReseedCount;
+
+	// Сколько поколений прожил сид, пишем ДО реролла - это единственное, что
+	// про него интересно, а GenerationCount вот-вот обнулится вместе с сеткой.
+	// Прибавка здесь потому, что вызывающая сторона до своего счётчика ещё не
+	// дошла: проверка стоит раньше, чтобы не платить за рендер пустоты.
+	UE_LOG(LogTemp, Log, TEXT("Автоперекат сида: сид %d вымер на поколении %lld, попытка №%d"),
+		Seed, GenerationCount + GenerationsAdvanced, AutoReseedCount);
+
+	NewSeed();
+	return true;
+}
+
+void AAutomataOrchestrator::SetAutoReseedOnExtinction(bool bEnable)
+{
+	bAutoReseedOnExtinction = bEnable;
+	AutoReseedCount = 0;
+
+	if (!bEnable)
+	{
+		UE_LOG(LogTemp, Log, TEXT("SetAutoReseedOnExtinction: автоперекат сида выключен"));
+		ShowStatusMessage(StatusKey_Generation, TEXT("Автоперекат сида: выключен"));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("SetAutoReseedOnExtinction: автоперекат сида включён - вымершая сетка будет пересеиваться сама"));
+	ShowStatusMessage(StatusKey_Generation, TEXT("Автоперекат сида: включён - вымершая сетка пересеивается сама"));
+
+	// Режим включают в том числе ПОСЛЕ того, как всё погасло (смотрел, как
+	// умирает, и решил перебирать дальше). Ждать в этом случае нечего: шагов
+	// больше не будет - мёртвая сетка мертва и на следующем поколении, - так что
+	// первый сид катим прямо здесь. NewSeed() сам отложится, если прямо сейчас
+	// считается фоновый шаг (bNewSeedPending).
+	if (Grid.IsValid() && Grid->Num() == 0)
+	{
+		++AutoReseedCount;
+		NewSeed();
+	}
 }
 
 void AAutomataOrchestrator::ApplyRuleString()
@@ -3802,6 +3851,13 @@ void AAutomataOrchestrator::Next()
 					return;
 				}
 
+				// Вымирание ловится и на ручном шаге - см.
+				// bAutoReseedOnExtinction и ту же проверку в ApplyStepResult().
+				if (StrongThis->TryAutoReseedOnExtinction(NumSteps))
+				{
+					return;
+				}
+
 				// NumSteps реально посчитанных поколений за одно нажатие F -
 				// см. GenerationCount/FHudStats.
 				StrongThis->GenerationCount += NumSteps;
@@ -4351,6 +4407,15 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	{
 		bNewSeedPending = false;
 		NewSeed();
+		return;
+	}
+
+	// Сетка вымерла, а режим брутфорса включён - катим следующий сид вместо
+	// того, чтобы рисовать пустоту (см. bAutoReseedOnExtinction). Проверка
+	// стоит ПЕРЕД счётчиками и рендером ниже, потому что NewSeed() всё равно
+	// перестроит сетку с нуля и обнулит их (RebuildGridFromCells()).
+	if (TryAutoReseedOnExtinction(Generations))
+	{
 		return;
 	}
 
