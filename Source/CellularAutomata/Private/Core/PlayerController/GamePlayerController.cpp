@@ -355,17 +355,26 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// полёта, то есть то же самое движение.
 	const bool bCtrlDown = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
 
-	// Ctrl+Z - шаг назад (AAutomataOrchestrator::StepBackward()). Голая Z
-	// остаётся за Enhanced Input'ом (чанковый рендер) - тот сам отсеивает
-	// нажатие с Ctrl, потому что выразить "без модификатора" в привязке нельзя
-	// (см. OnToggleChunkedRender()).
+	// Ctrl+Z - отмена последнего действия (AAutomataOrchestrator::
+	// UndoLastAction(): ручная правка снимается дельтой, шаг симуляции -
+	// пересчётом), Ctrl+Shift+Z - повтор отменённой правки. Голая Z остаётся
+	// за Enhanced Input'ом (чанковый рендер) - тот сам отсеивает нажатие с
+	// Ctrl, потому что выразить "без модификатора" в привязке нельзя (см.
+	// OnToggleChunkedRender()).
 	//
-	// IE_Pressed, а не IE_Repeat, и это не мелочь: каждое нажатие стоит полного
+	// IE_Pressed, а не IE_Repeat, и это не мелочь: отмена шага стоит полного
 	// пересчёта от изначального узора, так что авторепит на зажатой клавише
 	// сложился бы в сумму всех номеров поколений, то есть в квадрат.
 	if (Params.Key == EKeys::Z && Params.Event == IE_Pressed && bCtrlDown)
 	{
-		OnStepBackward();
+		if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+		{
+			OnRedoEdit();
+		}
+		else
+		{
+			OnUndoLastAction();
+		}
 	}
 
 	if (bSelectionModeActive && Params.Event == IE_Pressed && !bCtrlDown)
@@ -913,16 +922,28 @@ void AGamePlayerController::OnToggleChunkedRender()
 	Orchestrator->SetChunkedRenderEnabled(!Orchestrator->IsChunkedRenderEnabled());
 }
 
-void AGamePlayerController::OnStepBackward()
+void AGamePlayerController::OnUndoLastAction()
 {
 	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
 	if (!Orchestrator)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("OnStepBackward: AAutomataOrchestrator не найден в мире"));
+		UE_LOG(LogTemp, Warning, TEXT("OnUndoLastAction: AAutomataOrchestrator не найден в мире"));
 		return;
 	}
 
-	Orchestrator->StepBackward();
+	Orchestrator->UndoLastAction();
+}
+
+void AGamePlayerController::OnRedoEdit()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnRedoEdit: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->RedoLastEdit();
 }
 
 void AGamePlayerController::OnCycleChunkedRenderOrder()

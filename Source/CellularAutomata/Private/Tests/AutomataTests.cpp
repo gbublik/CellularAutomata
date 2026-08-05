@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Automata/Capture/CellRasterizer.h"
+#include "Automata/Editing/CellEditJournal.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Grid/LatticeTransform.h"
@@ -2343,6 +2344,120 @@ bool FLatticeElongatedDodecahedronFacesTest::RunTest(const FString& Parameters)
 			AddError(FString::Printf(TEXT("Смещение %s не должно входить в набор"), *Excluded.ToString()));
 			return false;
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCellEditJournalTest,
+	"CellularAutomata.Editing.EditJournal",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FCellEditJournalTest::RunTest(const FString& Parameters)
+{
+	constexpr int32 ChunkSize = 16;
+
+	// Отмена возвращает состояние ЦЕЛИКОМ, а не один бит "жива". Возраст красит
+	// клетку, фаза угасания влияет на само правило - вернуть клетку с нулём в
+	// том и другом значит вернуть не ту клетку (см. doc-comment FCellEdit).
+	{
+		FDenseCellGrid Grid(100.0f, ChunkSize, /*bEnableDecay=*/true);
+
+		const FIntVector Old(1, 2, 3);      // старая живая клетка
+		const FIntVector Fresh(4, 5, 6);    // только что родившаяся
+		const FIntVector Decaying(7, 8, 9); // не живая, но угасающая
+
+		Grid.SetAliveWithAge(Old, 200);
+		Grid.SetAliveWithAge(Fresh, 0);
+		Grid.SetDecayState(Decaying, 3);
+
+		// В набор нарочно попадает и угасающая клетка, и никогда не жившая:
+		// удалять там нечего, и в записи их быть не должно - иначе журнал рос
+		// бы на размер выделения, а не правки.
+		const TArray<FIntVector> ToDelete = { Old, Fresh, Decaying, FIntVector(50, 50, 50) };
+
+		FCellEditRecord Record = CellEditJournal::MakeDeleteRecord(Grid, ToDelete, /*Generation=*/7);
+		TestEqual(TEXT("в запись попали только живые клетки"), Record.Edits.Num(), 2);
+		TestEqual(TEXT("запись помнит своё поколение"), Record.Generation, (int64)7);
+
+		CellEditJournal::ApplyForward(Grid, Record);
+		TestFalse(TEXT("старая клетка удалена"), Grid.IsAlive(Old));
+		TestFalse(TEXT("свежая клетка удалена"), Grid.IsAlive(Fresh));
+		TestEqual(TEXT("удаление рукой не оставляет угасания"), (int32)Grid.GetDecayState(Old), 0);
+
+		CellEditJournal::ApplyInverse(Grid, Record);
+		TestTrue(TEXT("старая клетка вернулась"), Grid.IsAlive(Old));
+		TestEqual(TEXT("вместе со своим возрастом"), (int32)Grid.GetAge(Old), 200);
+		TestTrue(TEXT("свежая клетка вернулась"), Grid.IsAlive(Fresh));
+		TestEqual(TEXT("её возраст остался нулевым"), (int32)Grid.GetAge(Fresh), 0);
+		TestEqual(TEXT("угасающая клетка не пострадала"), (int32)Grid.GetDecayState(Decaying), 3);
+	}
+
+	// Добавление - зеркало удаления, и отмена обязана убрать ровно то, что оно
+	// поставило, не тронув то, что там уже было живо.
+	{
+		FDenseCellGrid Grid(100.0f, ChunkSize);
+
+		const FIntVector Existing(0, 0, 0);
+		const FIntVector Added(1, 1, 1);
+		Grid.SetAliveWithAge(Existing, 42);
+
+		FCellEditRecord Record = CellEditJournal::MakeAddRecord(Grid, { Existing, Added }, /*Generation=*/0);
+		TestEqual(TEXT("уже живая клетка в запись не попала"), Record.Edits.Num(), 1);
+
+		CellEditJournal::ApplyForward(Grid, Record);
+		TestTrue(TEXT("клетка добавлена"), Grid.IsAlive(Added));
+		TestEqual(TEXT("поставленная рукой клетка молодая"), (int32)Grid.GetAge(Added), 0);
+
+		CellEditJournal::ApplyInverse(Grid, Record);
+		TestFalse(TEXT("добавленная клетка убрана"), Grid.IsAlive(Added));
+		TestTrue(TEXT("соседняя живая клетка не тронута"), Grid.IsAlive(Existing));
+		TestEqual(TEXT("и её возраст тоже"), (int32)Grid.GetAge(Existing), 42);
+	}
+
+	// Журнал как СЦЕНАРИЙ: две правки на разных поколениях, применённые по
+	// порядку, дают то же самое, что дали они же вживую. Это то свойство, на
+	// котором держится откат поколения после ручных правок (см.
+	// AAutomataOrchestrator::StepBackward()).
+	{
+		FDenseCellGrid Live(100.0f, ChunkSize);
+		FDenseCellGrid Replay(100.0f, ChunkSize);
+
+		const TArray<FIntVector> Seed = { FIntVector(0, 0, 0), FIntVector(1, 0, 0), FIntVector(2, 0, 0) };
+		for (const FIntVector& Cell : Seed)
+		{
+			Live.SetAlive(Cell, true);
+			Replay.SetAlive(Cell, true);
+		}
+
+		TArray<FCellEditRecord> Journal;
+		Journal.Add(CellEditJournal::MakeDeleteRecord(Live, { FIntVector(1, 0, 0) }, 3));
+		CellEditJournal::ApplyForward(Live, Journal.Last());
+		Journal.Add(CellEditJournal::MakeAddRecord(Live, { FIntVector(5, 5, 5) }, 8));
+		CellEditJournal::ApplyForward(Live, Journal.Last());
+
+		for (const FCellEditRecord& Record : Journal)
+		{
+			CellEditJournal::ApplyForward(Replay, Record);
+		}
+
+		TestEqual(TEXT("воспроизведение даёт то же число клеток"), Replay.Num(), Live.Num());
+		TestFalse(TEXT("удалённая клетка удалена и в воспроизведении"), Replay.IsAlive(FIntVector(1, 0, 0)));
+		TestTrue(TEXT("добавленная клетка добавлена и в воспроизведении"), Replay.IsAlive(FIntVector(5, 5, 5)));
+
+		TestEqual(TEXT("вес журнала считается по клеткам"), CellEditJournal::TotalCells(Journal), (int64)2);
+
+		// Срез по поколению - откат назад за правку выбрасывает её из сценария,
+		// иначе следующий откат воспроизвёл бы её снова.
+		CellEditJournal::TrimAfter(Journal, 5);
+		TestEqual(TEXT("правка позже точки отката выброшена"), Journal.Num(), 1);
+		TestEqual(TEXT("правка до неё осталась"), Journal.Last().Generation, (int64)3);
+
+		CellEditJournal::TrimAfter(Journal, 3);
+		TestEqual(TEXT("правка ровно на точке отката остаётся"), Journal.Num(), 1);
+
+		CellEditJournal::TrimAfter(Journal, 2);
+		TestEqual(TEXT("уход за неё чистит журнал"), Journal.Num(), 0);
 	}
 
 	return true;
