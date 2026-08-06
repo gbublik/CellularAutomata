@@ -24,6 +24,8 @@
 #include "Automata/Grid/LatticeTransform.h"
 #include "Automata/Simulation/LatticeNeighborhood.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
+#include "Automata/Sonification/SonificationParams.h"
+#include "Automata/Sonification/SonificationPresets.h"
 #include "Orchestration/GenerationHistory.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
@@ -36,6 +38,9 @@ class UStaticMesh;
 class UMaterialInterface;
 class FCellularAutomatonComputeStrategy;
 class ARenderCullVolume;
+class UAutomataSonifierComponent;
+class USoundAttenuation;
+class USoundBase;
 
 /** Метод расчёта шага симуляции. Обе реализации настоящие: Cpu - параллельный
  *  алгоритм с bucket-partitioned дедупом кандидатов, Gpu - RDG compute-шейдер
@@ -350,6 +355,22 @@ struct FHudStats
 
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	int32 AutoReseedCount = 0;
+
+	/** Озвучивание симуляции (P) и применённый набор настроек (Shift+P). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bSonificationEnabled = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	FString SonificationPresetName;
+
+	/** Форма кривой населения словом - "Взрывной рост", "Насыщение", "Обвал".
+	 *
+	 *  Это то же измерение, которым ведётся звук, только выведенное текстом:
+	 *  услышать разницу между разгоном и насыщением можно сразу, а вот
+	 *  убедиться, что подсистема поняла её так же, как ухо, - только глазами.
+	 *  Пусто, когда звук выключен. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	FString SonificationShapeName;
 };
 
 UCLASS()
@@ -510,6 +531,7 @@ public:
 		StatusKey_PhotoShot = 1008,
 		StatusKey_CellShape = 1009,
 		StatusKey_StepBackward = 1010,
+		StatusKey_Sonification = 1011,
 	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
@@ -1250,6 +1272,104 @@ public:
 	 *  маленькой сетке или для снимка F10. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Camera")
 	bool bHeadlightCastsShadows = false;
+
+	/** Озвучивать ли симуляцию (хоткей P).
+	 *
+	 *  Звук здесь - не оформление, а ещё один прибор наблюдения, наравне с
+	 *  графиком поколений и гистограммой соседей: ухо ловит периодичность и
+	 *  срыв раньше глаза, и осциллятор с периодом в тридцать поколений слышен
+	 *  как ритм задолго до того, как его видно на кривой.
+	 *
+	 *  CallInEditor тут нет намеренно - поле и так редактируется чекбоксом, и
+	 *  отдельная кнопка была бы дублем (то же правило, что у bEnableGhostShape
+	 *  и прочих переключателей). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Audio")
+	bool bEnableSonification = true;
+
+	/** Фоновый звук - ожидается зацикленный MetaSoundSource.
+	 *
+	 *  Граф синтеза собирается в редакторе и сюда не пишется из кода: то же
+	 *  разделение, что с HUD - C++ поставляет данные и события, вёрстку делают
+	 *  в редакторе. Полный список входов, которые сюда шлются, печатает кнопка
+	 *  LogSonificationContract().
+	 *
+	 *  Ассет обязан играть ЗАЦИКЛЕННО: движок молча глотает триггеры, если
+	 *  компонент не играет, так что одноразовый звук потерял бы вымирание и
+	 *  ресид беззвучно. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Audio")
+	TObjectPtr<USoundBase> SonificationBed;
+
+	/** Одиночный звук клетки, в которую ткнули мышью. Высота приходит в Age01/
+	 *  Pitch01 и нормирована на AgeColorMaxAge - тем же числом, которым клетка
+	 *  красится, поэтому нота совпадает с цветом. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Audio")
+	TObjectPtr<USoundBase> CellClickSound;
+
+	/** Затухание с расстоянием для клика. Можно оставить пустым, если оно задано
+	 *  на самом ассете; если его нет ни там, ни там, клик будет плоским, без
+	 *  направления. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Audio")
+	TObjectPtr<USoundAttenuation> ClickAttenuation;
+
+	/** Общая громкость подсистемы. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Audio",
+			  meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0"))
+	float SonificationVolume = 1.0f;
+
+	/** Сколько кликов может звучать одновременно. Голоса постоянные и берутся
+	 *  по кругу, так что это заодно потолок полифонии. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Audio",
+			  meta = (ClampMin = "1", UIMin = "1", UIMax = "32"))
+	int32 ClickVoiceCount = 8;
+
+	/** Как статистика превращается в параметры звука - окно измерения, масштабы,
+	 *  сглаживание, пороги. Целиком заменяется набором по Shift+P. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Audio")
+	FSonificationParams SonificationParams;
+
+	/** Переключить звук (хоткей P). Отдельный сеттер, а не запись в поле:
+	 *  компоненту надо перечитать настройки и остановить фон. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Audio")
+	void SetSonificationEnabled(bool bEnabled);
+
+	UFUNCTION(BlueprintPure, Category = "Automata|Audio")
+	bool IsSonificationEnabled() const { return bEnableSonification; }
+
+	/** Готовые наборы настроек сонификации - см. SonificationPresets. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Audio")
+	TArray<FSonificationPreset> GetSonificationPresets() const;
+
+	/** Имя применённого набора, либо пусто, если настройки правили руками. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Audio")
+	FString GetActiveSonificationPresetName() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Automata|Audio")
+	void ApplySonificationPreset(int32 PresetIndex);
+
+	/** Следующий набор по кругу (хоткей Shift+P). */
+	UFUNCTION(BlueprintCallable, Category = "Automata|Audio")
+	void CycleSonificationPreset();
+
+	/** Форма кривой населения одним словом - для строки состояния и HUD. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Audio")
+	FString GetSonificationShapeName() const;
+
+	/** Печатает в лог весь контракт с графом MetaSound: имена входов, типы и
+	 *  что каждый значит, по-русски.
+	 *
+	 *  Это и есть инструкция по сборке графа, и живёт она здесь, а не в
+	 *  документации, ровно затем, чтобы физически не могла разойтись с кодом -
+	 *  печатается из тех же констант, которые и рассылаются. Единственная
+	 *  функция подсистемы, заслуживающая CallInEditor: всё остальное тут либо
+	 *  чекбокс, либо хоткей. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Audio")
+	void LogSonificationContract() const;
+
+	/** Компонент-мост, по требованию. Создаётся в рантайме, а не
+	 *  CreateDefaultSubobject'ом в конструкторе: Live Coding не хот-патчит
+	 *  добавление default-subobject'а на уже расставленных в уровне акторах.
+	 *  Идиом - AGamePlayerController::EnsureHeadlight(). */
+	UAutomataSonifierComponent* EnsureSonifier();
 
 	/** Размер сетки в клетках по осям X, Y, Z */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Grid",
@@ -2826,6 +2946,16 @@ private:
 	 *  ActiveRenderPresetIndex: должен пережить реинстансинг Live Coding. */
 	UPROPERTY(Transient)
 	int32 ActiveCapturePresetIndex = INDEX_NONE;
+
+	/** Индекс применённого набора настроек сонификации, либо INDEX_NONE. */
+	UPROPERTY(Transient)
+	int32 ActiveSonificationPresetIndex = INDEX_NONE;
+
+	/** Компонент-мост к звуку. Transient и UPROPERTY по общему правилу:
+	 *  нетегированный UObject*-член после реинстансинга Live Coding'ом держит
+	 *  мусор, а не nullptr, и разыменование роняет редактор целиком. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAutomataSonifierComponent> Sonifier;
 	/** После применения профиля что-то из его настроек поменяли вручную - см.
 	 *  FHudStats::bRenderPresetModified. Ставится в самих сеттерах настроек,
 	 *  которыми профиль владеет, и сбрасывается в конце ApplyRenderPreset(). */

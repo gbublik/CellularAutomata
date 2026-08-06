@@ -16,7 +16,7 @@ No lint config — it's a standard UE C++ project built through the Unreal toolc
 
 `"C:\Program Files\Epic Games\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "<repo>\CellularAutomata.uproject" -ExecCmds="Automation RunTests CellularAutomata" -testexit="Automation Test Queue Empty" -unattended -nopause -nosplash -abslog=<file>`
 
-Seventeen tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
+Eighteen tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
 
 - Engine install: `C:\Program Files\Epic Games\UE_5.7`
 - Regenerate Visual Studio project files after adding/removing source files:
@@ -60,6 +60,8 @@ Actor/controller composition, not a monolithic GameMode:
 
 - **`Automata/Persistence/`** — the `.casave` container: rules plus the *initial* pattern (never the evolved grid) plus a thumbnail. Two independent version fields, two independent jobs. → **`docs/persistence.md`**
 
+- **`Automata/Sonification/`** — the simulation is **sonified**, not scored: sound is another instrument alongside the generation graph, and the ear catches periodicity and collapse before the eye does. Everything is measured in `y = ln(1 + AliveCount)` against the **generation number** — that one change of coordinates makes the slope a *relative* growth rate (identical for 100 cells and 7M), keeps a dead grid inside the domain, and survives the holes that `StepsPerRender` and GPU batching punch into the sample series. Curvature is dimensionless on purpose: it scales as the *square* of the slope, so any absolute threshold either always fires or never does. C++ ships parameters and triggers; **the MetaSound graph is built by hand in the editor and is not mine to write** — the same split as the UMG HUD. Events are detected by **edges, with no hooks in the orchestrator at all**. → **`docs/sonification.md`**
+
 - **`Ui/`** — the HUD. C++ supplies data (`FHudStats`, `FCellRenderStats`) and actions as Blueprint API; **the layout is built by hand in UMG and is not mine to write**. A UMG widget never sees a keypress, so anything the HUD must react to needs a `BlueprintImplementableEvent` bridge. → **`docs/hud.md`**
 
 ### Conventions that apply everywhere
@@ -82,6 +84,8 @@ Code is being migrated from a flat `Orchestration/` and `Ui/` dump into a `Core/
 ### Module dependencies
 
 `CellularAutomata.Build.cs` pulls in `Core, CoreUObject, Engine, InputCore, Slate, SlateCore, UMG, WebBrowser, WebBrowserWidget, Json, JsonUtilities` as public dependencies, plus `EnhancedInput`, `RHI`, `RenderCore`, `ProceduralMeshComponent`, `DesktopPlatform` as private dependencies. `EnhancedInput` was added for `AGamePlayerController`'s Play/Stop hotkey — `EnhancedInput` is already the project's active input system per `Config/DefaultInput.ini`'s `DefaultPlayerInputClass`/`DefaultInputComponentClass`, so no plugin-enablement change was needed, just the module reference. `RHI`/`RenderCore` were added for `FGpuComputeStrategy`'s RDG compute-shader dispatch (see `Automata/Simulation/ComputeStrategy/`). `ProceduralMeshComponent` is for `BakeCellsToMesh()` (see the Baking paragraph above). `DesktopPlatform` is for the native Save/Open dialogs in `Automata/Persistence/` (see below) — a Developer module, unavailable in Shipping builds, which is fine since this project only runs in editor/PIE; the thumbnail screenshot itself (`FImageUtils`/`FViewport::ReadPixels()`) needed no separate module, already reachable through `Engine`/`RHI`. The `WebBrowser`/`WebBrowserWidget` dependency was for a `Ui/WebInterface` widget that has since been deleted — if reintroducing browser-based UI, that's the intended integration point. **Note**: adding a module to `Build.cs` isn't something Live Coding can hot-patch — it requires closing the Editor and a full cold rebuild (see Build/run section above).
+
+**Audio needs no module, and this is worth not rediscovering.** `Automata/Sonification/` drives MetaSound entirely through `Engine`: `SetFloatParameter`/`SetParameters`/`SetTriggerParameter` are `ENGINE_API` on `ISoundParameterControllerInterface`, `AudioExtensions` already sits in `Engine.Build.cs`'s `PublicIncludePathModuleNames` so its headers come through transitively, and the Metasound plugin is `EnabledByDefault`. Adding `AudioMixer`/`AudioExtensions`/`SignalProcessing` here buys nothing and costs a cold rebuild.
 
 `RemoteControlWebInterface` and `RiderLink` are both present but **disabled** (`"Enabled": false`) in the `.uproject` Plugins list — `RemoteControlWebInterface` tries to build a React web app on editor startup and fails in this environment (`Failed To Build WebApp`); `RiderLink`'s `RiderDebuggerSupport.dll` gets blocked by Windows Smart App Control (unsigned binary, `GetLastError=4551`). Don't re-enable either without addressing the underlying cause first.
 
@@ -112,5 +116,6 @@ Code is being migrated from a flat `Orchestration/` and `Ui/` dump into a `Core/
 | `docs/capture.md` | PNG slice rasterisation, series capture, tiling, capture presets |
 | `docs/persistence.md` | the `.casave` format and what it deliberately does not store |
 | `docs/hud.md` | `FHudStats`, the Blueprint API surface, the generation-graph Slate widget |
+| `docs/sonification.md` | the audio bridge, the log-space curve measurement, the MetaSound contract |
 | `docs/testing.md` | what each of the twelve automation tests guards |
 | `docs/tooling.md` | the MCP bridge, the hot-patch loop, Live Coding crash modes |

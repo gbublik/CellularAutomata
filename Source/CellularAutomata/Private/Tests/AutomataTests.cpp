@@ -16,6 +16,7 @@
 #include "Automata/Simulation/RuleStringParser.h"
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Simulation/ComputeStrategy/GpuComputeStrategy.h"
+#include "Automata/Sonification/SonificationCurve.h"
 #include "Math/RandomStream.h"
 #include "Orchestration/GenerationHistory.h"
 #include "RHI.h"
@@ -2458,6 +2459,242 @@ bool FCellEditJournalTest::RunTest(const FString& Parameters)
 
 		CellEditJournal::TrimAfter(Journal, 2);
 		TestEqual(TEXT("уход за неё чистит журнал"), Journal.Num(), 0);
+	}
+
+	return true;
+}
+
+namespace
+{
+	/** Синтетическая история: значение задаётся функцией от НОМЕРА поколения,
+	 *  шаг по X произвольный. Именно от номера, а не от индекса, - иначе тест
+	 *  на неравномерный шаг проверял бы сам себя. */
+	TArray<FGenerationSample> MakeHistory(TFunctionRef<int32(int64)> Value,
+		int64 FirstGeneration, int64 LastGeneration, int64 Stride)
+	{
+		TArray<FGenerationSample> History;
+		for (int64 Generation = FirstGeneration; Generation <= LastGeneration; Generation += Stride)
+		{
+			FGenerationSample Sample;
+			Sample.Generation = Generation;
+			Sample.AliveCount = Value(Generation);
+			History.Add(Sample);
+		}
+		return History;
+	}
+
+	/** Настройки, у которых окно накрывает всю историю целиком: почти все
+	 *  проверки ниже про саму математику, а не про выбор окна. */
+	FSonificationParams WideWindowParams()
+	{
+		FSonificationParams Params;
+		Params.WindowGenerations = 1000000;
+		Params.MinWindowSamples = 2;
+		return Params;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSonificationCurveTest,
+	"CellularAutomata.Sonification.Curve",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FSonificationCurveTest::RunTest(const FString& Parameters)
+{
+	const FSonificationParams Wide = WideWindowParams();
+
+	// Удвоение за пять поколений - это ln2/5 е-фолдов на поколение. Проверка
+	// того, что наклон меряется в правильных единицах: без неё все остальные
+	// пороги были бы подогнаны под неизвестно что.
+	const double ExpectedDoublingSlope = FMath::Loge(2.0) / 5.0;
+	auto Doubling = [](int64 Generation) -> int32
+	{
+		return (int32)FMath::RoundToInt(100000.0 * FMath::Pow(2.0, (double)Generation / 5.0));
+	};
+
+	{
+		const TArray<FGenerationSample> History = MakeHistory(Doubling, 0, 60, 1);
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(History, Wide);
+
+		TestTrue(TEXT("экспоненциальный рост измерим"), Features.bValid);
+		TestEqual(TEXT("наклон равен ln2/5 на поколение"), (double)Features.LogSlope, ExpectedDoublingSlope, 1e-4);
+		TestTrue(TEXT("у чистой экспоненты изгиба нет"), FMath::Abs(Features.Bend) < 0.05f);
+		TestEqual(TEXT("форма - рост"), (int32)Features.Shape, (int32)ESonificationShape::Growth);
+	}
+
+	{
+		// ТО ЖЕ САМОЕ, но замеры стоят вчетверо реже и с вырезанной серединой.
+		// Это главное обещание всей подсистемы: окно живёт по номеру поколения,
+		// а не по индексу в массиве, поэтому дыры от StepsPerRender, GPU-батча
+		// и быстрого шага на измерение не влияют.
+		TArray<FGenerationSample> Sparse = MakeHistory(Doubling, 0, 60, 7);
+		Sparse.RemoveAt(2, 3);
+
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(Sparse, Wide);
+		TestEqual(TEXT("дыры в замерах наклон не меняют"), (double)Features.LogSlope, ExpectedDoublingSlope, 1e-4);
+	}
+
+	{
+		// Второе обещание: звук описывает ФОРМУ кривой, а не размер сетки. Две
+		// истории отличаются населением в тысячу раз и обязаны звучать одинаково.
+		const TArray<FGenerationSample> Small = MakeHistory(
+			[](int64 Generation) { return (int32)FMath::RoundToInt(1000.0 * FMath::Pow(2.0, (double)Generation / 5.0)); }, 0, 40, 1);
+		const TArray<FGenerationSample> Large = MakeHistory(
+			[](int64 Generation) { return (int32)FMath::RoundToInt(1000000.0 * FMath::Pow(2.0, (double)Generation / 5.0)); }, 0, 40, 1);
+
+		const FSonificationFeatures SmallFeatures = SonificationCurve::ComputeFeatures(Small, Wide);
+		const FSonificationFeatures LargeFeatures = SonificationCurve::ComputeFeatures(Large, Wide);
+
+		TestEqual(TEXT("наклон не зависит от масштаба населения"), (double)SmallFeatures.LogSlope, (double)LargeFeatures.LogSlope, 1e-3);
+		TestEqual(TEXT("изгиб тоже"), (double)SmallFeatures.Bend, (double)LargeFeatures.Bend, 1e-2);
+	}
+
+	{
+		// ЛОВУШКА: в лог-координатах линейный рост выглядит как насыщение -
+		// наклон положительный, убывающий, изгиб отрицательный. Различает их
+		// только показатель роста, и без этой проверки регресс классификации
+		// прошёл бы незамеченным.
+		const TArray<FGenerationSample> History = MakeHistory(
+			[](int64 Generation) { return (int32)(50 * Generation); }, 1, 100, 1);
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(History, Wide);
+
+		TestTrue(TEXT("линейный рост растёт"), Features.LogSlope > 0.0f);
+		TestTrue(TEXT("и в логарифме гнётся вниз"), Features.Bend < 0.0f);
+		TestEqual(TEXT("показатель роста линейной фигуры равен единице"), (double)Features.GrowthExponent, 1.0, 1e-3);
+		TestEqual(TEXT("но это РОСТ, а не насыщение"), (int32)Features.Shape, (int32)ESonificationShape::Growth);
+	}
+
+	{
+		// Настоящее насыщение: выход на потолок. Отличается от линейного роста
+		// именно показателем - структура перестаёт расти вовсе.
+		const TArray<FGenerationSample> History = MakeHistory(
+			[](int64 Generation) { return (int32)FMath::RoundToInt(10000.0 * (1.0 - FMath::Exp(-(double)Generation / 20.0))); }, 1, 200, 1);
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(History, Wide);
+
+		TestTrue(TEXT("насыщение гнётся вниз заметно"), Features.Bend < -0.15f);
+		TestTrue(TEXT("показатель роста упал ниже линейного"), Features.GrowthExponent < 0.9f);
+		TestEqual(TEXT("форма - насыщение"), (int32)Features.Shape, (int32)ESonificationShape::Saturation);
+	}
+
+	{
+		// Разгон: быстрее экспоненты, наклон сам растёт.
+		const TArray<FGenerationSample> History = MakeHistory(
+			[](int64 Generation) { return (int32)FMath::RoundToInt(FMath::Exp((double)(Generation * Generation) / 1000.0)); }, 0, 100, 1);
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(History, Wide);
+
+		TestTrue(TEXT("разгон гнётся вверх"), Features.Bend > 0.15f);
+		TestEqual(TEXT("форма - взрывной рост"), (int32)Features.Shape, (int32)ESonificationShape::Explosive);
+	}
+
+	{
+		// Обвал: в сто раз за три поколения.
+		const TArray<FGenerationSample> History = MakeHistory(
+			[](int64 Generation) { return (int32)FMath::RoundToInt(10000.0 * FMath::Pow(0.01, (double)Generation / 3.0)); }, 0, 3, 1);
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(History, Wide);
+
+		TestEqual(TEXT("наклон обвала - ln(0.01)/3"), (double)Features.LogSlope, FMath::Loge(0.01) / 3.0, 1e-2);
+		TestEqual(TEXT("форма - обвал"), (int32)Features.Shape, (int32)ESonificationShape::Collapse);
+	}
+
+	{
+		// Осциллятор: население никуда не пришло, но всё это время двигалось.
+		// "Топчется на месте" и "стоит на месте" обязаны звучать по-разному -
+		// иначе кипящее равновесие было бы неотличимо от мёртвого.
+		const TArray<FGenerationSample> History = MakeHistory(
+			[](int64 Generation) { return (int32)FMath::RoundToInt(1000.0 + 500.0 * FMath::Sin((double)Generation / 3.0)); }, 0, 120, 1);
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(History, Wide);
+
+		TestTrue(TEXT("осциллятор никуда не растёт"), FMath::Abs(Features.LogSlope) < 0.01f);
+		TestTrue(TEXT("но движения в нём много"), Features.Activity > 0.05f);
+		TestTrue(TEXT("путь много больше перемещения"), Features.Oscillation01 > 0.8f);
+		TestEqual(TEXT("форма - колебание"), (int32)Features.Shape, (int32)ESonificationShape::Oscillation);
+	}
+
+	{
+		// Вымирание. Прямая страховка от ln(0): одна минус бесконечность увела
+		// бы в NaN всё, что считается дальше, и звук замолчал бы навсегда без
+		// единого сообщения.
+		TArray<FGenerationSample> History = MakeHistory(
+			[](int64 Generation) { return (int32)FMath::Max<int64>(0, 1000 - 100 * Generation); }, 0, 12, 1);
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(History, Wide);
+
+		TestEqual(TEXT("на пустой сетке население ноль"), Features.Population01, 0.0f);
+		TestEqual(TEXT("форма - вымерло"), (int32)Features.Shape, (int32)ESonificationShape::Extinct);
+		TestTrue(TEXT("наклон конечен"), FMath::IsFinite(Features.LogSlope));
+		TestTrue(TEXT("изгиб конечен"), FMath::IsFinite(Features.Bend));
+		TestTrue(TEXT("кривизна конечна"), FMath::IsFinite(Features.LogCurvature));
+		TestTrue(TEXT("активность конечна"), FMath::IsFinite(Features.Activity));
+		TestTrue(TEXT("колебание конечно"), FMath::IsFinite(Features.Oscillation01));
+		TestTrue(TEXT("показатель роста конечен"), FMath::IsFinite(Features.GrowthExponent));
+	}
+
+	{
+		// "Мерить не по чему" - это НЕ измеренный нулевой рост. Тот же контракт,
+		// что у GenerationHistory::FitGrowthExponent(), возвращающего 0.0.
+		const TArray<FGenerationSample> Empty;
+		const FSonificationFeatures EmptyFeatures = SonificationCurve::ComputeFeatures(Empty, Wide);
+		TestFalse(TEXT("пустая история непригодна"), EmptyFeatures.bValid);
+		TestEqual(TEXT("и формы у неё нет"), (int32)EmptyFeatures.Shape, (int32)ESonificationShape::Idle);
+
+		const TArray<FGenerationSample> Single = MakeHistory([](int64) { return 500; }, 7, 7, 1);
+		const FSonificationFeatures SingleFeatures = SonificationCurve::ComputeFeatures(Single, Wide);
+		TestFalse(TEXT("одного замера мало"), SingleFeatures.bValid);
+		TestEqual(TEXT("наклон при этом ноль, а не мусор"), SingleFeatures.LogSlope, 0.0f);
+		TestEqual(TEXT("форма - нечего мерить"), (int32)SingleFeatures.Shape, (int32)ESonificationShape::Idle);
+	}
+
+	{
+		// Все замеры на ОДНОМ поколении. Случай не выдуманный: NoteRendered()
+		// правит последний замер на месте, а рендер дёргается на каждое
+		// движение камеры при включённом срезе, так что на паузе окно вполне
+		// схлопывается в одну точку по X.
+		TArray<FGenerationSample> Degenerate;
+		for (int32 Index = 0; Index < 5; ++Index)
+		{
+			FGenerationSample Sample;
+			Sample.Generation = 42;
+			Sample.AliveCount = 1000 + Index;
+			Degenerate.Add(Sample);
+		}
+
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(Degenerate, Wide);
+		TestFalse(TEXT("вырожденное по X окно непригодно"), Features.bValid);
+		TestEqual(TEXT("без деления на ноль"), Features.LogSlope, 0.0f);
+		TestTrue(TEXT("и без NaN"), FMath::IsFinite(Features.Bend));
+	}
+
+	{
+		// Пол по числу замеров. При StepsPerRender в сотни окно, заданное в
+		// поколениях, не накрывает ни одного замера - и обязано расшириться
+		// назад, иначе мерить будет нечего при живых данных.
+		FSonificationParams Narrow;
+		Narrow.WindowGenerations = 64;
+		Narrow.MinWindowSamples = 8;
+
+		const TArray<FGenerationSample> Sparse = MakeHistory(
+			[](int64 Generation) { return (int32)(1000 + Generation); }, 0, 256 * 20, 256);
+
+		const FSonificationFeatures Features = SonificationCurve::ComputeFeatures(Sparse, Narrow);
+		TestEqual(TEXT("окно расширилось до минимума замеров"), Features.SampleCount, 8);
+		TestTrue(TEXT("и измерение состоялось"), Features.bValid);
+	}
+
+	{
+		// Сглаживание обязано зависеть от ВРЕМЕНИ, а не от того, как нарезаны
+		// кадры: здесь они плавают от восьми миллисекунд до секунды с лишним.
+		// Полугрупповое свойство exp - единственное, что это гарантирует.
+		const float AfterOneTau = SonificationCurve::SmoothTowards(0.0f, 1.0f, 0.5f, 0.5f);
+		TestEqual(TEXT("за одну постоянную времени пройдено 1-1/e"), (double)AfterOneTau, 1.0 - 1.0 / UE_DOUBLE_EULERS_NUMBER, 1e-4);
+
+		const float NoStep = SonificationCurve::SmoothTowards(0.25f, 1.0f, 0.5f, 0.0f);
+		TestEqual(TEXT("нулевой шаг ничего не меняет"), NoStep, 0.25f);
+
+		const float OneStep = SonificationCurve::SmoothTowards(0.0f, 1.0f, 0.5f, 0.4f);
+		const float TwoHalves = SonificationCurve::SmoothTowards(
+			SonificationCurve::SmoothTowards(0.0f, 1.0f, 0.5f, 0.2f), 1.0f, 0.5f, 0.2f);
+		TestEqual(TEXT("два полушага равны одному целому"), (double)TwoHalves, (double)OneStep, 1e-6);
+
+		const float NoSmoothing = SonificationCurve::SmoothTowards(0.0f, 1.0f, 0.0f, 0.016f);
+		TestEqual(TEXT("нулевая постоянная времени - это отсутствие сглаживания"), NoSmoothing, 1.0f);
 	}
 
 	return true;

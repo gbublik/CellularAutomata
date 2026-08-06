@@ -411,6 +411,16 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		OnTakePhotoShot();
 	}
 
+	// P - звук вкл/выкл, Shift+P - следующий набор настроек сонификации.
+	// Единственная свободная буква алфавита: освободилась, когда пауза уехала
+	// на пробел. Здесь, а не через Enhanced Input, по той же причине, что и
+	// соседи: одному нажатию - ровно одна реакция, и модификатор проверяется
+	// внутри обработчика, потому что маппинг требовать его не умеет.
+	if (Params.Key == EKeys::P && Params.Event == IE_Pressed)
+	{
+		OnToggleSonification();
+	}
+
 	// F6 - снять текущий вид как PNG-срез, Shift+F6 - то же с диалогом выбора
 	// файла. Модификатор проверяется в обработчике (Enhanced Input не умеет
 	// требовать его в привязке), см. OnCaptureTextureSlice().
@@ -656,6 +666,27 @@ void AGamePlayerController::OnToggleHudInfoPanel()
 	}
 
 	Orchestrator->ToggleHudInfoPanel();
+}
+
+void AGamePlayerController::OnToggleSonification()
+{
+	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnToggleSonification: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// Shift - перебрать наборы настроек, не трогая сам переключатель: набор
+	// имеет смысл менять на слух, прямо во время прогона, и гасить ради этого
+	// звук было бы ровно наоборот.
+	if (IsShiftHeld())
+	{
+		Orchestrator->CycleSonificationPreset();
+		return;
+	}
+
+	Orchestrator->SetSonificationEnabled(!Orchestrator->IsSonificationEnabled());
 }
 
 void AGamePlayerController::OnTakePhotoShot()
