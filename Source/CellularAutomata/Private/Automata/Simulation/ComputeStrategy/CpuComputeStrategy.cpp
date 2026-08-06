@@ -190,3 +190,51 @@ void FCpuComputeStrategy::Step(const FCellGrid& CurrentGrid, FCellGrid& NextGrid
 		AliveCells.Num(), Candidates.Num(), TotalSeconds * 1000.0,
 		GetAliveSeconds * 1000.0, CandidateBuildSeconds * 1000.0, ParallelForSeconds * 1000.0, WriteBackSeconds * 1000.0);
 }
+
+bool FCpuComputeStrategy::CanStep(int32 AliveCount, int32 NeighborOffsetCount, FString& OutReason)
+{
+	const int64 SlotsPerCell = int64(NeighborOffsetCount) + 1;
+	const int64 RawCandidates = int64(AliveCount) * SlotsPerCell;
+
+	// Потолок индексации: TArray хранит длину в int32.
+	if (RawCandidates > int64(MAX_int32))
+	{
+		const int64 MaxAlive = int64(MAX_int32) / SlotsPerCell;
+		OutReason = FString::Printf(
+			TEXT("кандидатов %lld (живых %d x %lld слотов) - больше, чем вмещает TArray (%d). Предел при таком соседстве: %lld живых клеток"),
+			RawCandidates, AliveCount, SlotsPerCell, MAX_int32, MaxAlive);
+		return false;
+	}
+
+	// И память: два массива по 12 байт на кандидата (рассеивание плюс итоговый
+	// список). Запас в четверть - на всё остальное, что живёт в процессе;
+	// упереться в ноль означало бы не отказ, а своп и повисший редактор.
+	const int64 RequiredBytes = RawCandidates * int64(sizeof(FIntVector)) * 2;
+	const int64 AvailableBytes = int64(FPlatformMemory::GetStats().AvailablePhysical);
+	if (AvailableBytes > 0 && RequiredBytes > (AvailableBytes * 3) / 4)
+	{
+		OutReason = FString::Printf(
+			TEXT("нужно ~%.1f ГБ под кандидатов (живых %d), свободно ~%.1f ГБ"),
+			double(RequiredBytes) / (1024.0 * 1024.0 * 1024.0), AliveCount,
+			double(AvailableBytes) / (1024.0 * 1024.0 * 1024.0));
+		return false;
+	}
+
+	OutReason.Reset();
+	return true;
+}
+
+int32 FCpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& NextGrid, const FCellularAutomatonRule& Rule, int32 NumSteps) const
+{
+	FString Reason;
+	if (!CanStep(CurrentGrid.Num(), Rule.GetNeighborOffsets().Num(), Reason))
+	{
+		// 0, а не 1: NextGrid осталась пустой, и подставить её вместо текущей
+		// значило бы стереть структуру вместо отказа от шага.
+		UE_LOG(LogTemp, Error, TEXT("FCpuComputeStrategy: шаг невозможен - %s. Сетка оставлена как была."), *Reason);
+		return 0;
+	}
+
+	Step(CurrentGrid, NextGrid, Rule);
+	return 1;
+}

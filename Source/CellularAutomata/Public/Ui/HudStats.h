@@ -146,6 +146,38 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	EComputeMethod ComputeMethod = EComputeMethod::Cpu;
 
+	/** Видеопамять: занято сейчас и всего, МБ. Ноль в Total означает "драйвер не
+	 *  сказал" (см. FTextureMemoryStats::AreHardwareStatsValid()), а не "нет
+	 *  памяти" - виджету стоит в этом случае показать прочерк, а не 0%.
+	 *
+	 *  Считает текстуры и рендер-таргеты, то есть НЕ включает буферы, которые
+	 *  GPU-стратегия заводит под шаг. Как точный расходомер не годится и не
+	 *  предназначен - это индикатор "далеко ли до края", чтобы не ходить за ним
+	 *  в диспетчер задач. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	double VideoMemoryUsedMB = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	double VideoMemoryTotalMB = 0.0;
+
+	/** Наибольший НЕПРЕРЫВНЫЙ свободный кусок видеопамяти, МБ.
+	 *
+	 *  Отдельно от "сколько всего свободно", потому что вопрос у нас именно
+	 *  такой: пачке нужен один буфер целиком (плоскость возрастов - байт на
+	 *  клетку объёма), и суммарно свободные два гигабайта двумя кусками ей не
+	 *  помогут. Это то число, по которому видно, влезет ли следующая пачка. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	double VideoMemoryLargestFreeBlockMB = 0.0;
+
+	/** Оперативная память: свободно и всего, МБ. Свободно - по системе целиком,
+	 *  а не по процессу: CPU-путь заводит массив кандидатов на живые*(соседей+1)
+	 *  элементов, и упереться там можно в физическую память машины. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	double SystemMemoryAvailableMB = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	double SystemMemoryTotalMB = 0.0;
+
 	/** Выбран Gpu, но последний шаг посчитан на CPU: стратегия откатилась, не
 	 *  влезши в свои лимиты (см.
 	 *  FCellularAutomatonComputeStrategy::DidLastStepFallBackToCpu() - соседей

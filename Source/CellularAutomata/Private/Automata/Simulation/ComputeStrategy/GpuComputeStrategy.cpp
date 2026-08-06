@@ -145,8 +145,10 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 		bLastStepFellBackToCpu = true;
 		LastInputBufferBytes = 0;
 		FCpuComputeStrategy CpuFallback;
-		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
-		return 1;
+		// Через StepBatch(), а не Step() напрямую: он проверит, влезает ли шаг
+		// вообще (см. FCpuComputeStrategy::CanStep()), и вернёт 0 вместо того,
+		// чтобы упасть. Этот 0 обязан дойти до вызывающего.
+		return CpuFallback.StepBatch(CurrentGrid, NextGrid, Rule, 1);
 	}
 
 	FIntVector MinAlive = AliveCells[0];
@@ -224,8 +226,10 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 		bLastStepFellBackToCpu = true;
 		LastInputBufferBytes = 0;
 		FCpuComputeStrategy CpuFallback;
-		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
-		return 1;
+		// Через StepBatch(), а не Step() напрямую: он проверит, влезает ли шаг
+		// вообще (см. FCpuComputeStrategy::CanStep()), и вернёт 0 вместо того,
+		// чтобы упасть. Этот 0 обязан дойти до вызывающего.
+		return CpuFallback.StepBatch(CurrentGrid, NextGrid, Rule, 1);
 	}
 
 	// Возрасты ведёт GPU ровно тогда, когда идёт настоящая пачка - при одном
@@ -264,8 +268,10 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 		bLastStepFellBackToCpu = true;
 		LastInputBufferBytes = 0;
 		FCpuComputeStrategy CpuFallback;
-		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
-		return 1;
+		// Через StepBatch(), а не Step() напрямую: он проверит, влезает ли шаг
+		// вообще (см. FCpuComputeStrategy::CanStep()), и вернёт 0 вместо того,
+		// чтобы упасть. Этот 0 обязан дойти до вызывающего.
+		return CpuFallback.StepBatch(CurrentGrid, NextGrid, Rule, 1);
 	}
 
 	const int32 VolumeCellsI32 = (int32)VolumeCells;

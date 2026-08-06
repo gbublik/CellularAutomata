@@ -240,6 +240,16 @@ void AAutomataOrchestrator::Next()
 				// была заполнить и возрасты, и угасание сама (см. её
 				// doc-comment). Позвать их поверх этого значило бы затереть
 				// верные значения неверными.
+				// 0 - стратегия отказалась: шаг не влезает ни по индексам, ни по
+				// памяти (см. FCpuComputeStrategy::CanStep()). NextGrid при этом
+				// пуста, и брать её нельзя - выходим с тем, что успели посчитать.
+				// Если не успели ничего, ResultGrid останется пустым, и
+				// завершение ниже просто не тронет сетку.
+				if (StepsAdvanced == 0)
+				{
+					break;
+				}
+
 				if (StepsAdvanced <= 1)
 				{
 					CellAging::ComputeAges(SourceGrid, *NextGrid);
@@ -248,7 +258,7 @@ void AAutomataOrchestrator::Next()
 
 				ResultGrid = MoveTemp(NextGrid);
 				SourceGrid = ResultGrid.Get();
-				StepsDone += FMath::Max(1, StepsAdvanced);
+				StepsDone += StepsAdvanced;
 			}
 
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
@@ -262,7 +272,9 @@ void AAutomataOrchestrator::Next()
 			const bool bFellBackToCpu = ComputeStrategy->DidLastStepFallBackToCpu();
 
 			// Grid/рендер трогаем только на game thread (см. StepAsync()).
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, NumSteps, ComputeUploadBytes, bFellBackToCpu]() mutable
+			// StepsDone, а не NumSteps: цикл мог оборваться на отказе стратегии,
+			// и счётчики обязаны считать посчитанное, а не запрошенное.
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, StepsDone, ComputeUploadBytes, bFellBackToCpu]() mutable
 			{
 				AAutomataOrchestrator* StrongThis = WeakThis.Get();
 				if (!StrongThis)
@@ -270,11 +282,23 @@ void AAutomataOrchestrator::Next()
 					return;
 				}
 
+				// Не посчитано ни одного поколения - стратегия отказалась на
+				// первой же итерации. Сетку НЕ трогаем: подставить пустую
+				// значило бы стереть структуру вместо отказа от шага. Снять
+				// bStepInProgress всё равно обязаны - иначе R, генерация и
+				// следующий шаг остались бы заблокированы навсегда.
+				if (!ResultGrid.IsValid())
+				{
+					StrongThis->bStepInProgress = false;
+					UE_LOG(LogTemp, Error, TEXT("Next: шаг не выполнен - стратегия отказалась (см. причину выше). Сетка не изменена."));
+					return;
+				}
+
 				// Подстановка сетки, разрядка отложенных R/N/Ctrl+Z, вымирание
 				// и счётчики - общий хвост с непрерывным Play, см.
 				// CommitComputedGenerations(). false - управление уже перехвачено
 				// отложенным действием, рисовать нечего.
-				if (!StrongThis->CommitComputedGenerations(MoveTemp(ResultGrid), ComputeUploadBytes, bFellBackToCpu, NumSteps))
+				if (!StrongThis->CommitComputedGenerations(MoveTemp(ResultGrid), ComputeUploadBytes, bFellBackToCpu, StepsDone))
 				{
 					return;
 				}
@@ -282,16 +306,16 @@ void AAutomataOrchestrator::Next()
 				// Ghost Shape - по своему отдельному интервалу поколений. Здесь
 				// сразу перед рендером, в отличие от Play, где он идёт после
 				// серийной съёмки - см. AdvanceGhostShape().
-				StrongThis->AdvanceGhostShape(NumSteps);
+				StrongThis->AdvanceGhostShape(StepsDone);
 
 				// Всегда немедленно и целиком, в отличие от ApplyStepResult() -
 				// ручной шаг игнорирует и bEnableChunkedRender, и счётчик
 				// StepsSinceLastRender (пропуск рендера здесь уже "прожит"
-				// самим циклом NumSteps выше).
+				// самим циклом выше).
 				StrongThis->RenderGridImmediate();
 
 				UE_LOG(LogTemp, Log, TEXT("Next: живых клеток %d после %d шаг(ов) (счёт: %.2f мс [фоновый поток])"),
-					StrongThis->Grid->Num(), NumSteps, StepSeconds * 1000.0);
+					StrongThis->Grid->Num(), StepsDone, StepSeconds * 1000.0);
 			});
 		});
 }
@@ -379,13 +403,22 @@ void AAutomataOrchestrator::StepAsync()
 			{
 				const int32 StepsAdvanced = ComputeStrategy->StepBatch(*SourceGrid, *NextGridBuffer, AutomatonRule, BatchGenerations - GenerationsAdvanced);
 
+				// 0 - стратегия отказалась (см. FCpuComputeStrategy::CanStep()):
+				// NextGridBuffer пуст, брать его нельзя. Выходим с тем, что
+				// успели; при отказе на первой итерации это ноль поколений, и
+				// завершение ниже сетку не тронет.
+				if (StepsAdvanced == 0)
+				{
+					break;
+				}
+
 				if (StepsAdvanced <= 1)
 				{
 					CellAging::ComputeAges(SourceGrid, *NextGridBuffer);
 					CellDecay::AdvanceDecayStates(SourceGrid, *NextGridBuffer, AutomatonRule.GetStates());
 				}
 
-				GenerationsAdvanced += FMath::Max(1, StepsAdvanced);
+				GenerationsAdvanced += StepsAdvanced;
 
 				// Выходим и когда набрали всю пачку, и когда стратегия
 				// фактически НЕ пачкует. Второе - не теория: стратегия отвечает
@@ -428,6 +461,19 @@ void AAutomataOrchestrator::StepAsync()
 			{
 				if (AAutomataOrchestrator* StrongThis = WeakThis.Get())
 				{
+					// Ноль поколений - стратегия отказалась на первой итерации
+					// (см. FCpuComputeStrategy::CanStep()). Буфер пуст, и
+					// подставлять его нельзя: это стёрло бы структуру. Прогон
+					// останавливаем - следующий тик упёрся бы в тот же отказ, и
+					// лог залился бы одной и той же строкой.
+					if (GenerationsAdvanced == 0)
+					{
+						StrongThis->bStepInProgress = false;
+						UE_LOG(LogTemp, Error, TEXT("StepAsync: шаг не выполнен - стратегия отказалась (см. причину выше). Прогон остановлен, сетка не изменена."));
+						StrongThis->Stop();
+						return;
+					}
+
 					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes, bFellBackToCpu, GenerationsAdvanced);
 				}
 			});

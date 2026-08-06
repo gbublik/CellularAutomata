@@ -10,6 +10,9 @@
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Ui/MainHudWidget.h"
 #include "Engine/Engine.h"
+// RHIGetTextureMemoryStats() - видеопамять для индикатора, см. RefreshMemoryStats().
+#include "DynamicRHI.h"
+#include "HAL/PlatformMemory.h"
 
 // Сглаженный FPS движка - определён в UnrealEngine.cpp, без публичного
 // заголовка, объявляется локально там, где используется (тот же паттерн,
@@ -136,6 +139,10 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bSonificationEnabled = bEnableSonification;
 	LastHudStats.SonificationPresetName = GetActiveSonificationPresetName();
 	LastHudStats.SonificationShapeName = bEnableSonification ? GetSonificationShapeName() : FString();
+
+	// Память - раз в секунду, а не каждый тик: опрос ходит к драйверу и в
+	// систему (см. RefreshMemoryStats()).
+	RefreshMemoryStats();
 
 	UpdateGenerationsPerSecond();
 }
@@ -322,4 +329,41 @@ TArray<FAgeFilterSwatch> AAutomataOrchestrator::GetAgeFilterSwatches() const
 	}
 
 	return Swatches;
+}
+
+void AAutomataOrchestrator::RefreshMemoryStats()
+{
+	const double NowSeconds = FPlatformTime::Seconds();
+	if (NowSeconds - LastMemoryStatsSeconds < MemoryStatsIntervalSeconds)
+	{
+		return;
+	}
+	LastMemoryStatsSeconds = NowSeconds;
+
+	constexpr double BytesPerMB = 1024.0 * 1024.0;
+
+	// Видеопамять. Числа драйверные и приблизительные - считают текстуры и
+	// рендер-таргеты, но не буферы GPU-стратегии, - и это ровно та точность,
+	// которая тут нужна: индикатор, а не расходомер.
+	FTextureMemoryStats TextureStats;
+	RHIGetTextureMemoryStats(TextureStats);
+
+	LastHudStats.VideoMemoryUsedMB =
+		double(TextureStats.StreamingMemorySize + TextureStats.NonStreamingMemorySize) / BytesPerMB;
+
+	// -1 означает "драйвер не сказал", и превращать это в отрицательные
+	// мегабайты нельзя: ноль читается виджетом как "неизвестно".
+	LastHudStats.VideoMemoryTotalMB = TextureStats.TotalGraphicsMemory > 0
+		? double(TextureStats.TotalGraphicsMemory) / BytesPerMB
+		: 0.0;
+
+	LastHudStats.VideoMemoryLargestFreeBlockMB = TextureStats.LargestContiguousAllocation > 0
+		? double(TextureStats.LargestContiguousAllocation) / BytesPerMB
+		: 0.0;
+
+	// Оперативная память - по системе целиком, а не по процессу: массив
+	// кандидатов CPU-пути упирается именно в физическую память машины.
+	const FPlatformMemoryStats MemoryStats = FPlatformMemory::GetStats();
+	LastHudStats.SystemMemoryAvailableMB = double(MemoryStats.AvailablePhysical) / BytesPerMB;
+	LastHudStats.SystemMemoryTotalMB = double(MemoryStats.TotalPhysical) / BytesPerMB;
 }

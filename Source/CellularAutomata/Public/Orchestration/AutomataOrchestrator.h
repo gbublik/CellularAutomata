@@ -2915,6 +2915,23 @@ private:
 	 *  FHudStats::bComputeFellBackToCpu. */
 	bool bLastComputeFellBackToCpu = false;
 
+	/** Момент последнего опроса памяти для HUD (см. RefreshMemoryStats()). */
+	double LastMemoryStatsSeconds = 0.0;
+
+	/** Обновляет поля памяти в LastHudStats - но не чаще раза в
+	 *  MemoryStatsIntervalSeconds.
+	 *
+	 *  Прореживание не преждевременная оптимизация: и RHIGetTextureMemoryStats(),
+	 *  и FPlatformMemory::GetStats() ходят к драйверу и в систему, а зовутся из
+	 *  UpdateHudStats(), то есть каждый тик. Для индикатора "далеко ли до края"
+	 *  раз в секунду с запасом достаточно - величины меняются на масштабе
+	 *  поколений, а не кадров. */
+	void RefreshMemoryStats();
+
+	/** Раз в секунду: чаще незачем, реже - и индикатор начнёт врать на быстром
+	 *  росте. */
+	static constexpr double MemoryStatsIntervalSeconds = 1.0;
+
 	/** Сквозной счётчик поколений с последнего GenerateRandom()/
 	 *  ResetToInitialState() - в отличие от StepsSinceLastRender (сбрасывается
 	 *  на каждом рендере) этот только растёт, пока не начат новый прогон.

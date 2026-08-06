@@ -430,6 +430,16 @@ void AAutomataOrchestrator::StepBackward()
 				const int32 StepsRequested = static_cast<int32>(FMath::Clamp<int64>(MaxSteps, 1, MAX_int32));
 				const int32 StepsAdvanced = ComputeStrategy->StepBatch(*ResultGrid, *NextGrid, AutomatonRule, StepsRequested);
 
+				// 0 - стратегия отказалась (см. FCpuComputeStrategy::CanStep()):
+				// NextGrid пуст. Обрываем воспроизведение здесь - ResultGrid
+				// держит последнее честно посчитанное поколение, и лучше
+				// откатиться не туда, куда просили, чем подставить пустоту.
+				if (StepsAdvanced == 0)
+				{
+					UE_LOG(LogTemp, Error, TEXT("StepBackward: воспроизведение оборвано на поколении %lld - стратегия отказалась (см. причину выше)"), StepsDone);
+					break;
+				}
+
 				// Стратегия, продвинувшая больше одного поколения, обязана была
 				// заполнить возрасты и угасание сама - см. Next().
 				if (StepsAdvanced <= 1)
@@ -439,7 +449,7 @@ void AAutomataOrchestrator::StepBackward()
 				}
 
 				ResultGrid = MoveTemp(NextGrid);
-				StepsDone += FMath::Max(1, StepsAdvanced);
+				StepsDone += StepsAdvanced;
 
 				// Правки этого поколения - сразу после того, как оно посчитано,
 				// то есть ровно в том порядке, в каком всё происходило вживую.
