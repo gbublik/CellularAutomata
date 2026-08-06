@@ -347,6 +347,16 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.RenderPresetName = GetActiveRenderPresetName();
 	LastHudStats.bRenderPresetModified = bRenderPresetModified;
 
+	// Действующее правило текстом. Через GetActiveRuleString(), т.е. из живых
+	// массивов, а не из UPROPERTY RuleString - см. doc-comment поля. Собирается
+	// каждый тик, а не кэшируется на применении правила: правило меняют не
+	// только ApplyRuleString()/пресеты, но и правка массивов прямо в Details
+	// panel, а её ловить нечем - это тот же принцип "читать заново, не
+	// кэшировать", по которому живёт BuildRule(). Цена - Printf по двум
+	// массивам не длиннее 27 элементов, на фоне остального в этой сводке
+	// (оценка генератора, обход камеры) она не видна.
+	LastHudStats.RuleString = GetActiveRuleString();
+
 	// Генератор начального состояния - зеркало GenerationParams плюс оценка
 	// объёма. Имя дёшево (switch по перечислению), а вот оценка у шаров
 	// считает решёточные точки точно, за O(R^2) - при радиусе в сотни клеток

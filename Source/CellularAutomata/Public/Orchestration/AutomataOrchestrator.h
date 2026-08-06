@@ -317,6 +317,22 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bRenderPresetModified = false;
 
+	/** Действующее правило строкой "Survival/Birth/States/Neighborhood" -
+	 *  например "4-5/5/2/M" (см. RuleStringParser.h за точной семантикой).
+	 *
+	 *  Берётся из GetActiveRuleString(), то есть собирается из живых
+	 *  SurvivalCounts/BirthCounts/States/Neighborhood, а НЕ из UPROPERTY
+	 *  RuleString: то поле - строка ввода, оно остаётся тем, что набрали
+	 *  последний раз, и после правки массивов руками или применения пресета
+	 *  описывает уже не тот автомат, который считается. HUD, показывающий
+	 *  устаревшее правило, хуже HUD, не показывающего правила вовсе.
+	 *
+	 *  Здесь, в общей сводке, а не отдельным вызовом GetActiveRuleString() из
+	 *  виджета - по той же причине, что и остальные зеркала: один Break-нод на
+	 *  весь HUD (см. блок режимов выше). */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	FString RuleString;
+
 	/** Выбранный генератор начального состояния - что построит Y (см.
 	 *  StateGenerators::GetDisplayName()). */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
