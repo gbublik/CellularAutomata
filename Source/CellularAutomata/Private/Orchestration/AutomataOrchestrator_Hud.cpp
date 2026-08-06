@@ -268,3 +268,50 @@ bool AAutomataOrchestrator::IsHudVisible() const
 {
 	return UiController && UiController->IsHUDVisible();
 }
+
+TArray<FAgeFilterSwatch> AAutomataOrchestrator::GetAgeFilterSwatches() const
+{
+	// По числу клавиш цифрового ряда, а не возрастов: возрастов 256, и хвост
+	// сворачивается в последний квадратик (см. BuildAgeFilterMask()).
+	constexpr int32 SwatchCount = 10;
+
+	// Та же самая маска, по которой рисуется сетка, - не пересчитанная заново.
+	TArray<bool> Mask;
+	const bool bFilterActive = BuildAgeFilterMask(Mask);
+
+	// Тот же делитель, что в BuildAgeColorLut(): цвет квадратика обязан
+	// совпадать с цветом клетки на экране, иначе легенда легендой не является.
+	const float MaxAge = float(FMath::Max(1, AgeColorMaxAge));
+
+	TArray<FAgeFilterSwatch> Swatches;
+	Swatches.Reserve(SwatchCount);
+
+	for (int32 Age = 0; Age < SwatchCount; ++Age)
+	{
+		FAgeFilterSwatch Swatch;
+		Swatch.Age = Age;
+		Swatch.bIncludesOlder = (Age == SwatchCount - 1);
+		Swatch.Color = SampleColorRamp(AgeColors, float(Age) / MaxAge);
+
+		// У хвоста дальний конец - конец рампы: он покрывает 9..255, то есть
+		// почти всю её, и одним цветом был бы враньём. У остальных совпадает с
+		// Color, чтобы вёрстке не приходилось разбирать частные случаи.
+		Swatch.ColorEnd = Swatch.bIncludesOlder
+			? SampleColorRamp(AgeColors, 1.0f)
+			: Swatch.Color;
+
+		// Фильтр снят - видно всё. Иначе спрашиваем маску, а не список
+		// выбранных: правило "и всё, что старше" в списке не записано.
+		Swatch.bVisible = !bFilterActive || Mask[Age];
+
+		if (GamePC)
+		{
+			const FKey Key = GamePC->KeyFor((EHotkey)((int32)EHotkey::AgeFilter0 + Age));
+			Swatch.KeyLabel = Key.GetDisplayName().ToString();
+		}
+
+		Swatches.Add(MoveTemp(Swatch));
+	}
+
+	return Swatches;
+}

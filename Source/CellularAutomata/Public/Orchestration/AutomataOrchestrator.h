@@ -8,6 +8,7 @@
 #include "CellularAutomata/Public/Core/PlayerController/GamePlayerController.h"
 #include "CellularAutomata/Public/Ui/UiController.h"
 #include "Ui/HudStats.h"
+#include "Ui/AgeFilterSwatch.h"
 #include "Automata/Grid/CellGrid.h"
 #include "Automata/Rendering/InstancedMeshCellGridRenderer.h"
 #include "Automata/Rendering/ChunkedRenderOrder.h"
@@ -1522,6 +1523,23 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Automata")
 	bool IsAgeFilterIncludingOlder() const { return bAgeFilterIncludesOlder; }
+
+	/** Легенда фильтра по возрасту для HUD - по одному квадратику на клавишу
+	 *  цифрового ряда: каким цветом нарисован слой, какой клавишей включается и
+	 *  виден ли сейчас. См. FAgeFilterSwatch за тем, зачем это нужно.
+	 *
+	 *  Ровно десять элементов, по числу клавиш, а не по числу возрастов: их 256,
+	 *  и последний квадратик поэтому покрывает весь хвост (bIncludesOlder).
+	 *
+	 *  Видимость берётся из BuildAgeFilterMask(), а не выводится заново из
+	 *  AgeFilterValues: правило "и всё, что старше" открывает диапазон вверх от
+	 *  САМОГО СТАРОГО из выбранных, и повторить это условие здесь значило бы
+	 *  завести вторую копию, которой предстоит разъехаться с первой.
+	 *
+	 *  Не кэшируется: зовётся раз в тик из виджета, а стоит десяти выборок
+	 *  рампы - на фоне всего остального в UpdateHudStats() это ничто. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	TArray<FAgeFilterSwatch> GetAgeFilterSwatches() const;
 
 	/** Ставит фильтр РОВНО на один возраст (-1 - снять фильтр целиком) и сразу
 	 *  перерисовывает - ждать следующего поколения незачем, а на паузе его и
