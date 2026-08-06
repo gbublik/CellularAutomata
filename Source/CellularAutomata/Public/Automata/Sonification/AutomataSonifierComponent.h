@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Automata/Sonification/SonificationFeatures.h"
+#include "Ui/HudStats.h"
 #include "AutomataSonifierComponent.generated.h"
 
 class AAutomataOrchestrator;
@@ -165,7 +166,7 @@ private:
 	void DetectAndFireEvents(int32 AliveCount, int64 Generation, int32 AutoReseedCount,
 		bool bRunning, double NowSeconds);
 
-	void PushBedParameters(const struct FHudStats& Stats, float DeltaSeconds, double NowSeconds);
+	void PushBedParameters(const FHudStats& Stats, float DeltaSeconds, double NowSeconds);
 
 	/** Триггер с проверкой, что компонент играет: движок глотает его молча, и
 	 *  без этой проверки "событие не слышно" было бы неотлаживаемо. */
