@@ -224,6 +224,7 @@ public:
 		StatusKey_CellShape = 1009,
 		StatusKey_StepBackward = 1010,
 		StatusKey_Sonification = 1011,
+		StatusKey_Clipboard = 1012,
 	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
@@ -360,6 +361,21 @@ public:
 	 *  незаметно. */
 	bool ComputePlacementCell(const FVector& RayOrigin, const FVector& RayDirection, FIntVector& OutCell);
 
+	/** То же, но с НОРМАЛЬЮ грани, к которой прилипли (нулевая при промахе или
+	 *  когда камера внутри клетки). Одиночной клетке нормаль не нужна - ей
+	 *  хватает готовой позиции, - а вставке буфера нужна: вдоль неё буфер
+	 *  прижимается краем (см. CellClipboard::ComputePasteOrigin()).
+	 *  ComputePlacementCell() - обёртка над этим же расчётом, чтобы призрак
+	 *  клетки, призрак буфера и обе вставки не разъехались. */
+	bool ComputePlacementTarget(const FVector& RayOrigin, const FVector& RayDirection,
+								FIntVector& OutCell, FIntVector& OutFaceNormal);
+
+	/** Масштаб инстанса клетки той же формулой, что у рендерера: габарит меша
+	 *  подгоняется под шаг решётки, и только потом множители. Общий для призрака
+	 *  одиночной клетки и призрака буфера - две копии этой арифметики разъехались
+	 *  бы молча, а видно это только как "призрак не того размера". */
+	FVector ComputeCellMeshScale(float ExtraMultiplier) const;
+
 	/** Показать призрак клетки под курсором (режим рисования) - зовётся каждый
 	 *  кадр из AGamePlayerController::Tick(). Если строить некуда, призрак
 	 *  прячется. */
@@ -383,6 +399,45 @@ public:
 	 *  выходит пустой (см. MakeAddRecord()), и в журнал не попадает - иначе
 	 *  Ctrl+Z после промаха отменял бы "ничего". */
 	void PaintCellUnderCursor(const FVector& RayOrigin, const FVector& RayDirection, bool bErase);
+
+	/** Скопировать клетки в буфер обмена (Ctrl+Shift+C): выделение, если оно
+	 *  есть, иначе все живые клетки - тот же принцип "выделение значит вот
+	 *  это", что у ArrayCells().
+	 *
+	 *  Буфер нормализуется (центр габарита в нуле, см. CellClipboard::
+	 *  Normalize()) и хранится независимо от сетки: его переживают R, N,
+	 *  загрузка файла и смена размера клетки, так что скопировать в одном
+	 *  прогоне и вставить в другом - законный сценарий. Возрасты не копируются:
+	 *  вставленное рождается заново, как и всё, поставленное рукой. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Clipboard")
+	void CopyCellsToClipboard();
+
+	/** Вставить буфер под курсор (Ctrl+V). Буфер ЛОЖИТСЯ НА ГРАНЬ, в которую
+	 *  смотрит курсор: вдоль нормали он прижимается краем, по двум другим осям
+	 *  центрируется на точке клика (см. CellClipboard::ComputePasteOrigin()).
+	 *  Промах - буфер центрируется на клетке в CellPlaceDistance вдоль луча,
+	 *  ровно как одиночная клетка при рисовании.
+	 *
+	 *  Вставка ДОБАВЛЯЕТ, а не заменяет область: пустые клетки буфера ничего не
+	 *  стирают, иначе копия прямоугольного куска вырезала бы дыру вокруг
+	 *  фигуры. Вся вставка - ОДНА запись в журнале, один Ctrl+Z: в отличие от
+	 *  рисования по клетке, вставка и по смыслу одно действие. */
+	void PasteClipboard(const FVector& RayOrigin, const FVector& RayDirection);
+
+	/** Показать призрак буфера под курсором - зовётся каждый кадр в режиме
+	 *  рисования, пока буфер не пуст. Инстансы в компонент заливаются ОДИН РАЗ
+	 *  при копировании (координаты внутри буфера не меняются), а движение мыши
+	 *  двигает только трансформ компонента: предпросмотр структуры из тысяч
+	 *  клеток стоит один SetWorldLocation() за кадр. */
+	void UpdateClipboardGhost(const FVector& RayOrigin, const FVector& RayDirection);
+
+	/** Спрятать призрак буфера - при выходе из режима рисования. */
+	void HideClipboardGhost();
+
+	/** Сколько клеток лежит в буфере - для HUD и для проверки "есть что
+	 *  вставлять". */
+	UFUNCTION(BlueprintPure, Category = "Automata|Clipboard")
+	int32 GetClipboardCellCount() const { return ClipboardCells.Num(); }
 
 	/** Параметры тиража - см. ArrayCells() и FCellArrayParams. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Array")
@@ -2433,6 +2488,31 @@ private:
 	 *  EnsureSelectionMeshComponent(). */
 	void EnsureCellPreviewComponent();
 
+	/** Буфер обмена клетками - нормализованный набор (центр габарита в нуле,
+	 *  см. CellClipboard). Обычный член, а не UPROPERTY: TArray<FIntVector> не
+	 *  содержит UObject-ссылок, а переживать реинстансинг ему незачем - потерять
+	 *  буфер при хот-патче не страшнее, чем потерять выделение.
+	 *
+	 *  Намеренно НЕ чистится ни шагом, ни R, ни загрузкой файла: скопировать
+	 *  фигуру в одном прогоне и вставить в другом - это ровно то, зачем буфер
+	 *  нужен. */
+	TArray<FIntVector> ClipboardCells;
+
+	/** Призрак буфера под курсором. Инстансированный (в отличие от одиночного
+	 *  CellPreviewComponent): клеток в буфере могут быть тысячи. Инстансы
+	 *  заливаются один раз при копировании, дальше двигается только трансформ
+	 *  самого компонента - см. UpdateClipboardGhost(). */
+	UPROPERTY(Transient)
+	UInstancedStaticMeshComponent* ClipboardGhostComponent = nullptr;
+
+	/** Создаёт ClipboardGhostComponent при первом обращении - зеркалит
+	 *  EnsureSelectionMeshComponent(). */
+	void EnsureClipboardGhostComponent();
+
+	/** Перезаливает инстансы призрака из ClipboardCells - зовётся только при
+	 *  копировании, не каждый кадр. */
+	void RebuildClipboardGhostInstances();
+
 	/** Компонент подсветки выделения - всегда обычный (не HISM)
 	 *  UInstancedStaticMeshComponent, независимо от CellMeshComponentType:
 	 *  выделение всегда маленькое подмножество, LOD-дерево кластеров HISM тут
@@ -2784,14 +2864,14 @@ private:
 	 *  единственное место, где живёт условие "отсечение активно": актёр есть
 	 *  на уровне И bEnableRenderCullVolume включён (хоткей C).
 	 *
-	 *  Видимость самого куба (ARenderCullVolume::IsVolumeVisible(), Ctrl+C) в
+	 *  Видимость самого куба (ARenderCullVolume::IsVolumeVisible(), Ctrl+Shift+C) в
 	 *  это условие НЕ входит: показать и спрятать коробку - это про то, мешает
 	 *  ли она смотреть, а не про то, режет ли она. Какое-то время инвариант
 	 *  "спрятан - значит не режет" здесь стоял (доводом было, что клетки,
 	 *  обрывающиеся в воздухе без видимой коробки, не читаются на экране), но
 	 *  на практике спрятать коробку хочется как раз тогда, когда она мешает
 	 *  разглядывать то, что она же и вырезала. Две независимые клавиши: C
-	 *  режет, Ctrl+C показывает.
+	 *  режет, Ctrl+Shift+C показывает.
 	 *
 	 *  Пути, где куб нужен как ПРОСТРАНСТВЕННАЯ ОБЛАСТЬ, а не как отсечение
 	 *  рендера (SelectCellsInCullVolume() на L, MoveCullVolumeToSelection()

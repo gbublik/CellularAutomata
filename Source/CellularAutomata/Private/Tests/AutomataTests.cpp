@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Automata/Capture/CellRasterizer.h"
+#include "Automata/Editing/CellClipboard.h"
 #include "Automata/Editing/CellEditJournal.h"
 #include "Automata/Generation/CellArrayModifier.h"
 #include "Automata/Generation/StateGenerators.h"
@@ -2966,6 +2967,107 @@ bool FHotkeyRegistryTest::RunTest(const FString& Parameters)
 				AddWarning(TEXT("в DefaultInput.ini нет ни одной строки CA_* - раскладка целиком на значениях по умолчанию"));
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCellClipboardTest,
+	"CellularAutomata.Editing.Clipboard",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FCellClipboardTest::RunTest(const FString& Parameters)
+{
+	// Буфер обмена и привязка вставки к грани (CellClipboard). Ошибка здесь не
+	// падает и не логируется - она видна только после вставки, тем, что фигура
+	// легла не туда, наполовину в стену.
+
+	// ПЕРВОЕ: нормализация. Кусок, вырезанный за тысячу клеток от нуля, обязан
+	// стать буфером вокруг нуля - иначе вставка задавала бы положение сдвигом
+	// от места копирования, а оно к моменту вставки не значит ничего.
+	{
+		TArray<FIntVector> Cells = {
+			FIntVector(1000, -2000, 500),
+			FIntVector(1004, -2000, 500),
+			FIntVector(1002, -1996, 508),
+		};
+		const int32 CountBefore = Cells.Num();
+		CellClipboard::Normalize(Cells);
+
+		TestEqual(TEXT("нормализация не теряет клетки"), Cells.Num(), CountBefore);
+
+		FIntVector Min, Max;
+		TestTrue(TEXT("габарит буфера считается"), CellClipboard::ComputeBounds(Cells, Min, Max));
+		// Допуск в клетку: середина габарита может лежать на полуцелой
+		// координате, и floor-деление опускает её вниз.
+		TestTrue(TEXT("центр буфера у нуля"),
+			FMath::Abs(Min.X + Max.X) <= 1 && FMath::Abs(Min.Y + Max.Y) <= 1 && FMath::Abs(Min.Z + Max.Z) <= 1);
+
+		// Форма обязана уцелеть: нормализация - это сдвиг, а не пересбор.
+		TestEqual(TEXT("габарит по X сохранился"), Max.X - Min.X, 4);
+		TestEqual(TEXT("габарит по Z сохранился"), Max.Z - Min.Z, 8);
+	}
+
+	// ВТОРОЕ, и ради этого тест написан: вдоль нормали буфер ПРИЖИМАЕТСЯ к
+	// грани, а не центрируется на ней. Фигура высотой в 11 клеток, положенная на
+	// пол, обязана встать НА него - при центрировании пять её нижних слоёв ушли
+	// бы под поверхность, и заметно это только глазом, после вставки.
+	{
+		const FIntVector BufferMin(-2, -3, -5);
+		const FIntVector BufferMax(2, 3, 5);
+		const FIntVector BaseCell(10, 20, 30); // первая свободная клетка над гранью
+
+		// Кладём на грань, смотрящую вверх.
+		{
+			const FIntVector Origin = CellClipboard::ComputePasteOrigin(BufferMin, BufferMax, BaseCell, FIntVector(0, 0, 1));
+			TestEqual(TEXT("низ буфера сел ровно на грань"), Origin.Z + BufferMin.Z, BaseCell.Z);
+			TestEqual(TEXT("поперёк нормали буфер центрирован (X)"), Origin.X, BaseCell.X);
+			TestEqual(TEXT("поперёк нормали буфер центрирован (Y)"), Origin.Y, BaseCell.Y);
+		}
+
+		// И симметрично - подвешиваем под грань, смотрящую вниз.
+		{
+			const FIntVector Origin = CellClipboard::ComputePasteOrigin(BufferMin, BufferMax, BaseCell, FIntVector(0, 0, -1));
+			TestEqual(TEXT("верх буфера сел ровно под грань"), Origin.Z + BufferMax.Z, BaseCell.Z);
+		}
+
+		// Боковая грань - та же прижимка, но по другой оси; проверяется отдельно,
+		// потому что перепутанная ось здесь выглядит правдоподобно.
+		{
+			const FIntVector Origin = CellClipboard::ComputePasteOrigin(BufferMin, BufferMax, BaseCell, FIntVector(1, 0, 0));
+			TestEqual(TEXT("край буфера сел на боковую грань"), Origin.X + BufferMin.X, BaseCell.X);
+			TestEqual(TEXT("по Z при боковой грани - центрирование"), Origin.Z, BaseCell.Z);
+		}
+	}
+
+	// ТРЕТЬЕ: нулевая нормаль (промах либо камера внутри клетки) значит
+	// "прижимать не к чему" - буфер просто центрируется на точке.
+	{
+		const FIntVector Origin = CellClipboard::ComputePasteOrigin(
+			FIntVector(-2, -2, -2), FIntVector(2, 2, 2), FIntVector(7, 8, 9), FIntVector::ZeroValue);
+		TestEqual(TEXT("без грани буфер центрируется на точке"), Origin, FIntVector(7, 8, 9));
+	}
+
+	// ЧЕТВЁРТОЕ: Place() - это сдвиг всего набора и ничего больше.
+	{
+		const TArray<FIntVector> Buffer = { FIntVector(0, 0, 0), FIntVector(1, 2, 3) };
+		TArray<FIntVector> Placed;
+		CellClipboard::Place(Buffer, FIntVector(10, 10, 10), Placed);
+
+		TestEqual(TEXT("вставка не теряет клетки"), Placed.Num(), 2);
+		TestTrue(TEXT("клетки сдвинуты на якорь"),
+			Placed.Contains(FIntVector(10, 10, 10)) && Placed.Contains(FIntVector(11, 12, 13)));
+	}
+
+	// ПЯТОЕ, вырожденное: пустой буфер не должен ни падать, ни выдумывать
+	// габарит - ComputeBounds() честно отвечает false, а Normalize() ничего не
+	// делает.
+	{
+		TArray<FIntVector> Empty;
+		FIntVector Min, Max;
+		TestFalse(TEXT("у пустого буфера габарита нет"), CellClipboard::ComputeBounds(Empty, Min, Max));
+		CellClipboard::Normalize(Empty);
+		TestEqual(TEXT("пустой буфер остаётся пустым"), Empty.Num(), 0);
 	}
 
 	return true;

@@ -14,6 +14,10 @@
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Components/PointLightComponent.h"
 #include "Engine/LocalPlayer.h"
+// Нужен OnSelectDragFinished() - ULocalPlayer::ViewportClient разыменовывается
+// ради Viewport. В unity-сборке заголовок приходил транзитивно из соседнего
+// файла, поэтому пропажа всплывала только при отдельной компиляции этого файла.
+#include "Engine/GameViewportClient.h"
 #include "SceneView.h"
 
 AGamePlayerController::AGamePlayerController()
@@ -194,6 +198,12 @@ void AGamePlayerController::SetupInputComponent()
 		// D - та же схема, что у S/O: маппинг без модификатора, Ctrl проверяется
 		// внутри обработчика, голая D остаётся движением камеры вправо.
 		{ TEXT("IA_ArrayCells"), { EHotkey::ArrayCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnArrayCells } } },
+		// C и V уже заняты голыми (отсечение и ожидание чанкового рендера) -
+		// это ВТОРЫЕ действия на тех же клавишах, отобранные модификатором в
+		// самих обработчиках. Прежние обработчики, в свою очередь, отсеивают
+		// нажатие с модификатором, чтобы одно нажатие не сделало обе вещи.
+		{ TEXT("IA_CopyCells"), { EHotkey::CopyCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnCopyCells } } },
+		{ TEXT("IA_PasteCells"), { EHotkey::PasteCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnPasteCells } } },
 	};
 
 	// Раскладка разрешается ОДИН раз здесь, и дальше только читается: и таблица
@@ -960,6 +970,15 @@ void AGamePlayerController::OnCycleChunkedRenderOrder()
 
 void AGamePlayerController::OnToggleWaitForChunkedRenderToFinish()
 {
+	// Ctrl+V - вставка из буфера (OnPasteCells()), а не эта настройка. Оба
+	// обработчика висят на V и вызываются оба, так что модификатор отсеивается
+	// здесь - зеркально тому, как голая Z уходит чанковому рендеру, а Ctrl+Z
+	// отмене.
+	if (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))
+	{
+		return;
+	}
+
 	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
@@ -984,12 +1003,23 @@ void AGamePlayerController::OnToggleCellCulling()
 
 void AGamePlayerController::OnToggleRenderCullVolume()
 {
-	// Ctrl+C - не отсечение, а видимость самого куба. Enhanced Input не даёт
-	// потребовать Ctrl прямо в маппинге ключа, поэтому модификатор проверяется
-	// здесь - та же идиома, что у Ctrl+S/Ctrl+Shift+S в OnSaveOrSaveAs().
+	// Три действия на одной клавише, отобранные модификаторами: голая C -
+	// отсечение (ниже), Ctrl+C - копирование в буфер (OnCopyCells()),
+	// Ctrl+Shift+C - видимость самого куба. Enhanced Input не даёт потребовать
+	// модификатор в маппинге, поэтому каждый обработчик отсеивает чужие
+	// комбинации сам - иначе одно нажатие сделало бы две вещи разом, ведь на
+	// клавише висят оба action'а и вызываются оба.
+	//
+	// Ctrl+C достался копированию, а видимость уехала под Shift сознательно:
+	// Ctrl+C - общесистемная комбинация, и любая другая привязка к ней читается
+	// как чужая.
 	if (IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl))
 	{
-		OnToggleRenderCullVolumeVisibility();
+		if (IsShiftHeld())
+		{
+			OnToggleRenderCullVolumeVisibility();
+		}
+		// Ctrl без Shift - не наше: этим занят OnCopyCells().
 		return;
 	}
 
@@ -1673,6 +1703,7 @@ void AGamePlayerController::SetDrawModeActive(bool bActive)
 	else if (Orchestrator)
 	{
 		Orchestrator->HideCellPreview();
+		Orchestrator->HideClipboardGhost();
 	}
 
 	// Тот же единый "режим мыши", что и у выделения: камера стоит, курсор
@@ -1695,14 +1726,83 @@ void AGamePlayerController::TickCellPainting()
 	FVector RayDirection = FVector::ZeroVector;
 	if (!DeprojectMousePositionToWorld(RayOrigin, RayDirection))
 	{
-		// Курсор вне окна - показывать призрак негде.
+		// Курсор вне окна - показывать призраки негде.
 		Orchestrator->HideCellPreview();
+		Orchestrator->HideClipboardGhost();
 		return;
 	}
 
 	// Единственное, что делает тик режима: ведёт призрак за курсором. Сами
 	// клетки ставятся только по нажатию (см. OnSelectDragStarted()).
-	Orchestrator->UpdateCellPreview(RayOrigin, RayDirection);
+	//
+	// Который из двух призраков показывать, решает ЗАЖАТЫЙ CTRL, а не
+	// наполненность буфера: призрак обязан показывать то, что произойдёт по
+	// текущей комбинации. Держишь Ctrl (то есть собираешься нажать Ctrl+V) -
+	// видишь весь буфер там, где он ляжет; отпустил - снова одиночная клетка,
+	// которую поставит ЛКМ. Иначе непустой буфер показывал бы фигуру, а клик
+	// ставил бы одну клетку - призрак врал бы ровно про то, ради чего он есть.
+	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (bCtrl && Orchestrator->GetClipboardCellCount() > 0)
+	{
+		Orchestrator->HideCellPreview();
+		Orchestrator->UpdateClipboardGhost(RayOrigin, RayDirection);
+	}
+	else
+	{
+		Orchestrator->HideClipboardGhost();
+		Orchestrator->UpdateCellPreview(RayOrigin, RayDirection);
+	}
+}
+
+void AGamePlayerController::OnCopyCells()
+{
+	// Ctrl+C, как везде. Голая C - отсечение, Ctrl+Shift+C - видимость куба
+	// (см. OnToggleRenderCullVolume(), который зеркально отсеивает наш случай),
+	// поэтому Shift здесь означает "нажали не нас".
+	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (!bCtrl || IsShiftHeld())
+	{
+		return;
+	}
+
+	if (AAutomataOrchestrator* Orchestrator = FindOrchestrator())
+	{
+		Orchestrator->CopyCellsToClipboard();
+	}
+}
+
+void AGamePlayerController::OnPasteCells()
+{
+	// Ctrl+V; голая V - ожидание чанкового рендера (тот обработчик отсеивает
+	// Ctrl сам).
+	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (!bCtrl)
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator)
+	{
+		return;
+	}
+
+	// Вставка целится курсором, значит курсор должен быть - включаем режим
+	// рисования, если он выключен. Иначе первое же Ctrl+V в полёте вставляло бы
+	// вслепую туда, куда смотрит центр экрана.
+	if (!bDrawModeActive)
+	{
+		SetDrawModeActive(true);
+	}
+
+	FVector RayOrigin = FVector::ZeroVector;
+	FVector RayDirection = FVector::ZeroVector;
+	if (!DeprojectMousePositionToWorld(RayOrigin, RayDirection))
+	{
+		return;
+	}
+
+	Orchestrator->PasteClipboard(RayOrigin, RayDirection);
 }
 
 void AGamePlayerController::OnEraseCellPressed()
@@ -1751,7 +1851,7 @@ void AGamePlayerController::SetSelectionModeActive(bool bActive)
 			DraggedCullVolume = nullptr;
 		}
 		// И режим мыши, и видимость куба - см. OnToggleRenderCullVolumeVisibility():
-		// Tab не должен вытаскивать ручки у спрятанной (Ctrl+C) коробки.
+		// Tab не должен вытаскивать ручки у спрятанной (Ctrl+Shift+C) коробки.
 		CullVolume->SetGizmoVisible(bActive && CullVolume->IsVolumeVisible());
 	}
 

@@ -231,7 +231,7 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bRenderCullVolumeEnabled = false;
 
-	/** Куб виден (Ctrl+C) - ARenderCullVolume::IsVolumeVisible(). false и в
+	/** Куб виден (Ctrl+Shift+C) - ARenderCullVolume::IsVolumeVisible(). false и в
 	 *  случае, когда ARenderCullVolume на уровне просто нет. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bRenderCullVolumeVisible = false;

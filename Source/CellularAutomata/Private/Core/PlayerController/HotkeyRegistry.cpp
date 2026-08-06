@@ -59,6 +59,12 @@ namespace HotkeyRegistry
 			// D, как и S/O, замаплена без модификатора: Ctrl проверяется в
 			// обработчике, а голая D остаётся движением камеры вправо.
 			{ EHotkey::ArrayCells,                         TEXT("CA_ArrayCells"),                         EKeys::D },
+			// Делят клавиши с отсечением (C) и ожиданием чанкового рендера (V)
+			// намеренно: копирование требует Ctrl+Shift, вставка - Ctrl, а
+			// голые C/V остаются за прежними действиями, которые сами отсеивают
+			// нажатие с модификатором. Та же пара, что Z / Ctrl+Z.
+			{ EHotkey::CopyCells,                          TEXT("CA_CopyCells"),                          EKeys::C, /*bModifierGuarded=*/true },
+			{ EHotkey::PasteCells,                         TEXT("CA_PasteCells"),                         EKeys::V, /*bModifierGuarded=*/true },
 
 			// --- Через сырой InputKey() ---
 			{ EHotkey::ToggleSimulation,                   TEXT("CA_ToggleSimulation"),                   EKeys::SpaceBar },

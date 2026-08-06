@@ -3,8 +3,10 @@
 
 #include "CellularAutomata/Public/Orchestration/AutomataOrchestrator.h"
 
+#include "Automata/Editing/CellClipboard.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Rendering/FilteredCellGridView.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Automata/Rendering/RenderCullVolume.h"
 #include "Automata/Selection/CellSelection.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
@@ -30,6 +32,36 @@ void AAutomataOrchestrator::EnsureCellPreviewComponent()
 
 bool AAutomataOrchestrator::ComputePlacementCell(const FVector& RayOrigin, const FVector& RayDirection, FIntVector& OutCell)
 {
+	FIntVector UnusedNormal;
+	return ComputePlacementTarget(RayOrigin, RayDirection, OutCell, UnusedNormal);
+}
+
+FVector AAutomataOrchestrator::ComputeCellMeshScale(float ExtraMultiplier) const
+{
+	// Та же формула, что в FInstancedMeshCellGridRenderer::Render(): сначала
+	// подгонка собственного габарита меша под шаг решётки, и только потом
+	// множители. Без первой части призрак живёт в единицах МЕША, а клетки в
+	// единицах РЕШЁТКИ, и совпадают они только когда меш случайно размером с
+	// клетку. Нормировка по одной оси (X), а не покомпонентная: ячейки Вороного
+	// решёток за пределами простой кубической неквадратные, покомпонентная
+	// раздавила бы их в куб.
+	FVector Scale = FVector::OneVector;
+	if (Grid && CellMesh)
+	{
+		const double MeshReferenceSize = CellMesh->GetBounds().BoxExtent.X * 2.0;
+		if (!FMath::IsNearlyZero(MeshReferenceSize))
+		{
+			Scale = FVector(Grid->GetLattice().GetPlanarCellSize() / MeshReferenceSize);
+		}
+	}
+	return Scale * (CellMeshScaleMultiplier * ExtraMultiplier);
+}
+
+bool AAutomataOrchestrator::ComputePlacementTarget(const FVector& RayOrigin, const FVector& RayDirection,
+												   FIntVector& OutCell, FIntVector& OutFaceNormal)
+{
+	OutFaceNormal = FIntVector::ZeroValue;
+
 	if (!Grid)
 	{
 		return false;
@@ -73,6 +105,7 @@ bool AAutomataOrchestrator::ComputePlacementCell(const FVector& RayOrigin, const
 			if (FaceNormal != FIntVector::ZeroValue)
 			{
 				OutCell = HitCell + FaceNormal;
+				OutFaceNormal = FaceNormal;
 				return true;
 			}
 		}
@@ -111,26 +144,7 @@ void AAutomataOrchestrator::UpdateCellPreview(const FVector& RayOrigin, const FV
 	const FVector WorldLocation = Grid->GetLattice().GridToWorld(TargetCell);
 	CellPreviewComponent->SetWorldLocation(WorldLocation);
 
-	// Масштаб считается ТОЙ ЖЕ формулой, что и у настоящих клеток
-	// (FInstancedMeshCellGridRenderer::Render()): сначала подгонка меша под шаг
-	// решётки - его собственный габарит к размеру клетки, - и только потом
-	// множители. Без нормировки призрак живёт в единицах МЕША, а клетки в
-	// единицах РЕШЁТКИ, и совпадают они только когда меш случайно размером с
-	// клетку; в остальных случаях призрак заметно крупнее или мельче того, что
-	// на самом деле появится по нажатию.
-	//
-	// Нормировка по одной оси (X), а не покомпонентная, - тоже как там: ячейки
-	// Вороного решёток за пределами простой кубической неквадратные, и
-	// покомпонентная раздавила бы их в куб.
-	FVector PreviewScale = FVector::OneVector;
-	const double MeshReferenceSize = CellMesh->GetBounds().BoxExtent.X * 2.0;
-	if (!FMath::IsNearlyZero(MeshReferenceSize))
-	{
-		PreviewScale = FVector(Grid->GetLattice().GetPlanarCellSize() / MeshReferenceSize);
-	}
-	PreviewScale *= CellMeshScaleMultiplier * CellPreviewScaleMultiplier;
-
-	CellPreviewComponent->SetWorldScale3D(PreviewScale);
+	CellPreviewComponent->SetWorldScale3D(ComputeCellMeshScale(CellPreviewScaleMultiplier));
 	CellPreviewComponent->SetVisibility(true);
 }
 
@@ -210,4 +224,212 @@ void AAutomataOrchestrator::PaintCellUnderCursor(const FVector& RayOrigin, const
 	// размазывать её по кадрам чанковым рендером незачем (та же причина, что у
 	// DeleteSelectedCells()).
 	RenderGridImmediate();
+}
+
+void AAutomataOrchestrator::EnsureClipboardGhostComponent()
+{
+	if (ClipboardGhostComponent)
+	{
+		return;
+	}
+
+	// Обычный ISM, а не HISM: буфер - это кусок, вырезанный руками, LOD-дерево
+	// кластеров на нём не окупается (та же причина, что у
+	// SelectionMeshComponent).
+	ClipboardGhostComponent = NewObject<UInstancedStaticMeshComponent>(this);
+	ClipboardGhostComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ClipboardGhostComponent->SetCastShadow(false);
+	ClipboardGhostComponent->SetupAttachment(CellsMeshHierarchical);
+	ClipboardGhostComponent->RegisterComponent();
+	ClipboardGhostComponent->SetVisibility(false);
+}
+
+void AAutomataOrchestrator::RebuildClipboardGhostInstances()
+{
+	EnsureClipboardGhostComponent();
+	if (!ClipboardGhostComponent || !Grid)
+	{
+		return;
+	}
+
+	ClipboardGhostComponent->ClearInstances();
+	if (ClipboardCells.Num() == 0 || !CellMesh)
+	{
+		return;
+	}
+
+	ClipboardGhostComponent->SetStaticMesh(CellMesh);
+	ClipboardGhostComponent->SetMaterial(0, EnsureCellMaterialInstance());
+
+	// Инстансы кладутся в ЛОКАЛЬНЫХ координатах компонента, а буфер нормализован
+	// вокруг нуля - поэтому вставать на место под курсором будет сам компонент,
+	// одним SetWorldLocation() за кадр, а этот цикл больше не повторится (см.
+	// UpdateClipboardGhost()).
+	const FVector InstanceScale = ComputeCellMeshScale(CellPreviewScaleMultiplier);
+	const FLatticeTransform& Lattice = Grid->GetLattice();
+
+	TArray<FTransform> Transforms;
+	Transforms.Reserve(ClipboardCells.Num());
+	for (const FIntVector& Cell : ClipboardCells)
+	{
+		// GridToWorld() ОТ НУЛЯ решётки: это смещение клетки внутри буфера, а не
+		// её мировая позиция - мировую даёт трансформ компонента.
+		Transforms.Emplace(FQuat::Identity, Lattice.GridToWorld(Cell), InstanceScale);
+	}
+	ClipboardGhostComponent->AddInstances(Transforms, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/false);
+}
+
+void AAutomataOrchestrator::CopyCellsToClipboard()
+{
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CopyCellsToClipboard: сетка не инициализирована"));
+		return;
+	}
+
+	// Выделение, если оно есть, иначе вся сетка - тот же принцип, что у
+	// ArrayCells(). Из выделения берём только живые: оно переживает шаги, и
+	// клетка под ним могла умереть.
+	TArray<FIntVector> Source;
+	const bool bFromSelection = SelectedCells.Num() > 0;
+	if (bFromSelection)
+	{
+		Source.Reserve(SelectedCells.Num());
+		for (const FIntVector& Cell : SelectedCells)
+		{
+			if (Grid->IsAlive(Cell))
+			{
+				Source.Add(Cell);
+			}
+		}
+	}
+	else
+	{
+		Grid->GetAliveCells(Source);
+	}
+
+	if (Source.Num() == 0)
+	{
+		const FString Message = bFromSelection
+			? TEXT("Копирование: в выделении нет живых клеток")
+			: TEXT("Копирование: сетка пуста");
+		UE_LOG(LogTemp, Warning, TEXT("CopyCellsToClipboard: %s"), *Message);
+		ShowStatusMessage(StatusKey_Clipboard, Message);
+		return;
+	}
+
+	// Нормализация делает буфер независимым от того места, где кусок вырезали:
+	// вставка задаёт положение точкой в пространстве, а не сдвигом.
+	CellClipboard::Normalize(Source);
+	ClipboardCells = MoveTemp(Source);
+
+	// Инстансы призрака - один раз здесь, а не каждый кадр (см. doc-comment
+	// UpdateClipboardGhost()).
+	RebuildClipboardGhostInstances();
+
+	UE_LOG(LogTemp, Log, TEXT("CopyCellsToClipboard: скопировано %d клеток (%s)"),
+		ClipboardCells.Num(), bFromSelection ? TEXT("выделение") : TEXT("вся сетка"));
+
+	ShowStatusMessage(StatusKey_Clipboard,
+		FString::Printf(TEXT("Скопировано клеток: %d - Ctrl+V вставит под курсор"), ClipboardCells.Num()));
+}
+
+void AAutomataOrchestrator::UpdateClipboardGhost(const FVector& RayOrigin, const FVector& RayDirection)
+{
+	if (ClipboardCells.Num() == 0)
+	{
+		HideClipboardGhost();
+		return;
+	}
+
+	EnsureClipboardGhostComponent();
+	if (!ClipboardGhostComponent || !Grid)
+	{
+		return;
+	}
+
+	FIntVector BaseCell;
+	FIntVector FaceNormal;
+	if (!ComputePlacementTarget(RayOrigin, RayDirection, BaseCell, FaceNormal))
+	{
+		HideClipboardGhost();
+		return;
+	}
+
+	FIntVector BufferMin, BufferMax;
+	CellClipboard::ComputeBounds(ClipboardCells, BufferMin, BufferMax);
+	const FIntVector Origin = CellClipboard::ComputePasteOrigin(BufferMin, BufferMax, BaseCell, FaceNormal);
+
+	// Весь предпросмотр - одно перемещение компонента: инстансы внутри него
+	// стоят на своих местах с момента копирования.
+	ClipboardGhostComponent->SetWorldLocation(Grid->GetLattice().GridToWorld(Origin));
+	ClipboardGhostComponent->SetVisibility(true);
+}
+
+void AAutomataOrchestrator::HideClipboardGhost()
+{
+	if (ClipboardGhostComponent)
+	{
+		ClipboardGhostComponent->SetVisibility(false);
+	}
+}
+
+void AAutomataOrchestrator::PasteClipboard(const FVector& RayOrigin, const FVector& RayDirection)
+{
+	if (ClipboardCells.Num() == 0)
+	{
+		ShowStatusMessage(StatusKey_Clipboard, TEXT("Буфер пуст - сначала скопируйте (Ctrl+Shift+C)"));
+		return;
+	}
+
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PasteClipboard: сетка не инициализирована"));
+		return;
+	}
+
+	// Мутируем Grid - тот же запрет, что у всех путей правки.
+	if (bStepInProgress)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PasteClipboard: фоновый шаг ещё считается - вставка не выполнена"));
+		return;
+	}
+
+	FIntVector BaseCell;
+	FIntVector FaceNormal;
+	if (!ComputePlacementTarget(RayOrigin, RayDirection, BaseCell, FaceNormal))
+	{
+		return;
+	}
+
+	FIntVector BufferMin, BufferMax;
+	CellClipboard::ComputeBounds(ClipboardCells, BufferMin, BufferMax);
+	const FIntVector Origin = CellClipboard::ComputePasteOrigin(BufferMin, BufferMax, BaseCell, FaceNormal);
+
+	TArray<FIntVector> Placed;
+	CellClipboard::Place(ClipboardCells, Origin, Placed);
+
+	// ОДНА запись на всю вставку: в отличие от рисования по клетке, вставка и по
+	// смыслу одно действие. Уже живые клетки запись отсеет сама - вставка
+	// ДОБАВЛЯЕТ, а не заменяет область, так что накладка на существующую
+	// структуру ничего не стирает.
+	FCellEditRecord Record = CellEditJournal::MakeAddRecord(*Grid, Placed, GenerationCount);
+	const int32 AddedCount = Record.Edits.Num();
+	if (AddedCount == 0)
+	{
+		ShowStatusMessage(StatusKey_Clipboard, TEXT("Вставка: все клетки буфера здесь уже живые"));
+		return;
+	}
+
+	Record.Description = FString::Printf(TEXT("вставлено клеток: %d"), AddedCount);
+	CellEditJournal::ApplyForward(*Grid, Record);
+	RecordEdit(MoveTemp(Record));
+
+	RenderGridImmediate();
+
+	UE_LOG(LogTemp, Log, TEXT("PasteClipboard: вставлено %d из %d клеток буфера в (%d,%d,%d), живых стало %d"),
+		AddedCount, ClipboardCells.Num(), Origin.X, Origin.Y, Origin.Z, Grid->Num());
+
+	ShowStatusMessage(StatusKey_Clipboard,
+		FString::Printf(TEXT("Вставлено клеток: %d"), AddedCount));
 }
