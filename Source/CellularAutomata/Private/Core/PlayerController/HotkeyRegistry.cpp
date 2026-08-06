@@ -69,16 +69,29 @@ namespace HotkeyRegistry
 			{ EHotkey::CaptureTextureSlice,                TEXT("CA_CaptureTextureSlice"),                EKeys::F6 },
 			{ EHotkey::ToggleSeriesCapture,                TEXT("CA_ToggleSeriesCapture"),                EKeys::F7 },
 
-			{ EHotkey::AgeFilter0,                         TEXT("CA_AgeFilter0"),                         EKeys::Zero },
-			{ EHotkey::AgeFilter1,                         TEXT("CA_AgeFilter1"),                         EKeys::One },
-			{ EHotkey::AgeFilter2,                         TEXT("CA_AgeFilter2"),                         EKeys::Two },
-			{ EHotkey::AgeFilter3,                         TEXT("CA_AgeFilter3"),                         EKeys::Three },
-			{ EHotkey::AgeFilter4,                         TEXT("CA_AgeFilter4"),                         EKeys::Four },
-			{ EHotkey::AgeFilter5,                         TEXT("CA_AgeFilter5"),                         EKeys::Five },
-			{ EHotkey::AgeFilter6,                         TEXT("CA_AgeFilter6"),                         EKeys::Six },
-			{ EHotkey::AgeFilter7,                         TEXT("CA_AgeFilter7"),                         EKeys::Seven },
-			{ EHotkey::AgeFilter8,                         TEXT("CA_AgeFilter8"),                         EKeys::Eight },
-			{ EHotkey::AgeFilter9,                         TEXT("CA_AgeFilter9"),                         EKeys::Nine },
+			// Клавиша СДВИНУТА на единицу относительно возраста: 1 показывает
+			// возраст 0 (только что родившиеся), 9 - возраст 8, а 0 достаётся
+			// возрасту 9 вместе со всем, что старше.
+			//
+			// Так цифровой ряд читается слева направо ровно как рампа возрастов:
+			// 1,2,...,9,0 - это возрасты 0,1,...,8 и хвост. Раньше клавиша
+			// совпадала с возрастом (0 -> 0), и хвост сидел на 9 посреди ряда,
+			// а крайняя правая клавиша означала середину рампы.
+			//
+			// Имена действий остались по ВОЗРАСТУ, а не по клавише
+			// (CA_AgeFilter0 - это возраст 0, где бы он ни лежал): InputKey()
+			// достаёт их арифметикой AgeFilter0 + Age, и переименование по
+			// клавише сделало бы эту связь ложной при первом же переназначении.
+			{ EHotkey::AgeFilter0,                         TEXT("CA_AgeFilter0"),                         EKeys::One },
+			{ EHotkey::AgeFilter1,                         TEXT("CA_AgeFilter1"),                         EKeys::Two },
+			{ EHotkey::AgeFilter2,                         TEXT("CA_AgeFilter2"),                         EKeys::Three },
+			{ EHotkey::AgeFilter3,                         TEXT("CA_AgeFilter3"),                         EKeys::Four },
+			{ EHotkey::AgeFilter4,                         TEXT("CA_AgeFilter4"),                         EKeys::Five },
+			{ EHotkey::AgeFilter5,                         TEXT("CA_AgeFilter5"),                         EKeys::Six },
+			{ EHotkey::AgeFilter6,                         TEXT("CA_AgeFilter6"),                         EKeys::Seven },
+			{ EHotkey::AgeFilter7,                         TEXT("CA_AgeFilter7"),                         EKeys::Eight },
+			{ EHotkey::AgeFilter8,                         TEXT("CA_AgeFilter8"),                         EKeys::Nine },
+			{ EHotkey::AgeFilter9,                         TEXT("CA_AgeFilter9"),                         EKeys::Zero },
 
 			{ EHotkey::ToggleOrthographic,                 TEXT("CA_ToggleOrthographic"),                 EKeys::NumPadFive },
 			{ EHotkey::FrameAllCellsFromNumPad,            TEXT("CA_FrameAllCellsNumPad"),                EKeys::NumPadZero },
