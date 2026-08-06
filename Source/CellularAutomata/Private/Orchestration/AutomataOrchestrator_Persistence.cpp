@@ -195,11 +195,27 @@ bool AAutomataOrchestrator::WriteStateToFile(const FString& FilePath, bool bUpda
 	CaptureThumbnailPng(ThumbnailPng);
 	const double CaptureSeconds = FPlatformTime::Seconds() - CaptureStartSeconds;
 
-	// Cells строится напрямую из InitialStateCells (возраст 0) - Grid тут
-	// вообще не участвует.
-	TArray<AutomatonStateSerializer::FSavedCell> Cells;
-	Cells.Reserve(InitialStateCells.Num());
+	// В файл узор уходит ПЕРЕНЕСЁННЫМ В НАЧАЛО КООРДИНАТ: рой мог вырасти за
+	// тысячи клеток от нуля, и без переноса открытый в другой сессии файл
+	// оказался бы далеко за кадром (см. ComputeCenteringOffset() - там же про
+	// чётность сдвига). Сдвиг применяется к КОПИИ: сам InitialStateCells не
+	// трогается, сохранение по-прежнему не мутирует ничего - R после Ctrl+S
+	// возвращает туда же, куда возвращал до него.
+	const FIntVector CenteringOffset = AutomatonStateSerializer::ComputeCenteringOffset(InitialStateCells);
+
+	TArray<FIntVector> CenteredCells;
+	CenteredCells.Reserve(InitialStateCells.Num());
 	for (const FIntVector& Cell : InitialStateCells)
+	{
+		CenteredCells.Add(Cell + CenteringOffset);
+	}
+
+	// Cells строится из того же перенесённого набора (возраст 0) - обе секции
+	// файла обязаны быть в одной системе координат. Grid тут вообще не
+	// участвует.
+	TArray<AutomatonStateSerializer::FSavedCell> Cells;
+	Cells.Reserve(CenteredCells.Num());
+	for (const FIntVector& Cell : CenteredCells)
 	{
 		AutomatonStateSerializer::FSavedCell& Saved = Cells.AddDefaulted_GetRef();
 		Saved.Cell = Cell;
@@ -209,12 +225,12 @@ bool AAutomataOrchestrator::WriteStateToFile(const FString& FilePath, bool bUpda
 
 	const double WriteStartSeconds = FPlatformTime::Seconds();
 	TArray64<uint8> Bytes;
-	// InitialStateCells пишется и как основной снимок, и как отдельная
+	// Перенесённый паттерн пишется и как основной снимок, и как отдельная
 	// InitialCells-секция (см. doc-comment namespace'а в
 	// AutomatonStateSerializer.h) - это один и тот же набор клеток; формат
 	// при этом не меняется (совместимость со старыми файлами, где секции
 	// хранили разные вещи).
-	if (!AutomatonStateSerializer::WriteSave(Header, Cells, InitialStateCells, ThumbnailPng, Bytes))
+	if (!AutomatonStateSerializer::WriteSave(Header, Cells, CenteredCells, ThumbnailPng, Bytes))
 	{
 		return false; // причина уже в логе
 	}
@@ -246,8 +262,8 @@ bool AAutomataOrchestrator::WriteStateToFile(const FString& FilePath, bool bUpda
 		LastSaveFilePath = FilePath;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("WriteStateToFile: %d клеток (миниатюра: %lld байт) -> %s (%.1f КБ; скриншот: %.2f мс, запись: %.2f мс)"),
-		Cells.Num(), ThumbnailPng.Num(), *FilePath, Bytes.Num() / 1024.0, CaptureSeconds * 1000.0, WriteSeconds * 1000.0);
+	UE_LOG(LogTemp, Log, TEXT("WriteStateToFile: %d клеток (перенос в центр: %s; миниатюра: %lld байт) -> %s (%.1f КБ; скриншот: %.2f мс, запись: %.2f мс)"),
+		Cells.Num(), *CenteringOffset.ToString(), ThumbnailPng.Num(), *FilePath, Bytes.Num() / 1024.0, CaptureSeconds * 1000.0, WriteSeconds * 1000.0);
 	return true;
 }
 

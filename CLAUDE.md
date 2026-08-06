@@ -16,7 +16,7 @@ No lint config — it's a standard UE C++ project built through the Unreal toolc
 
 `"C:\Program Files\Epic Games\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "<repo>\CellularAutomata.uproject" -ExecCmds="Automation RunTests CellularAutomata" -testexit="Automation Test Queue Empty" -unattended -nopause -nosplash -abslog=<file>`
 
-Twenty tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
+Twenty-one tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
 
 - Engine install: `C:\Program Files\Epic Games\UE_5.7`
 - Regenerate Visual Studio project files after adding/removing source files:
@@ -58,7 +58,7 @@ Actor/controller composition, not a monolithic GameMode:
 
 - **`Automata/Capture/`** — orthogonal PNG slices rasterised **straight out of `FCellGrid`**: no GPU, no `SceneCapture`, so no antialiasing by construction, no resolution limit, and reproducible regardless of camera. F6 for one slice, F7 for a series. → **`docs/capture.md`**
 
-- **`Automata/Persistence/`** — the `.casave` container: rules plus the *initial* pattern (never the evolved grid) plus a thumbnail. Two independent version fields, two independent jobs. → **`docs/persistence.md`**
+- **`Automata/Persistence/`** — the `.casave` container: rules plus the *initial* pattern (never the evolved grid) plus a thumbnail. Two independent version fields, two independent jobs. The pattern is written **centred on the origin** (by an even offset, so FCC/BCC seeds keep their sublattice) — only in the file, never in the live grid. → **`docs/persistence.md`**
 
 - **`Automata/Sonification/`** — the simulation is **sonified**, not scored: sound is another instrument alongside the generation graph, and the ear catches periodicity and collapse before the eye does. Everything is measured in `y = ln(1 + AliveCount)` against the **generation number** — that one change of coordinates makes the slope a *relative* growth rate (identical for 100 cells and 7M), keeps a dead grid inside the domain, and survives the holes that `StepsPerRender` and GPU batching punch into the sample series. Curvature is dimensionless on purpose: it scales as the *square* of the slope, so any absolute threshold either always fires or never does. C++ ships parameters and triggers; **the MetaSound graph is built by hand in the editor and is not mine to write** — the same split as the UMG HUD. Events are detected by **edges, with no hooks in the orchestrator at all**. → **`docs/sonification.md`**
 
@@ -119,5 +119,5 @@ A class whose implementation outgrows one file is split by **responsibility into
 | `docs/persistence.md` | the `.casave` format and what it deliberately does not store |
 | `docs/hud.md` | `FHudStats`, the Blueprint API surface, the generation-graph Slate widget |
 | `docs/sonification.md` | the audio bridge, the log-space curve measurement, the MetaSound contract |
-| `docs/testing.md` | what each of the twelve automation tests guards |
+| `docs/testing.md` | what each automation test guards |
 | `docs/tooling.md` | the MCP bridge, the hot-patch loop, Live Coding crash modes |

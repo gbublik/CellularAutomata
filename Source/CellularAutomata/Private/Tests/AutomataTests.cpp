@@ -8,6 +8,7 @@
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Grid/LatticeTransform.h"
 #include "Automata/Meshing/ChunkGridView.h"
+#include "Automata/Persistence/AutomatonStateSerializer.h"
 #include "Automata/Rendering/CellVisibilityFilter.h"
 #include "Automata/Rendering/ColorRamp.h"
 #include "Core/PlayerController/HotkeyRegistry.h"
@@ -2963,6 +2964,98 @@ bool FHotkeyRegistryTest::RunTest(const FString& Parameters)
 				AddWarning(TEXT("в DefaultInput.ini нет ни одной строки CA_* - раскладка целиком на значениях по умолчанию"));
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSaveCenteringOffsetTest,
+	"CellularAutomata.Persistence.CenteringOffset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FSaveCenteringOffsetTest::RunTest(const FString& Parameters)
+{
+	// Перенос паттерна в начало координат при записи .casave (см.
+	// AutomatonStateSerializer::ComputeCenteringOffset()). Проверяются ровно те
+	// три свойства, на которых он держится, - остальное в нём тривиально.
+
+	// ПЕРВОЕ: центр габарита действительно приезжает к нулю. Проверка идёт на
+	// узоре, СМЕЩЁННОМ далеко от нуля и НЕсимметричном по каждой оси, - это и
+	// есть рабочий случай (рой вырос за тысячи клеток от начала координат), а
+	// на симметричном вокруг нуля наборе ошибка знака была бы не видна.
+	{
+		const TArray<FIntVector> Cells = {
+			FIntVector(1000, -3001, 40),
+			FIntVector(1040, -2941, 40),
+			FIntVector(1020, -2971, 100),
+		};
+
+		const FIntVector Offset = AutomatonStateSerializer::ComputeCenteringOffset(Cells);
+
+		FIntVector Min(MAX_int32), Max(MIN_int32);
+		for (const FIntVector& Cell : Cells)
+		{
+			const FIntVector Moved = Cell + Offset;
+			Min.X = FMath::Min(Min.X, Moved.X); Max.X = FMath::Max(Max.X, Moved.X);
+			Min.Y = FMath::Min(Min.Y, Moved.Y); Max.Y = FMath::Max(Max.Y, Moved.Y);
+			Min.Z = FMath::Min(Min.Z, Moved.Z); Max.Z = FMath::Max(Max.Z, Moved.Z);
+		}
+
+		// Допуск в две клетки, а не ноль: сдвиг округляется до чётного (см.
+		// ниже), и середина габарита сама может лежать на полуцелой координате.
+		const FIntVector Center((Min.X + Max.X) / 2, (Min.Y + Max.Y) / 2, (Min.Z + Max.Z) / 2);
+		if (FMath::Abs(Center.X) > 2 || FMath::Abs(Center.Y) > 2 || FMath::Abs(Center.Z) > 2)
+		{
+			AddError(FString::Printf(TEXT("центр после переноса (%d,%d,%d) - слишком далеко от нуля"),
+				Center.X, Center.Y, Center.Z));
+		}
+	}
+
+	// ВТОРОЕ, и ради этого тест написан: сдвиг ЧЁТНЫЙ по каждой оси. Нечётный
+	// перенёс бы ГЦК/ОЦК-узор на соседнюю подрешётку (см. ECellParityFilter), и
+	// поломка была бы молчаливой - файл открылся бы, картинка выглядела бы той
+	// же, а первое же пересевание ушло бы мимо. Перебором смещений проверяется
+	// именно это: где бы узор ни стоял, обе чётности - и сумма координат
+	// (Even/Odd), и совпадение чётностей между координатами (SameParity) -
+	// обязаны пережить перенос.
+	for (int32 Shift = -3; Shift <= 3; ++Shift)
+	{
+		const TArray<FIntVector> Cells = {
+			FIntVector(Shift, Shift, Shift),
+			FIntVector(Shift + 7, Shift + 2, Shift + 5),
+			FIntVector(Shift - 4, Shift + 9, Shift - 1),
+		};
+
+		const FIntVector Offset = AutomatonStateSerializer::ComputeCenteringOffset(Cells);
+
+		if ((Offset.X & 1) != 0 || (Offset.Y & 1) != 0 || (Offset.Z & 1) != 0)
+		{
+			AddError(FString::Printf(TEXT("сдвиг (%d,%d,%d) нечётный - узор уедет на соседнюю подрешётку"),
+				Offset.X, Offset.Y, Offset.Z));
+			continue;
+		}
+
+		for (const FIntVector& Cell : Cells)
+		{
+			const FIntVector Moved = Cell + Offset;
+			const int32 SumBefore = Cell.X + Cell.Y + Cell.Z;
+			const int32 SumAfter = Moved.X + Moved.Y + Moved.Z;
+			TestEqual(TEXT("чётность суммы координат пережила перенос"),
+				FMath::Abs(SumAfter % 2), FMath::Abs(SumBefore % 2));
+
+			const bool bSameParityBefore = ((Cell.X ^ Cell.Y) & 1) == 0 && ((Cell.Y ^ Cell.Z) & 1) == 0;
+			const bool bSameParityAfter = ((Moved.X ^ Moved.Y) & 1) == 0 && ((Moved.Y ^ Moved.Z) & 1) == 0;
+			TestEqual(TEXT("совпадение чётностей координат пережило перенос"), bSameParityAfter, bSameParityBefore);
+		}
+	}
+
+	// ТРЕТЬЕ: пустой набор даёт нулевой сдвиг, а не обращение к Cells[0].
+	// InitialStateCells пустым до сохранения не доходит (WriteStateToFile()
+	// отказывается раньше), но функция публичная и обязана быть тотальной.
+	{
+		const TArray<FIntVector> Empty;
+		TestEqual(TEXT("пустой набор - нулевой сдвиг"),
+			AutomatonStateSerializer::ComputeCenteringOffset(Empty), FIntVector::ZeroValue);
 	}
 
 	return true;

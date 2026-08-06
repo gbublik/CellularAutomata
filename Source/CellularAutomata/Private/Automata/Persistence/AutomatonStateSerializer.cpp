@@ -15,6 +15,19 @@ namespace
 
 	// Magic + ContainerVersion + JsonUtf8Length
 	constexpr int64 FixedPrefixBytes = 12;
+
+	/** Середина отрезка [MinValue, MaxValue], опущенная до ближайшего чётного
+	 *  снизу. Считается в int64: сумма двух int32-координат переполняет int32,
+	 *  а координаты клеток ничем не ограничены. Деление - именно
+	 *  DivideAndRoundDown (настоящий floor), а не '/': у отрицательных координат
+	 *  усечение к нулю дало бы другой ответ, и это ровно та же ловушка, что в
+	 *  чанковой арифметике FDenseCellGrid. */
+	int32 EvenMidpoint(int32 MinValue, int32 MaxValue)
+	{
+		const int64 Sum = static_cast<int64>(MinValue) + static_cast<int64>(MaxValue);
+		const int64 Center = FMath::DivideAndRoundDown<int64>(Sum, 2);
+		return static_cast<int32>(FMath::DivideAndRoundDown<int64>(Center, 2) * 2);
+	}
 }
 
 void AutomatonStateSerializer::ApplyCells(const TArray<FSavedCell>& Cells, FCellGrid& Grid)
@@ -24,6 +37,31 @@ void AutomatonStateSerializer::ApplyCells(const TArray<FSavedCell>& Cells, FCell
 		Grid.SetAlive(Saved.Cell, true);
 		Grid.SetAge(Saved.Cell, Saved.Age);
 	}
+}
+
+FIntVector AutomatonStateSerializer::ComputeCenteringOffset(const TArray<FIntVector>& Cells)
+{
+	if (Cells.Num() == 0)
+	{
+		return FIntVector::ZeroValue;
+	}
+
+	FIntVector Min = Cells[0];
+	FIntVector Max = Cells[0];
+	for (const FIntVector& Cell : Cells)
+	{
+		Min.X = FMath::Min(Min.X, Cell.X);
+		Min.Y = FMath::Min(Min.Y, Cell.Y);
+		Min.Z = FMath::Min(Min.Z, Cell.Z);
+		Max.X = FMath::Max(Max.X, Cell.X);
+		Max.Y = FMath::Max(Max.Y, Cell.Y);
+		Max.Z = FMath::Max(Max.Z, Cell.Z);
+	}
+
+	return FIntVector(
+		-EvenMidpoint(Min.X, Max.X),
+		-EvenMidpoint(Min.Y, Max.Y),
+		-EvenMidpoint(Min.Z, Max.Z));
 }
 
 bool AutomatonStateSerializer::WriteSave(const FAutomatonSaveHeader& Header, const TArray<FSavedCell>& Cells,
