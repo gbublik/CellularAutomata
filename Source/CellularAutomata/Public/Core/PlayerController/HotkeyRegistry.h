@@ -60,6 +60,7 @@ enum class EHotkey : uint8
 	SelectCellsInCullVolume,
 	SaveState,
 	LoadState,
+	ArrayCells,
 
 	// --- Через сырой InputKey() ---
 	ToggleSimulation,

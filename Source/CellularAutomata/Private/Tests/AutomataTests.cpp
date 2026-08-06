@@ -4,6 +4,7 @@
 
 #include "Automata/Capture/CellRasterizer.h"
 #include "Automata/Editing/CellEditJournal.h"
+#include "Automata/Generation/CellArrayModifier.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Grid/LatticeTransform.h"
@@ -2964,6 +2965,145 @@ bool FHotkeyRegistryTest::RunTest(const FString& Parameters)
 				AddWarning(TEXT("в DefaultInput.ini нет ни одной строки CA_* - раскладка целиком на значениях по умолчанию"));
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCellArrayModifierTest,
+	"CellularAutomata.Generation.ArrayModifier",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FCellArrayModifierTest::RunTest(const FString& Parameters)
+{
+	// Тираж (CellArrayModifier::Tile(), хоткей Ctrl+D). Источник везде один и
+	// тот же - две клетки в ряд по X, то есть габарит (2,1,1): на нём видно
+	// разницу между "габаритом" и "расстоянием между крайними клетками",
+	// которая и есть главная ловушка этого модуля (шаг впритык равен 2, а не 1).
+	const TArray<FIntVector> Source = { FIntVector(0, 0, 0), FIntVector(1, 0, 0) };
+
+	TestEqual(TEXT("габарит двух клеток в ряд"), CellArrayModifier::ComputeSize(Source), FIntVector(2, 1, 1));
+
+	// ПЕРВОЕ: Count = 1 по всем осям обязан быть тождеством. Это то, во что
+	// упирается каждый случай "тираж настроен, но по этой оси не размножаем", и
+	// сдвиг центрирования на нём обязан быть нулевым при любом шаге - иначе
+	// набор незаметно уезжал бы от источника на ровном месте.
+	{
+		FCellArrayParams Params;
+		Params.Count = FIntVector(1, 1, 1);
+		Params.RelativeOffset = FVector(3.0, 3.0, 3.0); // заведомо ненулевой шаг
+		Params.bCenterOnSource = true;
+
+		TArray<FIntVector> Result;
+		CellArrayModifier::Tile(Source, Params, Result);
+
+		TestEqual(TEXT("Count=1 не меняет число клеток"), Result.Num(), Source.Num());
+		TestTrue(TEXT("Count=1 не двигает клетки"),
+			TSet<FIntVector>(Result).Includes(TSet<FIntVector>(Source)));
+	}
+
+	// ВТОРОЕ, и ради этого тест написан: RelativeOffset = 1 значит ВПРИТЫК -
+	// копии касаются, но не наезжают и не оставляют щели. Три копии габарита 2
+	// обязаны дать сплошной отрезок из шести клеток; наезд на клетку (шаг 1)
+	// дал бы четыре, щель (шаг 3) - разрывы. Ни то, ни другое не видно по
+	// числу клеток в логе, только по множеству.
+	{
+		FCellArrayParams Params;
+		Params.Count = FIntVector(3, 1, 1);
+		Params.RelativeOffset = FVector(1.0, 1.0, 1.0);
+		Params.bCenterOnSource = false;
+
+		TestEqual(TEXT("шаг впритык равен габариту"),
+			CellArrayModifier::ComputeStep(FIntVector(2, 1, 1), Params), FIntVector(2, 1, 1));
+
+		TArray<FIntVector> Result;
+		CellArrayModifier::Tile(Source, Params, Result);
+
+		const TSet<FIntVector> Unique(Result);
+		TestEqual(TEXT("три копии по две клетки"), Result.Num(), 6);
+		TestEqual(TEXT("наложений нет"), Unique.Num(), 6);
+		for (int32 X = 0; X <= 5; ++X)
+		{
+			TestTrue(*FString::Printf(TEXT("клетка (%d,0,0) на месте"), X), Unique.Contains(FIntVector(X, 0, 0)));
+		}
+	}
+
+	// ТРЕТЬЕ: ConstantOffset прибавляется к шагу поверх доли габарита - именно
+	// этим задаётся зазор в одну пустую клетку, то есть разница между "копии
+	// срослись в одно тело" и "стоят рядом" с точки зрения правила.
+	{
+		FCellArrayParams Params;
+		Params.Count = FIntVector(2, 1, 1);
+		Params.RelativeOffset = FVector(1.0, 1.0, 1.0);
+		Params.ConstantOffset = FIntVector(1, 0, 0);
+		Params.bCenterOnSource = false;
+
+		TArray<FIntVector> Result;
+		CellArrayModifier::Tile(Source, Params, Result);
+
+		const TSet<FIntVector> Unique(Result);
+		TestFalse(TEXT("между копиями пустая клетка"), Unique.Contains(FIntVector(2, 0, 0)));
+		TestTrue(TEXT("вторая копия сдвинута на 3"), Unique.Contains(FIntVector(3, 0, 0)));
+	}
+
+	// ЧЕТВЁРТОЕ: центрирование. При нечётном Count центр тиража обязан совпасть
+	// с центром источника ТОЧНО - это то, ради чего флаг существует (камера
+	// смотрит на источник, и тираж не должен уезжать из кадра).
+	{
+		FCellArrayParams Params;
+		Params.Count = FIntVector(3, 1, 1);
+		Params.RelativeOffset = FVector(1.0, 1.0, 1.0);
+		Params.bCenterOnSource = true;
+
+		TArray<FIntVector> Result;
+		CellArrayModifier::Tile(Source, Params, Result);
+
+		int32 MinX = MAX_int32, MaxX = MIN_int32;
+		for (const FIntVector& Cell : Result)
+		{
+			MinX = FMath::Min(MinX, Cell.X);
+			MaxX = FMath::Max(MaxX, Cell.X);
+		}
+		// Источник занимает [0,1], центр 0.5; тираж обязан лечь на [-2,3] с тем
+		// же центром.
+		TestEqual(TEXT("центрированный тираж начинается на -2"), MinX, -2);
+		TestEqual(TEXT("центрированный тираж кончается на 3"), MaxX, 3);
+	}
+
+	// ПЯТОЕ: оценка бюджета обязана быть верхней границей - на ней стоит отказ
+	// ДО касания сетки, и заниженная оценка означала бы стёртое состояние вместо
+	// честного отказа. Проверяется и на наезжающих копиях, где фактический
+	// результат меньше оценки.
+	{
+		FCellArrayParams Params;
+		Params.Count = FIntVector(2, 2, 2);
+		Params.RelativeOffset = FVector(0.0, 0.0, 0.0); // все копии друг в друге
+
+		TestEqual(TEXT("оценка - произведение Count на размер источника"),
+			CellArrayModifier::EstimateCellCount(Source.Num(), Params), (int64)16);
+
+		TArray<FIntVector> Result;
+		CellArrayModifier::Tile(Source, Params, Result);
+		TestTrue(TEXT("фактических уникальных клеток не больше оценки"),
+			TSet<FIntVector>(Result).Num() <= 16);
+	}
+
+	// ШЕСТОЕ, вырожденные концы. Пустой источник не должен давать набор из
+	// нулей, а Count <= 0 (структура доступна из Blueprint мимо ClampMin) обязан
+	// читаться как 1: "ноль копий" означало бы молча стёртую сцену.
+	{
+		FCellArrayParams Params;
+		Params.Count = FIntVector(0, -5, 1);
+
+		TArray<FIntVector> Empty;
+		TArray<FIntVector> Result;
+		CellArrayModifier::Tile(Empty, Params, Result);
+		TestEqual(TEXT("пустой источник - пустой результат"), Result.Num(), 0);
+
+		CellArrayModifier::Tile(Source, Params, Result);
+		TestEqual(TEXT("Count <= 0 читается как 1"), Result.Num(), Source.Num());
+		TestEqual(TEXT("оценка при Count <= 0 тоже как при 1"),
+			CellArrayModifier::EstimateCellCount(Source.Num(), Params), (int64)2);
 	}
 
 	return true;

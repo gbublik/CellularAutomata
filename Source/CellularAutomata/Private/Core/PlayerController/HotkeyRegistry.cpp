@@ -53,6 +53,9 @@ namespace HotkeyRegistry
 			{ EHotkey::SelectCellsInCullVolume,            TEXT("CA_SelectCellsInCullVolume"),            EKeys::L },
 			{ EHotkey::SaveState,                          TEXT("CA_SaveState"),                          EKeys::S },
 			{ EHotkey::LoadState,                          TEXT("CA_LoadState"),                          EKeys::O },
+			// D, как и S/O, замаплена без модификатора: Ctrl проверяется в
+			// обработчике, а голая D остаётся движением камеры вправо.
+			{ EHotkey::ArrayCells,                         TEXT("CA_ArrayCells"),                         EKeys::D },
 
 			// --- Через сырой InputKey() ---
 			{ EHotkey::ToggleSimulation,                   TEXT("CA_ToggleSimulation"),                   EKeys::SpaceBar },

@@ -4,6 +4,7 @@
 #include "CellularAutomata/Public/Orchestration/AutomataOrchestrator.h"
 
 #include "Automata/Grid/DenseCellGrid.h"
+#include "Automata/Generation/CellArrayModifier.h"
 #include "Automata/Generation/StateGenerators.h"
 #include "Automata/Generation/StateGeneratorPresets.h"
 #include "Async/Async.h"
@@ -138,6 +139,118 @@ void AAutomataOrchestrator::GenerateState()
 
 	ShowStatusMessage(StatusKey_Generation,
 		FString::Printf(TEXT("Генератор: %s - %d клеток"), *GeneratorName, Grid->Num()));
+}
+
+void AAutomataOrchestrator::ArrayCells()
+{
+	if (!CanGenerateNewState(TEXT("ArrayCells")))
+	{
+		return;
+	}
+
+	if (!Grid)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ArrayCells: сетка не инициализирована"));
+		return;
+	}
+
+	// Выделение, если оно есть, иначе вся сетка - см. doc-comment в заголовке.
+	// Из выделения берём только реально живые клетки: оно переживает шаги
+	// симуляции, и клетка под ним могла давно умереть (та же фильтрация, что в
+	// StartFromSelection()/ComputeSelectedCellsBounds()).
+	TArray<FIntVector> Source;
+	const bool bFromSelection = SelectedCells.Num() > 0;
+	if (bFromSelection)
+	{
+		Source.Reserve(SelectedCells.Num());
+		for (const FIntVector& Cell : SelectedCells)
+		{
+			if (Grid->IsAlive(Cell))
+			{
+				Source.Add(Cell);
+			}
+		}
+	}
+	else
+	{
+		Grid->GetAliveCells(Source);
+	}
+
+	if (Source.Num() == 0)
+	{
+		const FString Message = bFromSelection
+			? TEXT("Тираж: в выделении нет живых клеток")
+			: TEXT("Тираж: сетка пуста - размножать нечего");
+		UE_LOG(LogTemp, Warning, TEXT("ArrayCells: %s"), *Message);
+		ShowStatusMessage(StatusKey_Generation, Message);
+		return;
+	}
+
+	// Оценка ДО единого касания сетки - та же идиома, что у GenerateState():
+	// отказ обязан оставить текущее состояние целым. Здесь она к тому же точная
+	// сверху и дешёвая: произведение трёх Count'ов на размер источника.
+	const int64 Estimate = CellArrayModifier::EstimateCellCount(Source.Num(), ArrayParams);
+	if (Estimate > MaxGeneratedCells)
+	{
+		const FString Message = FString::Printf(
+			TEXT("Тираж: ожидается %lld клеток при пределе %lld - уменьшите Count или поднимите MaxGeneratedCells"),
+			Estimate, MaxGeneratedCells);
+		UE_LOG(LogTemp, Warning, TEXT("ArrayCells: %s"), *Message);
+		ShowStatusMessage(StatusKey_Generation, Message);
+		return;
+	}
+
+	const FIntVector SourceSize = CellArrayModifier::ComputeSize(Source);
+	const FIntVector Step = CellArrayModifier::ComputeStep(SourceSize, ArrayParams);
+
+	// Нулевой шаг по оси, которую при этом размножают, - не ошибка (все копии
+	// лягут одна в одну и схлопнутся при заливке), но результат совпадёт с
+	// источником, а выглядеть это будет как "хоткей ничего не сделал".
+	if ((ArrayParams.Count.X > 1 && Step.X == 0)
+		|| (ArrayParams.Count.Y > 1 && Step.Y == 0)
+		|| (ArrayParams.Count.Z > 1 && Step.Z == 0))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("ArrayCells: шаг %s - по оси с нулевым шагом копии лягут одна в одну; проверьте RelativeOffset/ConstantOffset"),
+			*Step.ToString());
+	}
+
+	// Нечётный шаг уводит ГЦК/ОЦК-набор с его подрешётки: половина копий сядет
+	// на соседнюю, и правило, замкнутое на подрешётке, поведёт себя на них
+	// иначе. Молчать об этом нельзя - картинка выглядит правдоподобно (см.
+	// ECellParityFilter и перенос при сохранении в ComputeCenteringOffset()).
+	if (GenerationParams.ParityFilter != ECellParityFilter::None
+		&& ((Step.X & 1) != 0 || (Step.Y & 1) != 0 || (Step.Z & 1) != 0))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("ArrayCells: шаг %s нечётный при фильтре чётности %d - копии уедут на соседнюю подрешётку"),
+			*Step.ToString(), static_cast<int32>(GenerationParams.ParityFilter));
+	}
+
+	const double StartSeconds = FPlatformTime::Seconds();
+	TArray<FIntVector> Cells;
+	CellArrayModifier::Tile(Source, ArrayParams, Cells);
+	const double TileSeconds = FPlatformTime::Seconds() - StartSeconds;
+
+	// Источник больше не нужен - освобождаем ДО заливки, иначе на миллионах
+	// клеток пик держал бы и его, и тираж (та же причина, что в
+	// RebuildGridFromCells()).
+	Source.Empty();
+
+	const int32 CopyCount = FMath::Max(ArrayParams.Count.X, 1)
+		* FMath::Max(ArrayParams.Count.Y, 1)
+		* FMath::Max(ArrayParams.Count.Z, 1);
+
+	RebuildGridFromCells(MoveTemp(Cells));
+
+	UE_LOG(LogTemp, Log,
+		TEXT("ArrayCells: %d копий (%s), источник - %s, габарит %s, шаг %s; клеток %d (тираж: %.2f мс)"),
+		CopyCount, *ArrayParams.Count.ToString(),
+		bFromSelection ? TEXT("выделение") : TEXT("вся сетка"),
+		*SourceSize.ToString(), *Step.ToString(), Grid->Num(), TileSeconds * 1000.0);
+
+	ShowStatusMessage(StatusKey_Generation,
+		FString::Printf(TEXT("Тираж: %d копий - %d клеток"), CopyCount, Grid->Num()));
 }
 
 void AAutomataOrchestrator::CycleStateGeneratorType()

@@ -21,6 +21,7 @@
 #include "Automata/Capture/SliceCaptureParams.h"
 #include "Automata/Capture/CapturePresets.h"
 #include "Automata/Generation/StateGeneratorPresets.h"
+#include "Automata/Generation/CellArrayParams.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Editing/CellEditJournal.h"
 #include "Automata/Simulation/Neighborhood.h"
@@ -329,6 +330,34 @@ public:
 	 *  как он что-то построит. */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Generation")
 	void CycleStateGeneratorType();
+
+	/** Параметры тиража - см. ArrayCells() и FCellArrayParams. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Array")
+	FCellArrayParams ArrayParams;
+
+	/** Размножить клетки по трём осям решёткой копий - модификатор Array из
+	 *  Blender, только над клетками. Хоткей Ctrl+D.
+	 *
+	 *  Источник - ВЫДЕЛЕНИЕ, если оно есть, иначе все живые клетки сетки.
+	 *  Никакого переключателя между этими двумя режимами нет намеренно:
+	 *  выделение и означает "работаем вот с этим", а его отсутствие - "работаем
+	 *  со всем", ровно как в DCC-пакетах. Из выделения берутся только реально
+	 *  живые клетки - выделение переживает шаги симуляции, и клетка под ним
+	 *  могла давно умереть (та же фильтрация, что в StartFromSelection()).
+	 *
+	 *  Результат ЗАМЕНЯЕТ сетку целиком и становится новым изначальным узором:
+	 *  поколение обнуляется, R возвращает к тиражу, Ctrl+S сохраняет его.
+	 *  То есть это Enter (StartFromSelection()), но с размножением по дороге, -
+	 *  и всё, что не попало в источник, исчезает. Возраст у всех копий 0,
+	 *  включая ту, что стояла на месте оригинала: тираж - это новая затравка, а
+	 *  не продолжение прогона (см. RebuildGridFromCells()).
+	 *
+	 *  Отказывается и ничего не трогает, если идёт фоновый шаг, сетка пуста или
+	 *  оценка числа клеток (произведение трёх Count'ов на размер источника)
+	 *  превышает MaxGeneratedCells - тот же бюджет и та же идиома "проверить до
+	 *  единого касания сетки", что у GenerateState(). */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Array")
+	void ArrayCells();
 
 	/** Таблица готовых генераторов для выпадашки в HUD (см.
 	 *  FStateGeneratorPreset/StateGeneratorPresets::GetAll()). Возвращает

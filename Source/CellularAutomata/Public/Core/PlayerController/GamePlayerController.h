@@ -597,6 +597,12 @@ protected:
 	 *  ключа без модификатора - Ctrl проверяется внутри обработчика. */
 	void OnLoadState();
 
+	/** Хоткей D (Ctrl+D - "размножить", как дублирование в DCC-пакетах) -
+	 *  AAutomataOrchestrator::ArrayCells(). Та же схема, что у S/O: маппинг без
+	 *  модификатора, Ctrl проверяется внутри, голая D остаётся движением камеры
+	 *  вправо (DefaultPawn). */
+	void OnArrayCells();
+
 	/** Клавиша, назначенная действию сейчас: значение по умолчанию из
 	 *  HotkeyRegistry, переопределённое Config/DefaultInput.ini. Разрешается
 	 *  один раз в SetupInputComponent() и дальше только читается - InputKey()

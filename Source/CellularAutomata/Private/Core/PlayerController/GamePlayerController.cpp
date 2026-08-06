@@ -186,6 +186,9 @@ void AGamePlayerController::SetupInputComponent()
 		// эффект удержания Ctrl+S во время полёта, см. doc-comment.
 		{ TEXT("IA_SaveState"), { EHotkey::SaveState }, { { ETriggerEvent::Started, &AGamePlayerController::OnSaveOrSaveAs } } },
 		{ TEXT("IA_LoadState"), { EHotkey::LoadState }, { { ETriggerEvent::Started, &AGamePlayerController::OnLoadState } } },
+		// D - та же схема, что у S/O: маппинг без модификатора, Ctrl проверяется
+		// внутри обработчика, голая D остаётся движением камеры вправо.
+		{ TEXT("IA_ArrayCells"), { EHotkey::ArrayCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnArrayCells } } },
 	};
 
 	// Раскладка разрешается ОДИН раз здесь, и дальше только читается: и таблица
@@ -2060,6 +2063,26 @@ void AGamePlayerController::OnSaveOrSaveAs()
 	{
 		Orchestrator->SaveState(); // Ctrl+S
 	}
+}
+
+void AGamePlayerController::OnArrayCells()
+{
+	// Как и у S/O - маппинг самой клавиши без модификатора, Ctrl проверяется
+	// здесь; голая D продолжает двигать камеру вправо (DefaultPawn).
+	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (!bCtrl)
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OnArrayCells: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	Orchestrator->ArrayCells();
 }
 
 void AGamePlayerController::OnLoadState()
