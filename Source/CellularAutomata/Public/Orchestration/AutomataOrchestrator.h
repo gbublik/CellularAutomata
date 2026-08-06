@@ -13,6 +13,7 @@
 #include "Automata/Rendering/ChunkedRenderOrder.h"
 #include "Automata/Rendering/CellMeshComponentType.h"
 #include "Automata/Rendering/CellRenderStats.h"
+#include "Automata/Rendering/CellVisibilityFilter.h"
 #include "Automata/Rendering/ColorRamp.h"
 #include "Automata/Rendering/RenderPresets.h"
 #include "Automata/Persistence/AutomatonSaveHeader.h"
@@ -140,10 +141,13 @@ public:
 	 *  кадрирования, в отличие от самого рендера, точность до угасающей клетки
 	 *  не нужна, а радиус и так берётся с запасом (см. ComputeCellsBounds()).
 	 *
-	 *  Продублировала фильтрацию, а не вызывает BuildCellRenderData()
-	 *  напрямую: та ещё и красит клетки, и обновляет учёт для перестройки
-	 *  среза (LastViewSliceCameraLocation/...) - ничего из этого кадрированию
-	 *  не нужно. Если меняете один из трёх фильтров - поменяйте оба места.
+	 *  Фильтрует через CellVisibility (см. BuildVisibilityFilter()), а не
+	 *  вызовом BuildCellRenderData(): та ещё и красит клетки, и обновляет учёт
+	 *  для перестройки среза (LastViewSliceCameraLocation/...) - ничего из
+	 *  этого кадрированию не нужно. Сами три фильтра при этом ОДНИ И ТЕ ЖЕ, не
+	 *  копия: раньше здесь стоял дубль, а инвариант держался припиской
+	 *  "поменяете один - поменяйте оба места", то есть ровно тем, что
+	 *  разъезжается первым.
 	 *
 	 *  false, если сетка пуста или фильтры не оставили ни одной клетки.
 	 *
@@ -2764,6 +2768,25 @@ private:
 	 *  диапазона. Таблица на 256 байт строится один раз на рендер - та же
 	 *  идиома, что у возрастных LUT цвета в BuildCellRenderData(). */
 	bool BuildAgeFilterMask(TArray<bool>& OutMask) const;
+
+	/** Собирает срез и фильтр возраста в один CellVisibility::FFilter - то
+	 *  единственное место, где параметры трёх отсечений читаются с актора.
+	 *  Пользуются им BuildCellRenderData() и ComputeVisibleCellsBounds(),
+	 *  и именно это делает "что видно на экране" одним определением вместо
+	 *  двух копий, которые раньше держались комментарием.
+	 *
+	 *  bUpdateSliceCameraState - единственное, чем эти два вызывающих
+	 *  различаются: рендер запоминает, для какой камеры срез построен (по
+	 *  этому Tick() решает, пора ли перестраивать, см. ShouldRefreshViewSlice()),
+	 *  а кадрирование камеры не должно - иначе кадрирование само себе отменяло
+	 *  бы перестройку среза. */
+	CellVisibility::FFilter BuildVisibilityFilter(bool bUpdateSliceCameraState);
+
+	/** Границы активного куба отсечения, или nullptr - в том виде, в каком их
+	 *  ждёт CellVisibility::GatherAliveCells(). Возвращает через OutBounds,
+	 *  потому что FBox нужен по адресу, а временный объект бы не пережил вызов. */
+	const FBox* GetActiveCullBounds(FBox& OutBounds);
+
 	/** Приводит AgeFilterValues к каноническому виду (отсортированы, без
 	 *  повторов, все в диапазоне 0..255) и перерисовывает сетку. Общий хвост
 	 *  SetAgeFilter() и ToggleAgeFilterValue(), он же - место, где список,
@@ -3092,6 +3115,33 @@ private:
 	 *  GetLastComputeUploadBytes()), до того как сама стратегия будет
 	 *  уничтожена по завершении фоновой лямбды. */
 	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, int32 GenerationsAdvanced);
+
+	/** Общий хвост ОБОИХ применений посчитанного поколения - Next() (ручной F)
+	 *  и ApplyStepResult() (непрерывный Play). Подставляет сетку, снимает
+	 *  bStepInProgress, разряжает отложенные R/N/Ctrl+Z, проверяет вымирание и
+	 *  двигает счётчики. Дальше пути расходятся - Play ещё снимает серию и
+	 *  решает, рисовать ли это поколение, - поэтому рендер сюда не входит.
+	 *
+	 *  Возвращает **false, если применять больше нечего**: отложенное действие
+	 *  или авто-пересев уже перехватили управление и сами перестроили сетку.
+	 *  Вызывающему остаётся просто выйти, ничего не рисуя.
+	 *
+	 *  Порядок здесь несущий, и ровно поэтому он записан один раз, а не двумя
+	 *  копиями: отложенные флаги разряжаются ДО увеличения GenerationCount,
+	 *  потому что StepBackward() отсчитывает от него, а поколение, только что
+	 *  посчитанное этим заходом, на экране ещё не было - учтя его, откат вернул
+	 *  бы ровно то, что сейчас в Grid. Раньше эта последовательность стояла в
+	 *  двух местах и расходилась в мелочи: LastGpuComputeUploadBytes в Next()
+	 *  записывался ПОСЛЕ разрядки флагов, то есть терялся, если отложенное
+	 *  действие срабатывало. Теперь как в Play - до неё. */
+	bool CommitComputedGenerations(TUniquePtr<FCellGrid> NewGrid, int64 ComputeUploadBytes, int32 Generations);
+
+	/** Двигает счётчик поколений Ghost Shape и перестраивает его по достижении
+	 *  GhostShapeRefreshInterval. Отдельным методом, потому что зовётся из
+	 *  Next() и ApplyStepResult() на РАЗНЫХ местах: в Play - после серийной
+	 *  съёмки, на ручном шаге - сразу перед рендером, и сводить их в одну точку
+	 *  значило бы переставить съёмку относительно перестройки меша. */
+	void AdvanceGhostShape(int32 Generations);
 
 	/** Future от Async() в StepAsync() - StepAsync() передаёт фоновому потоку
 	 *  сырой Grid.Get() (см. StepAsync()), поэтому EndPlay() обязан дождаться

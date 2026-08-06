@@ -8,6 +8,7 @@
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Grid/LatticeTransform.h"
 #include "Automata/Meshing/ChunkGridView.h"
+#include "Automata/Rendering/CellVisibilityFilter.h"
 #include "Automata/Rendering/ColorRamp.h"
 #include "Automata/Simulation/LatticeNeighborhood.h"
 #include "Automata/Simulation/CellAging.h"
@@ -2695,6 +2696,113 @@ bool FSonificationCurveTest::RunTest(const FString& Parameters)
 
 		const float NoSmoothing = SonificationCurve::SmoothTowards(0.0f, 1.0f, 0.0f, 0.016f);
 		TestEqual(TEXT("нулевая постоянная времени - это отсутствие сглаживания"), NoSmoothing, 1.0f);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCellVisibilityFilterTest,
+	"CellularAutomata.Rendering.VisibilityFilter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FCellVisibilityFilterTest::RunTest(const FString& Parameters)
+{
+	// Этот фильтр существует ровно потому, что раньше его логика стояла двумя
+	// копиями - в BuildCellRenderData() и ComputeVisibleCellsBounds(), - и
+	// инвариант между ними держался комментарием. Тесты здесь на то, что
+	// копией больше не является и что границы заданы однозначно.
+
+	{
+		// Выключенный срез обязан пропускать ВСЁ, включая точки, которые при
+		// включённом не прошли бы. Мимо этого легко промахнуться: у
+		// выключенного среза Origin/Forward остаются значениями по умолчанию,
+		// и скалярное произведение по ним осмысленного ответа не даёт.
+		CellVisibility::FFilter Off;
+		TestTrue(TEXT("выключенный срез пропускает начало координат"), Off.PassesSlice(FVector::ZeroVector));
+		TestTrue(TEXT("выключенный срез пропускает далёкую точку"), Off.PassesSlice(FVector(1e6, -1e6, 1e6)));
+	}
+
+	{
+		// Взгляд вдоль +X, срез на расстоянии 1000 толщиной 200 - то есть
+		// глубины от 900 до 1100 включительно.
+		const CellVisibility::FFilter Slice = CellVisibility::MakeSliceFilter(
+			true, FVector::ZeroVector, FVector::ForwardVector, 1000.0f, 200.0f);
+
+		TestEqual(TEXT("ближняя граница это расстояние минус половина толщины"), Slice.SliceMinDepth, 900.0);
+		TestEqual(TEXT("дальняя граница это расстояние плюс половина толщины"), Slice.SliceMaxDepth, 1100.0);
+
+		TestTrue(TEXT("центр среза внутри"), Slice.PassesSlice(FVector(1000.0, 0.0, 0.0)));
+		// Границы включительные - ровно так вели себя обе прежние копии
+		// (проверка была "Depth < Min || Depth > Max"), и от этого зависит,
+		// не мигает ли клетка ровно на краю среза.
+		TestTrue(TEXT("ближняя граница входит в срез"), Slice.PassesSlice(FVector(900.0, 0.0, 0.0)));
+		TestTrue(TEXT("дальняя граница входит в срез"), Slice.PassesSlice(FVector(1100.0, 0.0, 0.0)));
+		TestFalse(TEXT("ближе среза - мимо"), Slice.PassesSlice(FVector(899.0, 0.0, 0.0)));
+		TestFalse(TEXT("дальше среза - мимо"), Slice.PassesSlice(FVector(1101.0, 0.0, 0.0)));
+
+		// Срез меряет глубину ВДОЛЬ ВЗГЛЯДА, а не расстояние до камеры:
+		// сдвиг вбок глубины не меняет, и клетка остаётся в срезе. Если бы
+		// вместо скалярного произведения стояла длина вектора, этот случай
+		// отвалился бы - а на экране выглядел бы как срез, выгнутый сферой.
+		TestTrue(TEXT("сдвиг поперёк взгляда глубину не меняет"), Slice.PassesSlice(FVector(1000.0, 5000.0, -5000.0)));
+
+		// Позади камеры глубина отрицательна и в диапазон не попадает.
+		TestFalse(TEXT("позади камеры - мимо"), Slice.PassesSlice(FVector(-1000.0, 0.0, 0.0)));
+	}
+
+	{
+		// Ненулевое начало и взгляд не вдоль оси: глубина считается от
+		// положения камеры, а не от мировой точки отсчёта.
+		const FVector Origin(100.0, 200.0, 300.0);
+		const FVector Forward = FVector(1.0, 1.0, 0.0).GetSafeNormal();
+		const CellVisibility::FFilter Slice = CellVisibility::MakeSliceFilter(
+			true, Origin, Forward, 100.0f, 20.0f);
+
+		TestTrue(TEXT("точка ровно на глубине 100 от камеры внутри"), Slice.PassesSlice(Origin + Forward * 100.0));
+		TestFalse(TEXT("точка на глубине 50 от камеры снаружи"), Slice.PassesSlice(Origin + Forward * 50.0));
+		// Сама камера на глубине 0 - вне среза, стоящего на 100.
+		TestFalse(TEXT("положение камеры вне собственного среза"), Slice.PassesSlice(Origin));
+	}
+
+	{
+		// Выключенный фильтр возраста пропускает всё, и это НЕ то же самое,
+		// что "выбран возраст 0": ноль - законный слой (только что родившиеся
+		// клетки), и путать эти два состояния значит прятать самый заметный
+		// слой при каждом сбросе фильтра.
+		CellVisibility::FFilter NoAge;
+		TestTrue(TEXT("выключенный фильтр пропускает возраст 0"), NoAge.PassesAge(0));
+		TestTrue(TEXT("выключенный фильтр пропускает возраст 255"), NoAge.PassesAge(255));
+
+		CellVisibility::FFilter Age;
+		Age.bAgeFilterActive = true;
+		Age.AgeMask.Init(false, 256);
+		Age.AgeMask[0] = true;
+		Age.AgeMask[7] = true;
+		Age.AgeMask[255] = true;
+
+		TestTrue(TEXT("возраст 0 проходит, когда выбран явно"), Age.PassesAge(0));
+		TestTrue(TEXT("выбранный возраст в середине проходит"), Age.PassesAge(7));
+		TestTrue(TEXT("верхний возраст проходит - маска покрывает все 256"), Age.PassesAge(255));
+		TestFalse(TEXT("невыбранный возраст не проходит"), Age.PassesAge(1));
+		TestFalse(TEXT("невыбранный возраст у верхней границы не проходит"), Age.PassesAge(254));
+	}
+
+	{
+		// Два фильтра независимы: пройти надо оба. Проверяется потому, что в
+		// цикле они стоят двумя отдельными continue, и порядок проверок там
+		// выбран по цене, а не по смыслу.
+		CellVisibility::FFilter Both = CellVisibility::MakeSliceFilter(
+			true, FVector::ZeroVector, FVector::ForwardVector, 1000.0f, 200.0f);
+		Both.bAgeFilterActive = true;
+		Both.AgeMask.Init(false, 256);
+		Both.AgeMask[3] = true;
+
+		const FVector Inside(1000.0, 0.0, 0.0);
+		const FVector Outside(0.0, 0.0, 0.0);
+
+		TestTrue(TEXT("нужный возраст в срезе проходит оба"), Both.PassesAge(3) && Both.PassesSlice(Inside));
+		TestFalse(TEXT("нужный возраст вне среза не проходит срез"), Both.PassesSlice(Outside));
+		TestFalse(TEXT("чужой возраст в срезе не проходит возраст"), Both.PassesAge(4));
 	}
 
 	return true;

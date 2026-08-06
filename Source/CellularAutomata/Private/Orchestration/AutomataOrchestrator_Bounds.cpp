@@ -39,45 +39,30 @@ bool AAutomataOrchestrator::ComputeVisibleCellsBounds(FVector& OutCenter, float&
 	}
 
 	// Те же три фильтра, что BuildCellRenderData() применяет к живым клеткам -
-	// продублировано намеренно, см. doc-comment в заголовке про то, почему не
-	// вызывается сама BuildCellRenderData().
+	// буквально те же, через CellVisibility, а не копия: кадрирование обязано
+	// показывать ровно то, что рисуется. Отличие ровно одно - false: запоминать
+	// камеру среза здесь нельзя, иначе кадрирование само себе отменяло бы
+	// перестройку среза (см. ShouldRefreshViewSlice()).
+	FBox CullBounds;
+	const FBox* CullBoundsPtr = GetActiveCullBounds(CullBounds);
+
 	TArray<FIntVector> Cells;
-	ARenderCullVolume* CullVolume = GetActiveCullVolume();
-	if (CullVolume)
-	{
-		Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), Cells);
-	}
-	else
-	{
-		Grid->GetAliveCells(Cells);
-	}
+	CellVisibility::GatherAliveCells(*Grid, CullBoundsPtr, Cells);
 
-	FVector SliceOrigin = FVector::ZeroVector;
-	FVector SliceForward = FVector::ForwardVector;
-	const bool bSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
-	const float SliceMinDepth = ViewSliceDistance - ViewSliceThickness * 0.5f;
-	const float SliceMaxDepth = ViewSliceDistance + ViewSliceThickness * 0.5f;
-
-	TArray<bool> AgeFilterMask;
-	const bool bAgeFilterActive = BuildAgeFilterMask(AgeFilterMask);
+	const CellVisibility::FFilter Filter = BuildVisibilityFilter(/*bUpdateSliceCameraState=*/false);
 
 	TArray<FIntVector> VisibleCells;
 	VisibleCells.Reserve(Cells.Num());
 	for (const FIntVector& Cell : Cells)
 	{
-		if (bAgeFilterActive && !AgeFilterMask[Grid->GetAge(Cell)])
+		if (!Filter.PassesAge(Grid->GetAge(Cell)))
 		{
 			continue;
 		}
 
-		if (bSliceActive)
+		if (!Filter.PassesSlice(Grid->GridToWorld(Cell)))
 		{
-			const FVector World = Grid->GridToWorld(Cell);
-			const double Depth = FVector::DotProduct(World - SliceOrigin, SliceForward);
-			if (Depth < SliceMinDepth || Depth > SliceMaxDepth)
-			{
-				continue;
-			}
+			continue;
 		}
 
 		VisibleCells.Add(Cell);

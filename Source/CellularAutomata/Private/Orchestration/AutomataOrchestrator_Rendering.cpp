@@ -221,69 +221,32 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	TArray<FColor> AgeLut;
 	BuildAgeColorLut(AgeLut, bBuildingSliceCapture);
 
+	// Три отсечения - куб, срез и фильтр возраста - живут в CellVisibility, а
+	// не здесь: ровно тот же набор нужен ComputeVisibleCellsBounds(), чтобы
+	// камера кадрировала по тому, что видно. Срез при этом строится с
+	// запоминанием камеры (true) - по этому состоянию Tick() решает, пора ли
+	// перестраивать; кадрирование то же самое делает с false.
+	FBox CullBounds;
+	const FBox* CullBoundsPtr = GetActiveCullBounds(CullBounds);
+
 	TArray<FIntVector> AliveCells;
+	CellVisibility::GatherAliveCells(*Grid, CullBoundsPtr, AliveCells);
 
-	// Если отсечение активно (см. GetActiveCullVolume()) - отсекаем клетки вне
-	// границ куба ДО построения инстансов/трансформов, иначе рендерим всё
-	// как раньше.
-	ARenderCullVolume* CullVolume = GetActiveCullVolume();
-	if (CullVolume)
-	{
-		Grid->GetAliveCellsInBounds(CullVolume->GetWorldBounds(), AliveCells);
-	}
-	else
-	{
-		Grid->GetAliveCells(AliveCells);
-	}
-
-	// Срез вдоль взгляда - см. bEnableViewSlice. Плоскость среза
-	// перпендикулярна направлению камеры, поэтому проверка на клетку это одно
-	// скалярное произведение: глубина вдоль взгляда против диапазона.
-	// Считается ЗДЕСЬ, а не в рендерере, по той же причине, что и куб: клетки
-	// вне среза не должны стоить построения трансформа.
-	// Инициализированы явно: GetCameraView() пишет их только при успехе, и
-	// хотя читаются они строго под bSliceActive, компилятор этого не выводит.
-	FVector SliceOrigin = FVector::ZeroVector;
-	FVector SliceForward = FVector::ForwardVector;
-	const bool bSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
-	const float SliceMinDepth = ViewSliceDistance - ViewSliceThickness * 0.5f;
-	const float SliceMaxDepth = ViewSliceDistance + ViewSliceThickness * 0.5f;
-
-	if (bSliceActive)
-	{
-		// Запоминаем, для какой камеры срез построен - по этому состоянию
-		// Tick() решает, пора ли перестраивать (см. ShouldRefreshViewSlice()).
-		LastViewSliceCameraLocation = SliceOrigin;
-		LastViewSliceCameraForward = SliceForward;
-		bHasViewSliceCameraState = true;
-	}
-
-	// Фильтр по возрасту (см. AgeFilterValues) разворачивается в маску ДО
-	// цикла: внутри тогда остаётся одно чтение из таблицы, без перебора
-	// выбранных возрастов на каждой из миллионов клеток.
-	TArray<bool> AgeFilterMask;
-	const bool bAgeFilterActive = BuildAgeFilterMask(AgeFilterMask);
+	const CellVisibility::FFilter Filter = BuildVisibilityFilter(/*bUpdateSliceCameraState=*/true);
 
 	OutInstances.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
 		const uint8 Age = Grid->GetAge(Cell);
-		// Раньше остальных проверок: отсекает больше всего и обходится одним
-		// чтением. Возраст 0 - законный слой, выключенному фильтру
-		// соответствует пустой список, а не нулевой возраст.
-		if (bAgeFilterActive && !AgeFilterMask[Age])
+		if (!Filter.PassesAge(Age))
 		{
 			continue;
 		}
 
 		const FVector World = Grid->GridToWorld(Cell);
-		if (bSliceActive)
+		if (!Filter.PassesSlice(World))
 		{
-			const double Depth = FVector::DotProduct(World - SliceOrigin, SliceForward);
-			if (Depth < SliceMinDepth || Depth > SliceMaxDepth)
-			{
-				continue;
-			}
+			continue;
 		}
 
 		OutInstances.Add({ FVector3f(World), AgeLut[Age] });
@@ -307,9 +270,9 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 
 		TArray<FIntVector> DecayingCells;
 		TArray<uint8> DecayingStates;
-		if (CullVolume)
+		if (CullBoundsPtr)
 		{
-			Grid->GetDecayingCellsInBounds(CullVolume->GetWorldBounds(), DecayingCells, DecayingStates);
+			Grid->GetDecayingCellsInBounds(*CullBoundsPtr, DecayingCells, DecayingStates);
 		}
 		else
 		{
@@ -322,13 +285,9 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 			const FVector World = Grid->GridToWorld(DecayingCells[Index]);
 			// Тот же срез, что и для живых клеток выше - иначе угасающие
 			// торчали бы сквозь него.
-			if (bSliceActive)
+			if (!Filter.PassesSlice(World))
 			{
-				const double Depth = FVector::DotProduct(World - SliceOrigin, SliceForward);
-				if (Depth < SliceMinDepth || Depth > SliceMaxDepth)
-				{
-					continue;
-				}
+				continue;
 			}
 
 			OutInstances.Add({ FVector3f(World), DecayLut[DecayingStates[Index]] });

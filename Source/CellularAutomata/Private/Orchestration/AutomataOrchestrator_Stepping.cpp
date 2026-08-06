@@ -268,69 +268,19 @@ void AAutomataOrchestrator::Next()
 					return;
 				}
 
-				StrongThis->Grid = MoveTemp(ResultGrid);
-				StrongThis->SelectedCells.Reset();
-				StrongThis->bStepInProgress = false;
-
-				// Тот же отложенный сброс, что и в ApplyStepResult() - см.
-				// doc-comment bResetToInitialStatePending.
-				if (StrongThis->bResetToInitialStatePending)
-				{
-					StrongThis->bResetToInitialStatePending = false;
-					StrongThis->ResetToInitialState();
-					return;
-				}
-
-				// Отложенный реролл (N) - см. doc-comment bNewSeedPending.
-				if (StrongThis->bNewSeedPending)
-				{
-					StrongThis->bNewSeedPending = false;
-					StrongThis->NewSeed();
-					return;
-				}
-
-				// Отложенный шаг назад (Ctrl+Z) - до увеличения GenerationCount
-				// ниже, по той же причине, что и в ApplyStepResult().
-				if (StrongThis->bStepBackwardPending)
-				{
-					StrongThis->bStepBackwardPending = false;
-					StrongThis->StepBackward();
-					return;
-				}
-
-				// Вымирание ловится и на ручном шаге - см.
-				// bAutoReseedOnExtinction и ту же проверку в ApplyStepResult().
-				if (StrongThis->TryAutoReseedOnExtinction(NumSteps))
+				// Подстановка сетки, разрядка отложенных R/N/Ctrl+Z, вымирание
+				// и счётчики - общий хвост с непрерывным Play, см.
+				// CommitComputedGenerations(). false - управление уже перехвачено
+				// отложенным действием, рисовать нечего.
+				if (!StrongThis->CommitComputedGenerations(MoveTemp(ResultGrid), ComputeUploadBytes, NumSteps))
 				{
 					return;
 				}
 
-				// NumSteps реально посчитанных поколений за одно нажатие F -
-				// см. GenerationCount/FHudStats.
-				StrongThis->GenerationCount += NumSteps;
-
-				// Шаг гасит повтор - та же причина, что в ApplyStepResult().
-				StrongThis->EditRedoStack.Reset();
-				StrongThis->LastGpuComputeUploadBytes = ComputeUploadBytes;
-
-				// Точка графика. Ручной шаг всегда рисует (ниже), так что
-				// перенесённое сюда значение "видимо" тут же исправится на
-				// фактическое - но появиться замер обязан здесь, рядом со
-				// счётчиком, а не в рендере: так одно и то же место отвечает
-				// за "поколение состоялось" в обеих ветках, ручной и Play.
-				StrongThis->AppendGenerationSample();
-
-				// Ghost Shape пересчитывается по своему отдельному интервалу
-				// поколений - см. ApplyStepResult() и план "Ghost Shape".
-				if (StrongThis->bEnableGhostShape)
-				{
-					StrongThis->GhostShapeGenerationsSinceRefresh += NumSteps;
-					if (StrongThis->GhostShapeGenerationsSinceRefresh >= FMath::Max(1, StrongThis->GhostShapeRefreshInterval))
-					{
-						StrongThis->GhostShapeGenerationsSinceRefresh = 0;
-						StrongThis->RefreshGhostShape();
-					}
-				}
+				// Ghost Shape - по своему отдельному интервалу поколений. Здесь
+				// сразу перед рендером, в отличие от Play, где он идёт после
+				// серийной съёмки - см. AdvanceGhostShape().
+				StrongThis->AdvanceGhostShape(NumSteps);
 
 				// Всегда немедленно и целиком, в отличие от ApplyStepResult() -
 				// ручной шаг игнорирует и bEnableChunkedRender, и счётчик
@@ -480,6 +430,81 @@ void AAutomataOrchestrator::StepAsync()
 		});
 }
 
+bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewGrid, int64 ComputeUploadBytes, int32 Generations)
+{
+	Grid = MoveTemp(NewGrid);
+	LastGpuComputeUploadBytes = ComputeUploadBytes;
+	// Новое поколение делает старое выделение бессмысленным - сбрасываем сразу,
+	// независимо от того, дойдёт ли дело до фактического рендера у вызывающего
+	// (см. doc-comment SelectedCells в заголовке).
+	SelectedCells.Reset();
+
+	// Сужено до конца фонового чтения Grid - дальше (рендер, возможный чанковый
+	// "разлив") фонового потока уже не касается, так что следующий StepAsync()
+	// может стартовать независимо от того, что происходит с рендером.
+	bStepInProgress = false;
+
+	// R, нажатый пока этот шаг ещё считался, был отложен (см. doc-comment
+	// bResetToInitialStatePending) - гонка на Grid позади, выполняем его сейчас
+	// вместо обычного применения только что посчитанного поколения (которое всё
+	// равно тут же было бы перезаписано сбросом).
+	if (bResetToInitialStatePending)
+	{
+		bResetToInitialStatePending = false;
+		ResetToInitialState();
+		return false;
+	}
+
+	// То же для N, нажатой во время этого шага - реролл вместо применения
+	// только что посчитанного поколения (оно всё равно было бы перезаписано
+	// новой случайной сеткой). См. doc-comment bNewSeedPending.
+	if (bNewSeedPending)
+	{
+		bNewSeedPending = false;
+		NewSeed();
+		return false;
+	}
+
+	// То же для Ctrl+Z (см. doc-comment bStepBackwardPending). Стоит ДО
+	// увеличения GenerationCount ниже, и это принципиально: StepBackward()
+	// отсчитывает от него, а поколение, только что посчитанное этим самым
+	// заходом, на экране ещё не было. Учтя его, откат вернул бы ровно то, что
+	// сейчас в Grid, и нажатие не изменило бы ничего видимого.
+	if (bStepBackwardPending)
+	{
+		bStepBackwardPending = false;
+		StepBackward();
+		return false;
+	}
+
+	// Сетка вымерла, а режим брутфорса включён - катим следующий сид вместо
+	// того, чтобы рисовать пустоту (см. bAutoReseedOnExtinction). Проверка
+	// стоит ПЕРЕД счётчиками, потому что NewSeed() всё равно перестроит сетку с
+	// нуля и обнулит их (RebuildGridFromCells()).
+	if (TryAutoReseedOnExtinction(Generations))
+	{
+		return false;
+	}
+
+	// Реально посчитанные поколения - считаем для HUD независимо от того,
+	// пропустит ли вызывающий фактический рендер (см. GenerationCount/FHudStats).
+	GenerationCount += Generations;
+
+	// Шаг симуляции - тоже новое действие: правка, снятая с поколения, которое
+	// осталось позади, накатилась бы не туда (см. doc-comment EditRedoStack).
+	EditRedoStack.Reset();
+
+	// Точка графика - здесь же, ДО любых проверок пропуска рендера у
+	// вызывающего, по той же причине, по которой у него там же стоят серийная
+	// съёмка и Ghost Shape: линия "всего клеток" описывает симуляцию, а не
+	// экран, и обязана существовать для поколений, до AddInstances() не
+	// дошедших. Значение "видимо" переносится с прошлого замера и исправляется
+	// на фактическое в рендере, если это поколение всё-таки рисуется.
+	AppendGenerationSample();
+
+	return true;
+}
+
 void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, int32 GenerationsAdvanced)
 {
 	// Один фоновый заход мог посчитать сразу несколько поколений (см.
@@ -496,77 +521,13 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// сходится к реальности за один заход - в обе стороны.
 	LastDispatchGenerations = Generations;
 
-	Grid = MoveTemp(NewGrid);
-	LastGpuComputeUploadBytes = ComputeUploadBytes;
-	// Новое поколение делает старое выделение бессмысленным - сбрасываем
-	// сразу, независимо от того, дойдёт ли дело до фактического рендера ниже
-	// (см. doc-comment SelectedCells в заголовке).
-	SelectedCells.Reset();
-
-	// Сужено до конца фонового чтения Grid - дальше (рендер, возможный
-	// чанковый "разлив") фонового потока уже не касается, так что следующий
-	// StepAsync() может стартовать независимо от того, что происходит с
-	// рендером ниже.
-	bStepInProgress = false;
-
-	// R, нажатый пока этот шаг ещё считался, был отложен (см. doc-comment
-	// bResetToInitialStatePending) - гонка на Grid позади, выполняем его
-	// сейчас вместо обычного применения только что посчитанного поколения
-	// (которое всё равно тут же было бы перезаписано сбросом).
-	if (bResetToInitialStatePending)
-	{
-		bResetToInitialStatePending = false;
-		ResetToInitialState();
-		return;
-	}
-
-	// То же для N, нажатой во время этого шага - реролл вместо применения
-	// только что посчитанного поколения (оно всё равно было бы перезаписано
-	// новой случайной сеткой). См. doc-comment bNewSeedPending.
-	if (bNewSeedPending)
-	{
-		bNewSeedPending = false;
-		NewSeed();
-		return;
-	}
-
-	// То же для Ctrl+Z (см. doc-comment bStepBackwardPending). Стоит ДО
-	// увеличения GenerationCount ниже, и это принципиально: StepBackward()
-	// отсчитывает от него, а поколение, только что посчитанное этим самым
-	// заходом, на экране ещё не было. Учтя его, откат вернул бы ровно то, что
-	// сейчас в Grid, и нажатие не изменило бы ничего видимого.
-	if (bStepBackwardPending)
-	{
-		bStepBackwardPending = false;
-		StepBackward();
-		return;
-	}
-
-	// Сетка вымерла, а режим брутфорса включён - катим следующий сид вместо
-	// того, чтобы рисовать пустоту (см. bAutoReseedOnExtinction). Проверка
-	// стоит ПЕРЕД счётчиками и рендером ниже, потому что NewSeed() всё равно
-	// перестроит сетку с нуля и обнулит их (RebuildGridFromCells()).
-	if (TryAutoReseedOnExtinction(Generations))
+	// Подстановка сетки, разрядка отложенных R/N/Ctrl+Z, вымирание и счётчики -
+	// общий хвост с ручным шагом, см. CommitComputedGenerations(). false -
+	// управление уже перехвачено отложенным действием, рисовать нечего.
+	if (!CommitComputedGenerations(MoveTemp(NewGrid), ComputeUploadBytes, Generations))
 	{
 		return;
 	}
-
-	// Реально посчитанные поколения - считаем для HUD независимо от того,
-	// пропустит ли StepsSinceLastRender ниже фактический рендер (см.
-	// GenerationCount/FHudStats).
-	GenerationCount += Generations;
-
-	// Шаг симуляции - тоже новое действие: правка, снятая с поколения, которое
-	// осталось позади, накатилась бы не туда (см. doc-comment EditRedoStack).
-	EditRedoStack.Reset();
-
-	// Точка графика - здесь же, ДО обеих проверок пропуска рендера ниже, по
-	// той же причине, по которой тут стоят серийная съёмка и Ghost Shape:
-	// линия "всего клеток" описывает симуляцию, а не экран, и обязана
-	// существовать для поколений, до AddInstances() не дошедших. Значение
-	// "видимо" переносится с прошлого замера и исправляется на фактическое
-	// в RenderCurrentGrid() ниже, если это поколение всё-таки рисуется.
-	AppendGenerationSample();
 
 	// Серия снимков идёт по своему счётчику ПОКОЛЕНИЙ - как и Ghost Shape
 	// ниже, и по той же причине: шагом заходов было бы неравномерно (один
@@ -592,17 +553,10 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 		}
 	}
 
-	// Ghost Shape пересчитывается по своему отдельному интервалу поколений,
-	// независимо от StepsPerRender - см. план "Ghost Shape".
-	if (bEnableGhostShape)
-	{
-		GhostShapeGenerationsSinceRefresh += Generations;
-		if (GhostShapeGenerationsSinceRefresh >= FMath::Max(1, GhostShapeRefreshInterval))
-		{
-			GhostShapeGenerationsSinceRefresh = 0;
-			RefreshGhostShape();
-		}
-	}
+	// Ghost Shape - по своему отдельному интервалу поколений, независимо от
+	// StepsPerRender. Здесь ПОСЛЕ съёмки, в отличие от ручного шага - см.
+	// AdvanceGhostShape().
+	AdvanceGhostShape(Generations);
 
 	// Серия в быстром режиме не рисует промежуточные поколения вовсе: снимок
 	// растеризуется прямо из сетки, и поколению незачем попадать на экран,

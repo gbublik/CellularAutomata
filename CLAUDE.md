@@ -16,7 +16,7 @@ No lint config — it's a standard UE C++ project built through the Unreal toolc
 
 `"C:\Program Files\Epic Games\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "<repo>\CellularAutomata.uproject" -ExecCmds="Automation RunTests CellularAutomata" -testexit="Automation Test Queue Empty" -unattended -nopause -nosplash -abslog=<file>`
 
-Eighteen tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
+Nineteen tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
 
 - Engine install: `C:\Program Files\Epic Games\UE_5.7`
 - Regenerate Visual Studio project files after adding/removing source files:

@@ -173,3 +173,22 @@ void AAutomataOrchestrator::SetGhostShapeEnabled(bool bEnabled)
 	RenderGridImmediate();
 	RefreshGhostShape();
 }
+
+void AAutomataOrchestrator::AdvanceGhostShape(int32 Generations)
+{
+	if (!bEnableGhostShape)
+	{
+		return;
+	}
+
+	// Счётчик идёт шагом ПОКОЛЕНИЙ, а не заходов: один фоновый заход может
+	// посчитать сразу пачку (см. BatchGenerations в StepAsync()), и шагом
+	// заходов интервал перестройки поехал бы вместе со StepsPerRender -
+	// см. GhostShapeRefreshInterval.
+	GhostShapeGenerationsSinceRefresh += Generations;
+	if (GhostShapeGenerationsSinceRefresh >= FMath::Max(1, GhostShapeRefreshInterval))
+	{
+		GhostShapeGenerationsSinceRefresh = 0;
+		RefreshGhostShape();
+	}
+}

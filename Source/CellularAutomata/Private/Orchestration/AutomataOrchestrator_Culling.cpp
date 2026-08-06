@@ -571,3 +571,39 @@ void AAutomataOrchestrator::MoveCullVolumeByCells(const FIntVector& CellDelta)
 
 	RefreshRenderCullVolume();
 }
+
+const FBox* AAutomataOrchestrator::GetActiveCullBounds(FBox& OutBounds)
+{
+	ARenderCullVolume* CullVolume = GetActiveCullVolume();
+	if (!CullVolume)
+	{
+		return nullptr;
+	}
+
+	OutBounds = CullVolume->GetWorldBounds();
+	return &OutBounds;
+}
+
+CellVisibility::FFilter AAutomataOrchestrator::BuildVisibilityFilter(bool bUpdateSliceCameraState)
+{
+	// Инициализированы явно: GetCameraView() пишет их только при успехе, и
+	// хотя читаются они строго под bSliceActive, компилятор этого не выводит.
+	FVector SliceOrigin = FVector::ZeroVector;
+	FVector SliceForward = FVector::ForwardVector;
+	const bool bSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
+
+	if (bSliceActive && bUpdateSliceCameraState)
+	{
+		// Запоминаем, для какой камеры срез построен - по этому состоянию
+		// Tick() решает, пора ли перестраивать (см. ShouldRefreshViewSlice()).
+		LastViewSliceCameraLocation = SliceOrigin;
+		LastViewSliceCameraForward = SliceForward;
+		bHasViewSliceCameraState = true;
+	}
+
+	CellVisibility::FFilter Filter = CellVisibility::MakeSliceFilter(
+		bSliceActive, SliceOrigin, SliceForward, ViewSliceDistance, ViewSliceThickness);
+
+	Filter.bAgeFilterActive = BuildAgeFilterMask(Filter.AgeMask);
+	return Filter;
+}
