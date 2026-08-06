@@ -10,6 +10,8 @@
 #include "Automata/Meshing/ChunkGridView.h"
 #include "Automata/Rendering/CellVisibilityFilter.h"
 #include "Automata/Rendering/ColorRamp.h"
+#include "Core/PlayerController/HotkeyRegistry.h"
+#include "GameFramework/InputSettings.h"
 #include "Automata/Simulation/LatticeNeighborhood.h"
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
@@ -2803,6 +2805,164 @@ bool FCellVisibilityFilterTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("нужный возраст в срезе проходит оба"), Both.PassesAge(3) && Both.PassesSlice(Inside));
 		TestFalse(TEXT("нужный возраст вне среза не проходит срез"), Both.PassesSlice(Outside));
 		TestFalse(TEXT("чужой возраст в срезе не проходит возраст"), Both.PassesAge(4));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHotkeyRegistryTest,
+	"CellularAutomata.Input.HotkeyRegistry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FHotkeyRegistryTest::RunTest(const FString& Parameters)
+{
+	const TArray<HotkeyRegistry::FHotkeyDefault>& Defaults = HotkeyRegistry::GetDefaults();
+
+	// Таблица индексируется значением EHotkey напрямую (KeyFor() берёт по
+	// индексу), поэтому её длина и порядок - не оформление, а условие
+	// корректности. Забытая строка при добавлении хоткея сдвинула бы ВСЕ
+	// последующие клавиши на одну, и это выглядело бы как "половина раскладки
+	// разъехалась", а не как отсутствующий хоткей.
+	TestEqual(TEXT("в таблице ровно столько строк, сколько значений EHotkey"), Defaults.Num(), (int32)EHotkey::Count);
+
+	for (int32 Index = 0; Index < Defaults.Num(); ++Index)
+	{
+		if (Defaults[Index].Hotkey != (EHotkey)Index)
+		{
+			AddError(FString::Printf(TEXT("строка %d таблицы описывает не то действие - порядок разъехался"), Index));
+			break;
+		}
+	}
+
+	// Ни одна клавиша по умолчанию не может быть пустой: EKeys::Invalid здесь
+	// означал бы хоткей, который молча не работает.
+	for (const HotkeyRegistry::FHotkeyDefault& Default : Defaults)
+	{
+		if (!Default.DefaultKey.IsValid())
+		{
+			AddError(FString::Printf(TEXT("у действия %s нет клавиши по умолчанию"), Default.ActionName));
+		}
+	}
+
+	// Имена уникальны: два действия под одним именем в ini неразличимы, и
+	// второе тихо получило бы клавишу первого.
+	{
+		TSet<FString> Names;
+		for (const HotkeyRegistry::FHotkeyDefault& Default : Defaults)
+		{
+			bool bAlreadyThere = false;
+			Names.Add(FString(Default.ActionName), &bAlreadyThere);
+			if (bAlreadyThere)
+			{
+				AddError(FString::Printf(TEXT("имя действия %s встречается дважды"), Default.ActionName));
+			}
+		}
+	}
+
+	// Раскладка по умолчанию сама себе не противоречит. Пары, делящие клавишу
+	// намеренно (Ctrl+Z против голой Z), помечены bModifierGuarded и проверкой
+	// пропускаются - иначе предупреждение горело бы всегда, а такое не читают.
+	{
+		TArray<FKey> DefaultKeys;
+		DefaultKeys.Reserve(Defaults.Num());
+		for (const HotkeyRegistry::FHotkeyDefault& Default : Defaults)
+		{
+			DefaultKeys.Add(Default.DefaultKey);
+		}
+
+		const TMap<FKey, TArray<FName>> Conflicts = HotkeyRegistry::FindConflicts(DefaultKeys);
+		for (const TPair<FKey, TArray<FName>>& Conflict : Conflicts)
+		{
+			TArray<FString> Names;
+			for (const FName& Name : Conflict.Value)
+			{
+				Names.Add(Name.ToString());
+			}
+			AddError(FString::Printf(TEXT("клавиша %s назначена нескольким действиям: %s"),
+				*Conflict.Key.ToString(), *FString::Join(Names, TEXT(", "))));
+		}
+	}
+
+	// Проверка самой проверки: на выдуманном конфликте FindConflicts() обязана
+	// сработать, иначе пустой результат выше не значил бы ничего.
+	{
+		TArray<FKey> Colliding;
+		Colliding.Init(EKeys::F, Defaults.Num());
+		const TMap<FKey, TArray<FName>> Conflicts = HotkeyRegistry::FindConflicts(Colliding);
+		TestEqual(TEXT("подстроенный конфликт находится"), Conflicts.Num(), 1);
+	}
+
+	// Фильтр по возрасту берётся арифметикой AgeFilter0 + Digit прямо в
+	// InputKey(), так что десять значений обязаны идти подряд и по порядку.
+	for (int32 Digit = 0; Digit < 10; ++Digit)
+	{
+		const int32 Index = (int32)EHotkey::AgeFilter0 + Digit;
+		if (!Defaults.IsValidIndex(Index))
+		{
+			AddError(TEXT("значения AgeFilter0..9 выходят за таблицу"));
+			break;
+		}
+		TestEqual(*FString::Printf(TEXT("AgeFilter%d идёт %d-м по счёту от AgeFilter0"), Digit, Digit),
+			(int32)Defaults[Index].Hotkey - (int32)EHotkey::AgeFilter0, Digit);
+	}
+
+	// ResolveKeys() без конфига обязана вернуть ровно значения по умолчанию:
+	// это то, что делает проект работоспособным при пустом ini.
+	{
+		const TArray<FKey> Resolved = HotkeyRegistry::ResolveKeys();
+		TestEqual(TEXT("разрешённая раскладка той же длины, что таблица"), Resolved.Num(), Defaults.Num());
+
+		// Под тестами UInputSettings несёт то, что лежит в DefaultInput.ini, -
+		// то есть либо строку CA_*, либо ничего. В обоих случаях клавиша обязана
+		// быть валидной: пустая означала бы, что действие осталось без клавиши.
+		for (int32 Index = 0; Index < Resolved.Num(); ++Index)
+		{
+			if (!Resolved[Index].IsValid())
+			{
+				AddError(FString::Printf(TEXT("после разрешения у действия %s нет клавиши"), Defaults[Index].ActionName));
+			}
+		}
+
+		// А это то, что отличает "клавиша прочитана из конфига" от "взято
+		// значение по умолчанию": пока ini повторяет значения по умолчанию,
+		// совпадение результата ничего не доказывает - механизм мог бы не
+		// работать вовсе, и тест этого не заметил бы. Поэтому сверяемся с тем,
+		// что реально лежит в UInputSettings: если строка CA_* там есть,
+		// разрешённая клавиша обязана быть именно ей, а не значением из кода.
+		if (const UInputSettings* Settings = GetDefault<UInputSettings>())
+		{
+			TMap<FName, FKey> Configured;
+			for (const FInputActionKeyMapping& Mapping : Settings->GetActionMappings())
+			{
+				if (!Configured.Contains(Mapping.ActionName))
+				{
+					Configured.Add(Mapping.ActionName, Mapping.Key);
+				}
+			}
+
+			int32 CheckedFromConfig = 0;
+			for (int32 Index = 0; Index < Defaults.Num(); ++Index)
+			{
+				const FName ActionName(Defaults[Index].ActionName);
+				const FKey* ConfiguredKey = Configured.Find(ActionName);
+				if (!ConfiguredKey || !ConfiguredKey->IsValid())
+				{
+					continue;
+				}
+
+				++CheckedFromConfig;
+				TestEqual(*FString::Printf(TEXT("%s взят из конфига"), Defaults[Index].ActionName),
+					Resolved[Index].ToString(), ConfiguredKey->ToString());
+			}
+
+			// Конфиг может отсутствовать целиком - это законно (см. doc-comment
+			// EHotkey), но тогда стоит знать, что проверка выше ничего не
+			// проверила, а не считать её пройденной.
+			if (CheckedFromConfig == 0)
+			{
+				AddWarning(TEXT("в DefaultInput.ini нет ни одной строки CA_* - раскладка целиком на значениях по умолчанию"));
+			}
+		}
 	}
 
 	return true;

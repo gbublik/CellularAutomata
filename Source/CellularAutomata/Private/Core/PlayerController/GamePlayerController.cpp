@@ -55,9 +55,28 @@ namespace
 	struct FHotkeyRow
 	{
 		const TCHAR* ActionName;
-		TArray<FKey> Keys;
+		/** Не клавиши, а действия из реестра - сама клавиша берётся через
+		 *  KeyFor(), т.е. из Config/DefaultInput.ini с падением на значение по
+		 *  умолчанию. Два элемента там, где у действия две клавиши (скорость на
+		 *  основном ряду и на нумпаде). */
+		TArray<EHotkey> Hotkeys;
 		TArray<FHotkeyBinding> Bindings;
 	};
+}
+
+FKey AGamePlayerController::KeyFor(EHotkey Hotkey) const
+{
+	const int32 Index = (int32)Hotkey;
+	if (ResolvedHotkeys.IsValidIndex(Index))
+	{
+		return ResolvedHotkeys[Index];
+	}
+
+	// До SetupInputComponent() (или если реестр почему-то не сошёлся по длине) -
+	// значение по умолчанию: пустая клавиша означала бы "хоткея нет", а это
+	// худший из возможных ответов на вопрос "какая клавиша у этого действия".
+	const TArray<HotkeyRegistry::FHotkeyDefault>& Defaults = HotkeyRegistry::GetDefaults();
+	return Defaults.IsValidIndex(Index) ? Defaults[Index].DefaultKey : EKeys::Invalid;
 }
 
 void AGamePlayerController::SetupInputComponent()
@@ -80,7 +99,7 @@ void AGamePlayerController::SetupInputComponent()
 	{
 		// F - тумблер (обычное нажатие) или hold-режим (Shift+F), а не
 		// "срабатывает каждый кадр, пока зажата", как было раньше.
-		{ TEXT("IA_FastStep"), { EKeys::F }, {
+		{ TEXT("IA_FastStep"), { EHotkey::FastStep }, {
 			{ ETriggerEvent::Started, &AGamePlayerController::OnFastStepPressed },
 			{ ETriggerEvent::Completed, &AGamePlayerController::OnFastStepReleased } } },
 
@@ -99,65 +118,65 @@ void AGamePlayerController::SetupInputComponent()
 		// применяет сама съёмка (TakePhotoShot() на F10), потому что вне снимка
 		// он не нужен. Профилю, который добавят для повседневной работы, нужна
 		// одна новая строка здесь - вместе с клавишей и обработчиком.
-		{ TEXT("IA_RenderPreset0"), { EKeys::F1 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset0 } } },
-		{ TEXT("IA_RenderPreset1"), { EKeys::F2 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset1 } } },
-		{ TEXT("IA_RenderPreset2"), { EKeys::F3 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset2 } } },
-		{ TEXT("IA_RenderPreset3"), { EKeys::F4 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset3 } } },
+		{ TEXT("IA_RenderPreset0"), { EHotkey::RenderPreset0 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset0 } } },
+		{ TEXT("IA_RenderPreset1"), { EHotkey::RenderPreset1 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset1 } } },
+		{ TEXT("IA_RenderPreset2"), { EHotkey::RenderPreset2 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset2 } } },
+		{ TEXT("IA_RenderPreset3"), { EHotkey::RenderPreset3 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset3 } } },
 
-		{ TEXT("IA_ToggleBackground"), { EKeys::U }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleBackground } } },
+		{ TEXT("IA_ToggleBackground"), { EHotkey::ToggleBackground }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleBackground } } },
 
-		{ TEXT("IA_SpeedBoost"), { EKeys::LeftShift }, {
+		{ TEXT("IA_SpeedBoost"), { EHotkey::SpeedBoost }, {
 			{ ETriggerEvent::Started, &AGamePlayerController::OnSpeedBoostStarted },
 			{ ETriggerEvent::Completed, &AGamePlayerController::OnSpeedBoostEnded } } },
 
-		{ TEXT("IA_ToggleChunkedRender"), { EKeys::Z }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleChunkedRender } } },
-		{ TEXT("IA_CycleChunkedRenderOrder"), { EKeys::X }, { { ETriggerEvent::Started, &AGamePlayerController::OnCycleChunkedRenderOrder } } },
-		{ TEXT("IA_ToggleWaitForChunkedRenderToFinish"), { EKeys::V }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish } } },
-		{ TEXT("IA_ToggleCellCulling"), { EKeys::B }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleCellCulling } } },
-		{ TEXT("IA_ToggleRenderCullVolume"), { EKeys::C }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleRenderCullVolume } } },
-		{ TEXT("IA_ToggleGhostShape"), { EKeys::H }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleGhostShape } } },
+		{ TEXT("IA_ToggleChunkedRender"), { EHotkey::ToggleChunkedRender }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleChunkedRender } } },
+		{ TEXT("IA_CycleChunkedRenderOrder"), { EHotkey::CycleChunkedRenderOrder }, { { ETriggerEvent::Started, &AGamePlayerController::OnCycleChunkedRenderOrder } } },
+		{ TEXT("IA_ToggleWaitForChunkedRenderToFinish"), { EHotkey::ToggleWaitForChunkedRenderToFinish }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish } } },
+		{ TEXT("IA_ToggleCellCulling"), { EHotkey::ToggleCellCulling }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleCellCulling } } },
+		{ TEXT("IA_ToggleRenderCullVolume"), { EHotkey::ToggleRenderCullVolume }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleRenderCullVolume } } },
+		{ TEXT("IA_ToggleGhostShape"), { EHotkey::ToggleGhostShape }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleGhostShape } } },
 
 		// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от
 		// того, есть ли у клавиатуры цифровой блок.
-		{ TEXT("IA_IncreaseSpeed"), { EKeys::Equals, EKeys::Add }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnIncreaseSpeed } } },
-		{ TEXT("IA_DecreaseSpeed"), { EKeys::Hyphen, EKeys::Subtract }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnDecreaseSpeed } } },
+		{ TEXT("IA_IncreaseSpeed"), { EHotkey::IncreaseSpeed, EHotkey::IncreaseSpeedNumPad }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnIncreaseSpeed } } },
+		{ TEXT("IA_DecreaseSpeed"), { EHotkey::DecreaseSpeed, EHotkey::DecreaseSpeedNumPad }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnDecreaseSpeed } } },
 
-		{ TEXT("IA_FrameAllCells"), { EKeys::Home }, { { ETriggerEvent::Started, &AGamePlayerController::OnFrameAllCells } } },
+		{ TEXT("IA_FrameAllCells"), { EHotkey::FrameAllCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnFrameAllCells } } },
 
 		// Одна клавиша, два события: Triggered повторяет шаг, пока держат, а
 		// Started под Shift переходит к следующей степени двойки. Какой из двух
 		// обработчиков сработает, решает проверка Shift внутри них самих -
 		// Enhanced Input не умеет требовать модификатор в маппинге клавиши.
-		{ TEXT("IA_IncreaseStepsPerRender"), { EKeys::T }, {
+		{ TEXT("IA_IncreaseStepsPerRender"), { EHotkey::IncreaseStepsPerRender }, {
 			{ ETriggerEvent::Triggered, &AGamePlayerController::OnIncreaseStepsPerRender },
 			{ ETriggerEvent::Started, &AGamePlayerController::OnDoubleStepsPerRender } } },
-		{ TEXT("IA_DecreaseStepsPerRender"), { EKeys::G }, {
+		{ TEXT("IA_DecreaseStepsPerRender"), { EHotkey::DecreaseStepsPerRender }, {
 			{ ETriggerEvent::Triggered, &AGamePlayerController::OnDecreaseStepsPerRender },
 			{ ETriggerEvent::Started, &AGamePlayerController::OnHalveStepsPerRender } } },
 
 		// Стрелки заняты ADefaultPawn (полёт и поворот), поэтому обработчики
 		// работают только в режиме выделения, где ввод пешки отключён - см.
 		// OnMoveCullVolume().
-		{ TEXT("IA_MoveCullVolumeUp"), { EKeys::Up }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeUp } } },
-		{ TEXT("IA_MoveCullVolumeDown"), { EKeys::Down }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeDown } } },
-		{ TEXT("IA_MoveCullVolumeLeft"), { EKeys::Left }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeLeft } } },
-		{ TEXT("IA_MoveCullVolumeRight"), { EKeys::Right }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeRight } } },
+		{ TEXT("IA_MoveCullVolumeUp"), { EHotkey::MoveCullVolumeUp }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeUp } } },
+		{ TEXT("IA_MoveCullVolumeDown"), { EHotkey::MoveCullVolumeDown }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeDown } } },
+		{ TEXT("IA_MoveCullVolumeLeft"), { EHotkey::MoveCullVolumeLeft }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeLeft } } },
+		{ TEXT("IA_MoveCullVolumeRight"), { EHotkey::MoveCullVolumeRight }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeRight } } },
 
-		{ TEXT("IA_ToggleViewSlice"), { EKeys::J }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleViewSlice } } },
+		{ TEXT("IA_ToggleViewSlice"), { EHotkey::ToggleViewSlice }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleViewSlice } } },
 		// [ и ] освободились, когда StepsPerRender переехал на T/G.
-		{ TEXT("IA_ViewSliceNearer"), { EKeys::LeftBracket }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnViewSliceNearer } } },
-		{ TEXT("IA_ViewSliceFarther"), { EKeys::RightBracket }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnViewSliceFarther } } },
+		{ TEXT("IA_ViewSliceNearer"), { EHotkey::ViewSliceNearer }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnViewSliceNearer } } },
+		{ TEXT("IA_ViewSliceFarther"), { EHotkey::ViewSliceFarther }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnViewSliceFarther } } },
 
-		{ TEXT("IA_ToggleSelectionMode"), { EKeys::Tab }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleSelectionMode } } },
-		{ TEXT("IA_SelectDrag"), { EKeys::LeftMouseButton }, {
+		{ TEXT("IA_ToggleSelectionMode"), { EHotkey::ToggleSelectionMode }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleSelectionMode } } },
+		{ TEXT("IA_SelectDrag"), { EHotkey::SelectDrag }, {
 			{ ETriggerEvent::Started, &AGamePlayerController::OnSelectDragStarted },
 			{ ETriggerEvent::Completed, &AGamePlayerController::OnSelectDragFinished } } },
-		{ TEXT("IA_ExtractSelection"), { EKeys::Enter }, { { ETriggerEvent::Started, &AGamePlayerController::OnExtractSelection } } },
-		{ TEXT("IA_InvertSelection"), { EKeys::I }, { { ETriggerEvent::Started, &AGamePlayerController::OnInvertSelection } } },
-		{ TEXT("IA_BakeCellsToMesh"), { EKeys::M }, { { ETriggerEvent::Started, &AGamePlayerController::OnBakeCellsToMesh } } },
-		{ TEXT("IA_DeleteSelectedCells"), { EKeys::Delete }, { { ETriggerEvent::Started, &AGamePlayerController::OnDeleteSelectedCells } } },
-		{ TEXT("IA_MoveCullVolumeToSelection"), { EKeys::K }, { { ETriggerEvent::Started, &AGamePlayerController::OnMoveCullVolumeToSelection } } },
-		{ TEXT("IA_SelectCellsInCullVolume"), { EKeys::L }, { { ETriggerEvent::Started, &AGamePlayerController::OnSelectCellsInCullVolume } } },
+		{ TEXT("IA_ExtractSelection"), { EHotkey::ExtractSelection }, { { ETriggerEvent::Started, &AGamePlayerController::OnExtractSelection } } },
+		{ TEXT("IA_InvertSelection"), { EHotkey::InvertSelection }, { { ETriggerEvent::Started, &AGamePlayerController::OnInvertSelection } } },
+		{ TEXT("IA_BakeCellsToMesh"), { EHotkey::BakeCellsToMesh }, { { ETriggerEvent::Started, &AGamePlayerController::OnBakeCellsToMesh } } },
+		{ TEXT("IA_DeleteSelectedCells"), { EHotkey::DeleteSelectedCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnDeleteSelectedCells } } },
+		{ TEXT("IA_MoveCullVolumeToSelection"), { EHotkey::MoveCullVolumeToSelection }, { { ETriggerEvent::Started, &AGamePlayerController::OnMoveCullVolumeToSelection } } },
+		{ TEXT("IA_SelectCellsInCullVolume"), { EHotkey::SelectCellsInCullVolume }, { { ETriggerEvent::Started, &AGamePlayerController::OnSelectCellsInCullVolume } } },
 
 		// S/O замапплены БЕЗ модификатора - Enhanced Input не даёт потребовать
 		// Ctrl прямо в маппинге ключа (в отличие от старых FInputChord).
@@ -165,9 +184,28 @@ void AGamePlayerController::SetupInputComponent()
 		// идиома, что у Ctrl/Shift в OnSelectDragStarted(). Голый S по-прежнему
 		// уходит камере (DefaultPawn, движение назад) - это осознанный побочный
 		// эффект удержания Ctrl+S во время полёта, см. doc-comment.
-		{ TEXT("IA_SaveState"), { EKeys::S }, { { ETriggerEvent::Started, &AGamePlayerController::OnSaveOrSaveAs } } },
-		{ TEXT("IA_LoadState"), { EKeys::O }, { { ETriggerEvent::Started, &AGamePlayerController::OnLoadState } } },
+		{ TEXT("IA_SaveState"), { EHotkey::SaveState }, { { ETriggerEvent::Started, &AGamePlayerController::OnSaveOrSaveAs } } },
+		{ TEXT("IA_LoadState"), { EHotkey::LoadState }, { { ETriggerEvent::Started, &AGamePlayerController::OnLoadState } } },
 	};
+
+	// Раскладка разрешается ОДИН раз здесь, и дальше только читается: и таблица
+	// ниже, и InputKey() спрашивают клавишу через KeyFor(). Это то место, где
+	// Config/DefaultInput.ini вступает в силу - см. HotkeyRegistry.
+	ResolvedHotkeys = HotkeyRegistry::ResolveKeys();
+
+	// Конфликт в ini не даёт ни ошибки компиляции, ни отказа - обе клавиши
+	// просто срабатывают вместе, а выглядит это как "хоткей делает что-то
+	// лишнее". Поэтому его хотя бы видно в логе.
+	for (const TPair<FKey, TArray<FName>>& Conflict : HotkeyRegistry::FindConflicts(ResolvedHotkeys))
+	{
+		TArray<FString> Names;
+		for (const FName& Name : Conflict.Value)
+		{
+			Names.Add(Name.ToString());
+		}
+		UE_LOG(LogTemp, Warning, TEXT("Хоткеи: клавиша %s назначена нескольким действиям: %s"),
+			*Conflict.Key.ToString(), *FString::Join(Names, TEXT(", ")));
+	}
 
 	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
 	UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent);
@@ -181,9 +219,9 @@ void AGamePlayerController::SetupInputComponent()
 		Action->ValueType = EInputActionValueType::Boolean;
 		InputActions.Add(Action);
 
-		for (const FKey& Key : Row.Keys)
+		for (EHotkey Hotkey : Row.Hotkeys)
 		{
-			SimulationMappingContext->MapKey(Action, Key);
+			SimulationMappingContext->MapKey(Action, KeyFor(Hotkey));
 		}
 
 		if (EnhancedInputComp)
@@ -219,7 +257,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// периодической выборки Enhanced Input - поэтому пауза обрабатывается
 	// здесь напрямую, в обход маппинга. IE_Pressed (не IE_Repeat) - как и
 	// раньше, срабатывает один раз на нажатие, не повторяется при удержании.
-	if (Params.Key == EKeys::SpaceBar && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::ToggleSimulation) && Params.Event == IE_Pressed)
 	{
 		OnToggleSimulation();
 	}
@@ -228,7 +266,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// у паузы выше: раньше был замаплен через Enhanced Input и мог пропускать
 	// короткие нажатия под тяжёлым лагом (пользователь сообщил "не всегда
 	// срабатывает" - именно этот симптом). Перенесён сюда, в обход маппинга.
-	if (Params.Key == EKeys::R && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::ResetSimulation) && Params.Event == IE_Pressed)
 	{
 		OnResetSimulation();
 	}
@@ -239,7 +277,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// пропускает короткие нажатия. Второй, независимый источник того же
 	// симптома - молчаливый отказ GenerateRandom() во время фонового шага -
 	// закрыт отложенным путём на стороне оркестратора (см. bNewSeedPending).
-	if (Params.Key == EKeys::N && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::NewSeed) && Params.Event == IE_Pressed)
 	{
 		OnNewSeed();
 	}
@@ -251,7 +289,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// Модификатор проверяется внутри обработчика, а не маппингом - Enhanced
 	// Input не умеет требовать модификатор в привязке клавиши (та же идиома,
 	// что у Ctrl+S/Ctrl+C).
-	if (Params.Key == EKeys::Y && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::GenerateState) && Params.Event == IE_Pressed)
 	{
 		OnGenerateState();
 	}
@@ -279,7 +317,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// IE_Pressed, а не IE_Repeat, и это не мелочь: отмена шага стоит полного
 	// пересчёта от изначального узора, так что авторепит на зажатой клавише
 	// сложился бы в сумму всех номеров поколений, то есть в квадрат.
-	if (Params.Key == EKeys::Z && Params.Event == IE_Pressed && bCtrlDown)
+	if (Params.Key == KeyFor(EHotkey::UndoRedo) && Params.Event == IE_Pressed && bCtrlDown)
 	{
 		if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
 		{
@@ -293,6 +331,13 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 
 	if (bSelectionModeActive && Params.Event == IE_Pressed && !bCtrlDown)
 	{
+		// Единственные клавиши, не заведённые в HotkeyRegistry, и намеренно:
+		// это не хоткеи проекта, а клавиши движения ПЕШКИ (ADefaultPawn плюс
+		// вертикаль из RebindPawnVerticalMovement()). Их настройка живёт там же,
+		// где сама привязка осей, и продублировать их здесь отдельной строкой
+		// конфига значило бы завести вторую правду о том, чем летают: разъехались
+		// бы - и выход из режима перестал бы срабатывать ровно на тех клавишах,
+		// которыми на самом деле летят.
 		static const FKey FlyKeys[] = {
 			EKeys::W, EKeys::A, EKeys::S, EKeys::D, EKeys::Q, EKeys::E
 		};
@@ -311,7 +356,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// Enhanced Input, за компанию с соседними клавишами: F1-F4 (профили
 	// рендера) идут через маппинг, но эта клавиша ничего не ждёт от триггеров
 	// и одному нажатию должна соответствовать ровно одна реакция.
-	if (Params.Key == EKeys::F5 && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::ToggleHudInfoPanel) && Params.Event == IE_Pressed)
 	{
 		OnToggleHudInfoPanel();
 	}
@@ -320,7 +365,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// соседняя свободная клавиша: из F-ряда движок занимает под свои
 	// DebugExecBindings F1-F5, F9 и F11, F8 в PIE выбрасывает из пешки, а F6/F7
 	// уже наши (срез и серия). F10 - единственная, не занятая никем.
-	if (Params.Key == EKeys::F10 && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::TakePhotoShot) && Params.Event == IE_Pressed)
 	{
 		OnTakePhotoShot();
 	}
@@ -330,7 +375,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// на пробел. Здесь, а не через Enhanced Input, по той же причине, что и
 	// соседи: одному нажатию - ровно одна реакция, и модификатор проверяется
 	// внутри обработчика, потому что маппинг требовать его не умеет.
-	if (Params.Key == EKeys::P && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::ToggleSonification) && Params.Event == IE_Pressed)
 	{
 		OnToggleSonification();
 	}
@@ -338,13 +383,13 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// F6 - снять текущий вид как PNG-срез, Shift+F6 - то же с диалогом выбора
 	// файла. Модификатор проверяется в обработчике (Enhanced Input не умеет
 	// требовать его в привязке), см. OnCaptureTextureSlice().
-	if (Params.Key == EKeys::F6 && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::CaptureTextureSlice) && Params.Event == IE_Pressed)
 	{
 		OnCaptureTextureSlice();
 	}
 
 	// F7 - начать/оборвать съёмку серии кадров по ходу симуляции.
-	if (Params.Key == EKeys::F7 && Params.Event == IE_Pressed)
+	if (Params.Key == KeyFor(EHotkey::ToggleSeriesCapture) && Params.Event == IE_Pressed)
 	{
 		OnToggleSeriesCapture();
 	}
@@ -357,14 +402,12 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 	// критичны, в отличие от паузы/R/N выше.
 	if (Params.Event == IE_Pressed)
 	{
-		static const FKey DigitKeys[10] = {
-			EKeys::Zero, EKeys::One, EKeys::Two, EKeys::Three, EKeys::Four,
-			EKeys::Five, EKeys::Six, EKeys::Seven, EKeys::Eight, EKeys::Nine
-		};
-
+		// Десять подряд идущих значений реестра, а не таблица клавиш здесь:
+		// цифра - это параметр обработчика, и порядок EHotkey::AgeFilter0..9
+		// задаёт его напрямую (проверяется тестом Input.HotkeyRegistry).
 		for (int32 Digit = 0; Digit < 10; ++Digit)
 		{
-			if (Params.Key == DigitKeys[Digit])
+			if (Params.Key == KeyFor((EHotkey)((int32)EHotkey::AgeFilter0 + Digit)))
 			{
 				OnSetAgeFilter(Digit);
 				break;
@@ -390,45 +433,45 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		// 2 снизу.
 		struct FNumPadViewBinding
 		{
-			FKey Key;
+			EHotkey Hotkey;
 			FVector ViewDirection;
 			const TCHAR* Name;
 		};
 		static const FNumPadViewBinding ViewBindings[] = {
-			{ EKeys::NumPadFour,  FVector( 0.0,  1.0,  0.0), TEXT("слева") },
-			{ EKeys::NumPadSix,   FVector( 0.0, -1.0,  0.0), TEXT("справа") },
-			{ EKeys::NumPadEight, FVector( 0.0,  0.0, -1.0), TEXT("сверху") },
-			{ EKeys::NumPadTwo,   FVector( 0.0,  0.0,  1.0), TEXT("снизу") },
-			{ EKeys::NumPadOne,   FVector( 1.0,  0.0,  0.0), TEXT("спереди") },
-			{ EKeys::NumPadThree, FVector(-1.0,  0.0,  0.0), TEXT("сзади") },
+			{ EHotkey::ViewLeft,      FVector( 0.0,  1.0,  0.0), TEXT("слева") },
+			{ EHotkey::ViewRight,     FVector( 0.0, -1.0,  0.0), TEXT("справа") },
+			{ EHotkey::ViewTop,       FVector( 0.0,  0.0, -1.0), TEXT("сверху") },
+			{ EHotkey::ViewBottom,    FVector( 0.0,  0.0,  1.0), TEXT("снизу") },
+			{ EHotkey::ViewFront,     FVector( 1.0,  0.0,  0.0), TEXT("спереди") },
+			{ EHotkey::ViewBack,      FVector(-1.0,  0.0,  0.0), TEXT("сзади") },
 			// Единственный ракурс, показывающий сразу три оси - по нему видно
 			// объём структуры, которого осевые виды как раз не показывают.
-			{ EKeys::NumPadSeven, FVector( 1.0,  1.0, -1.0), TEXT("изометрия") },
+			{ EHotkey::ViewIsometric, FVector( 1.0,  1.0, -1.0), TEXT("изометрия") },
 		};
 
-		if (Params.Key == EKeys::NumPadFive)
+		if (Params.Key == KeyFor(EHotkey::ToggleOrthographic))
 		{
 			OnToggleOrthographic();
 		}
-		else if (Params.Key == EKeys::NumPadZero)
+		else if (Params.Key == KeyFor(EHotkey::FrameAllCellsFromNumPad))
 		{
 			// Ровно то же, что Home - кадр по текущему ракурсу; на нумпаде
 			// нужен потому, что рука уже там.
 			OnFrameAllCells();
 		}
-		else if (Params.Key == EKeys::NumPadNine)
+		else if (Params.Key == KeyFor(EHotkey::AlignCameraToOppositeSide))
 		{
 			OnAlignCameraToOppositeSide();
 		}
-		else if (Params.Key == EKeys::Decimal)
+		else if (Params.Key == KeyFor(EHotkey::FrameSelection))
 		{
 			OnFrameSelection();
 		}
-		else if (Params.Key == EKeys::Multiply)
+		else if (Params.Key == KeyFor(EHotkey::OrthoZoomIn))
 		{
 			OnAdjustOrthoWidth(/*bZoomIn=*/true);
 		}
-		else if (Params.Key == EKeys::Divide)
+		else if (Params.Key == KeyFor(EHotkey::OrthoZoomOut))
 		{
 			OnAdjustOrthoWidth(/*bZoomIn=*/false);
 		}
@@ -436,7 +479,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		{
 			for (const FNumPadViewBinding& Binding : ViewBindings)
 			{
-				if (Params.Key == Binding.Key)
+				if (Params.Key == KeyFor(Binding.Hotkey))
 				{
 					// Shift - кадрировать только по видимому (см. doc-comment
 					// FrameAllCells()); снят один раз на всю таблицу, а не в

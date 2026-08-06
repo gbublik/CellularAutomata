@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "Automata/Selection/SelectionCombineMode.h"
+#include "Core/PlayerController/HotkeyRegistry.h"
 #include "GamePlayerController.generated.h"
 
 class AAutomataOrchestrator;
@@ -591,6 +592,22 @@ protected:
 	 *  AAutomataOrchestrator::LoadStateFromFile(). Как и у S, маппинг сам
 	 *  ключа без модификатора - Ctrl проверяется внутри обработчика. */
 	void OnLoadState();
+
+	/** Клавиша, назначенная действию сейчас: значение по умолчанию из
+	 *  HotkeyRegistry, переопределённое Config/DefaultInput.ini. Разрешается
+	 *  один раз в SetupInputComponent() и дальше только читается - InputKey()
+	 *  зовёт её на каждое оконное сообщение, и перечитывать конфиг там нечего.
+	 *
+	 *  Смена раскладки на лету не поддерживается намеренно: ini читается при
+	 *  старте, и повторное разрешение посреди сессии оставило бы уже
+	 *  привязанные UInputAction на старых клавишах - половина раскладки
+	 *  переехала бы, половина нет. Правка ini применяется перезапуском PIE. */
+	FKey KeyFor(EHotkey Hotkey) const;
+
+	/** Разрешённая раскладка, индексируется значением EHotkey. Пуста до
+	 *  SetupInputComponent() - KeyFor() в этом случае отдаёт значение по
+	 *  умолчанию, а не пустую клавишу. */
+	TArray<FKey> ResolvedHotkeys;
 
 	/** Все UInputAction проекта, по одному на строку таблицы хоткеев в
 	 *  SetupInputComponent(). Массив, а не поле на действие: снаружи
