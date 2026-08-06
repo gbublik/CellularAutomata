@@ -218,10 +218,6 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
 	void Next();
 	
-	/** Сгенерировать новое случайное состояние */
-	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata")
-	void Clear();
-	
 	/** Перекатить Seed и перестроить состояние выбранным генератором (хоткей N).
 	 *  Не "новое случайное состояние", а "та же фигура, другой сид":
 	 *  GenerateRandom() больше не существует, случайный шар - это обычное

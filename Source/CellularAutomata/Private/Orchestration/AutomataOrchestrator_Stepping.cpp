@@ -692,7 +692,3 @@ void AAutomataOrchestrator::Stop()
 	SetActorTickEnabled(bEnableViewSlice);
 }
 
-void AAutomataOrchestrator::Clear()
-{
-	
-}
