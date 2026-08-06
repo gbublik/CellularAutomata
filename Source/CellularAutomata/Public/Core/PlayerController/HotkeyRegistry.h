@@ -52,6 +52,7 @@ enum class EHotkey : uint8
 	ViewSliceFarther,
 	ToggleSelectionMode,
 	SelectDrag,
+	EraseCell,
 	ExtractSelection,
 	InvertSelection,
 	BakeCellsToMesh,

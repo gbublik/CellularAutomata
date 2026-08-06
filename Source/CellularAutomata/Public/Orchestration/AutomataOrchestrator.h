@@ -331,6 +331,59 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Generation")
 	void CycleStateGeneratorType();
 
+	/** На каком расстоянии от камеры встаёт клетка, когда луч НИ ВО ЧТО не
+	 *  попал, - в мировых единицах. Промах по всему живому это не ошибка, а
+	 *  штатный способ начать новую фигуру в пустоте: клетка садится на решётку
+	 *  ровно на этом расстоянии вдоль луча и ходит за курсором.
+	 *
+	 *  Значение по умолчанию (2000) - несколько десятков клеток при обычном
+	 *  CellSize: достаточно далеко, чтобы клетка не липла к лицу, и достаточно
+	 *  близко, чтобы её было видно крупно. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Painting",
+			  meta = (ClampMin = "1.0", UIMin = "100.0", UIMax = "20000.0"))
+	float CellPlaceDistance = 2000.0f;
+
+	/** Во сколько раз призрак под курсором больше настоящей клетки. Чуть
+	 *  больше единицы по той же причине, что и SelectionScaleMultiplier: ровно
+	 *  такой же куб z-фighting'ил бы с клеткой, к грани которой он прилип. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Painting",
+			  meta = (ClampMin = "0.1", UIMin = "0.5", UIMax = "2.0"))
+	float CellPreviewScaleMultiplier = 1.08f;
+
+	/** Куда встанет клетка при текущем положении курсора: `клетка + нормаль
+	 *  грани`, если луч попал в живую клетку, иначе - клетка на CellPlaceDistance
+	 *  вдоль луча. false - строить некуда (нет сетки, вырожденный луч).
+	 *
+	 *  Одна и та же функция отвечает и превью, и постановке - иначе призрак
+	 *  показывал бы одно, а клик ставил другое, причём расходились бы они
+	 *  только в редких случаях (луч, идущий вплотную к ребру), то есть
+	 *  незаметно. */
+	bool ComputePlacementCell(const FVector& RayOrigin, const FVector& RayDirection, FIntVector& OutCell);
+
+	/** Показать призрак клетки под курсором (режим рисования) - зовётся каждый
+	 *  кадр из AGamePlayerController::Tick(). Если строить некуда, призрак
+	 *  прячется. */
+	void UpdateCellPreview(const FVector& RayOrigin, const FVector& RayDirection);
+
+	/** Спрятать призрак - при выходе из режима рисования. */
+	void HideCellPreview();
+
+	/** Поставить (bErase = false) или убрать (bErase = true) ОДНУ клетку под
+	 *  курсором - один клик, одна клетка. Ставится туда, куда показывает
+	 *  ComputePlacementCell(); убирается та клетка, в которую попал луч, - то
+	 *  есть постановка липнет к грани, а стирание бьёт по самой клетке.
+	 *
+	 *  Каждый вызов - отдельная запись в журнале, то есть отдельный Ctrl+Z.
+	 *  Рисование протяжкой (клетки сыплются, пока кнопка зажата) было
+	 *  сделано и убрано: одна клетка на клик точнее, а цепочка из них - это и
+	 *  есть цепочка отдельных действий, каждое из которых хочется уметь
+	 *  отменить по отдельности.
+	 *
+	 *  Клетка, уже находящаяся в нужном состоянии, молча пропускается: запись
+	 *  выходит пустой (см. MakeAddRecord()), и в журнал не попадает - иначе
+	 *  Ctrl+Z после промаха отменял бы "ничего". */
+	void PaintCellUnderCursor(const FVector& RayOrigin, const FVector& RayDirection, bool bErase);
+
 	/** Параметры тиража - см. ArrayCells() и FCellArrayParams. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Array")
 	FCellArrayParams ArrayParams;
@@ -2365,6 +2418,20 @@ private:
 	 *  откат поколения начнёт врать. Пустая запись (правка ничего не задела)
 	 *  не пишется. */
 	void RecordEdit(FCellEditRecord&& Record);
+
+	/** Призрак клетки под курсором в режиме рисования - обычный
+	 *  UStaticMeshComponent, а не инстансированный: клетка ровно одна, и
+	 *  перемещать её каждый кадр через SetWorldLocation() дешевле, чем
+	 *  переливать буфер инстансов (UpdateInstanceTransform() тянет за собой
+	 *  MarkRenderStateDirty на весь компонент). Создаётся лениво
+	 *  (EnsureCellPreviewComponent()), один раз. UPROPERTY - та же причина, что
+	 *  и у SelectionMeshComponent (переживает реинстансинг Live Coding). */
+	UPROPERTY(Transient)
+	UStaticMeshComponent* CellPreviewComponent = nullptr;
+
+	/** Создаёт CellPreviewComponent при первом обращении - зеркалит
+	 *  EnsureSelectionMeshComponent(). */
+	void EnsureCellPreviewComponent();
 
 	/** Компонент подсветки выделения - всегда обычный (не HISM)
 	 *  UInstancedStaticMeshComponent, независимо от CellMeshComponentType:

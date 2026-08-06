@@ -45,6 +45,9 @@ namespace HotkeyRegistry
 			{ EHotkey::ViewSliceFarther,                   TEXT("CA_ViewSliceFarther"),                   EKeys::RightBracket },
 			{ EHotkey::ToggleSelectionMode,                TEXT("CA_ToggleSelectionMode"),                EKeys::Tab },
 			{ EHotkey::SelectDrag,                         TEXT("CA_SelectDrag"),                         EKeys::LeftMouseButton },
+			// ПКМ - стирание клетки в режиме рисования (Shift+Tab); вне режима
+			// обработчик выходит сразу, правая кнопка проекту больше нигде не нужна.
+			{ EHotkey::EraseCell,                          TEXT("CA_EraseCell"),                          EKeys::RightMouseButton },
 			{ EHotkey::ExtractSelection,                   TEXT("CA_ExtractSelection"),                   EKeys::Enter },
 			{ EHotkey::InvertSelection,                    TEXT("CA_InvertSelection"),                    EKeys::I },
 			{ EHotkey::BakeCellsToMesh,                    TEXT("CA_BakeCellsToMesh"),                    EKeys::M },

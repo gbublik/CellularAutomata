@@ -171,6 +171,11 @@ void AGamePlayerController::SetupInputComponent()
 		{ TEXT("IA_SelectDrag"), { EHotkey::SelectDrag }, {
 			{ ETriggerEvent::Started, &AGamePlayerController::OnSelectDragStarted },
 			{ ETriggerEvent::Completed, &AGamePlayerController::OnSelectDragFinished } } },
+		// ПКМ живёт только внутри режима рисования (обработчик выходит сразу,
+		// если он выключен) - вне его правая кнопка проекту не нужна, а пешке
+		// она и так не назначена. Только Started: клетка убирается нажатием,
+		// отпускание ничего не значит.
+		{ TEXT("IA_EraseCell"), { EHotkey::EraseCell }, { { ETriggerEvent::Started, &AGamePlayerController::OnEraseCellPressed } } },
 		{ TEXT("IA_ExtractSelection"), { EHotkey::ExtractSelection }, { { ETriggerEvent::Started, &AGamePlayerController::OnExtractSelection } } },
 		{ TEXT("IA_InvertSelection"), { EHotkey::InvertSelection }, { { ETriggerEvent::Started, &AGamePlayerController::OnInvertSelection } } },
 		{ TEXT("IA_BakeCellsToMesh"), { EHotkey::BakeCellsToMesh }, { { ETriggerEvent::Started, &AGamePlayerController::OnBakeCellsToMesh } } },
@@ -332,7 +337,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 		}
 	}
 
-	if (bSelectionModeActive && Params.Event == IE_Pressed && !bCtrlDown)
+	if ((bSelectionModeActive || bDrawModeActive) && Params.Event == IE_Pressed && !bCtrlDown)
 	{
 		// Единственные клавиши, не заведённые в HotkeyRegistry, и намеренно:
 		// это не хоткеи проекта, а клавиши движения ПЕШКИ (ADefaultPawn плюс
@@ -350,6 +355,10 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 			if (Params.Key == FlyKey)
 			{
 				SetSelectionModeActive(false);
+				// И рисование тоже: причина та же - в режиме ввод пешки
+				// отключён, так что эти клавиши иначе не делают ничего ровно
+				// тогда, когда хочется улететь от нарисованного.
+				SetDrawModeActive(false);
 				break;
 			}
 		}
@@ -1631,7 +1640,92 @@ void AGamePlayerController::OnHalveStepsPerRender()
 
 void AGamePlayerController::OnToggleSelectionMode()
 {
+	// Shift+Tab - второй инструмент на той же клавише: Tab выделяет, Shift+Tab
+	// рисует. Модификатор проверяется здесь, а не в привязке (Enhanced Input
+	// не умеет требовать его в маппинге) - идиома Ctrl+S/Shift+F.
+	if (IsShiftHeld())
+	{
+		SetDrawModeActive(!bDrawModeActive);
+		return;
+	}
+
 	SetSelectionModeActive(!bSelectionModeActive);
+}
+
+void AGamePlayerController::SetDrawModeActive(bool bActive)
+{
+	if (bDrawModeActive == bActive)
+	{
+		return;
+	}
+
+	bDrawModeActive = bActive;
+
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+
+	if (bActive)
+	{
+		// Два инструмента на одну мышь не делятся: ЛКМ в рисовании ставит
+		// клетку, а в выделении тянет рамку, и одновременно они означали бы
+		// разное от одного и того же нажатия.
+		SetSelectionModeActive(false);
+	}
+	else if (Orchestrator)
+	{
+		Orchestrator->HideCellPreview();
+	}
+
+	// Тот же единый "режим мыши", что и у выделения: камера стоит, курсор
+	// виден. Ставится ПОСЛЕ SetSelectionModeActive(false) выше - иначе тот
+	// вернул бы управление камерой обратно.
+	SetCameraControlEnabled(!bActive);
+
+	UE_LOG(LogTemp, Log, TEXT("Режим рисования клеток: %s"), bActive ? TEXT("включён") : TEXT("выключен"));
+}
+
+void AGamePlayerController::TickCellPainting()
+{
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator)
+	{
+		return;
+	}
+
+	FVector RayOrigin = FVector::ZeroVector;
+	FVector RayDirection = FVector::ZeroVector;
+	if (!DeprojectMousePositionToWorld(RayOrigin, RayDirection))
+	{
+		// Курсор вне окна - показывать призрак негде.
+		Orchestrator->HideCellPreview();
+		return;
+	}
+
+	// Единственное, что делает тик режима: ведёт призрак за курсором. Сами
+	// клетки ставятся только по нажатию (см. OnSelectDragStarted()).
+	Orchestrator->UpdateCellPreview(RayOrigin, RayDirection);
+}
+
+void AGamePlayerController::OnEraseCellPressed()
+{
+	if (!bDrawModeActive)
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator)
+	{
+		return;
+	}
+
+	FVector RayOrigin = FVector::ZeroVector;
+	FVector RayDirection = FVector::ZeroVector;
+	if (!DeprojectMousePositionToWorld(RayOrigin, RayDirection))
+	{
+		return;
+	}
+
+	Orchestrator->PaintCellUnderCursor(RayOrigin, RayDirection, /*bErase=*/true);
 }
 
 void AGamePlayerController::SetSelectionModeActive(bool bActive)
@@ -1775,6 +1869,13 @@ void AGamePlayerController::Tick(float DeltaTime)
 		UpdateHeadlight();
 	}
 
+	// Рисование - тоже до раннего выхода: призрак под курсором обязан жить и
+	// тогда, когда куба отсечения в мире нет вовсе.
+	if (bDrawModeActive)
+	{
+		TickCellPainting();
+	}
+
 	ARenderCullVolume* CullVolume = FindCullVolume();
 	if (!CullVolume || !CullVolume->IsGizmoVisible())
 	{
@@ -1808,6 +1909,20 @@ void AGamePlayerController::Tick(float DeltaTime)
 
 void AGamePlayerController::OnSelectDragStarted()
 {
+	// В режиме рисования ЛКМ ставит одну клетку, а не тянет рамку - проверяется
+	// первым, режимы взаимоисключающи (см. SetDrawModeActive()).
+	if (bDrawModeActive)
+	{
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+		FVector RayOrigin = FVector::ZeroVector;
+		FVector RayDirection = FVector::ZeroVector;
+		if (Orchestrator && DeprojectMousePositionToWorld(RayOrigin, RayDirection))
+		{
+			Orchestrator->PaintCellUnderCursor(RayOrigin, RayDirection, /*bErase=*/false);
+		}
+		return;
+	}
+
 	if (!bSelectionModeActive)
 	{
 		return;
@@ -1863,6 +1978,13 @@ void AGamePlayerController::OnSelectDragStarted()
 
 void AGamePlayerController::OnSelectDragFinished()
 {
+	// В режиме рисования отпускание кнопки не значит ничего: клетка уже
+	// поставлена нажатием, и рамки, которую надо было бы закрыть, здесь нет.
+	if (bDrawModeActive)
+	{
+		return;
+	}
+
 	// Тянули ручку манипулятора, а не рамку - завершаем драг (там же уйдёт
 	// запрос на перерисовку) и выходим, выделение здесь ни при чём.
 	if (DraggedCullVolume)

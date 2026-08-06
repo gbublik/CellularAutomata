@@ -58,6 +58,20 @@ bool CellSelection::PickCellAlongRay(
 	double MaxDistance,
 	FIntVector& OutCell)
 {
+	FIntVector UnusedNormal;
+	return PickCellAlongRay(Grid, RayOrigin, RayDirection, MaxDistance, OutCell, UnusedNormal);
+}
+
+bool CellSelection::PickCellAlongRay(
+	const FCellGrid& Grid,
+	const FVector& RayOrigin,
+	const FVector& RayDirection,
+	double MaxDistance,
+	FIntVector& OutCell,
+	FIntVector& OutFaceNormal)
+{
+	OutFaceNormal = FIntVector::ZeroValue;
+
 	const FLatticeTransform& Lattice = Grid.GetLattice();
 	const FVector CellStep = Lattice.GetCellWorldExtent();
 	if (CellStep.GetMin() <= 0.0 || MaxDistance <= 0.0)
@@ -116,11 +130,24 @@ bool CellSelection::PickCellAlongRay(
 	const double MaxT = MaxDistance;
 	double T = 0.0;
 
+	// Ось последнего шага - это и есть грань, через которую луч вошёл в клетку:
+	// Amanatides-Woo шагает ровно по одной оси за раз, так что нормаль входа
+	// известна бесплатно, отдельной геометрии не нужно. -1 означает "шага ещё не
+	// было", то есть луч начался внутри найденной клетки (камера внутри
+	// структуры) - грани входа тогда не существует, и нормаль остаётся нулевой.
+	int32 LastStepAxis = -1;
+
 	while (T <= MaxT)
 	{
 		if (Grid.IsAlive(Cell))
 		{
 			OutCell = Cell;
+			if (LastStepAxis >= 0)
+			{
+				// Против направления шага: шагали в +X - вошли через грань,
+				// смотрящую в -X.
+				OutFaceNormal[LastStepAxis] = -StepSign[LastStepAxis];
+			}
 			return true;
 		}
 
@@ -137,6 +164,7 @@ bool CellSelection::PickCellAlongRay(
 		T = TMax[MinAxis];
 		TMax[MinAxis] += TDelta[MinAxis];
 		Cell[MinAxis] += StepSign[MinAxis];
+		LastStepAxis = MinAxis;
 	}
 
 	return false;

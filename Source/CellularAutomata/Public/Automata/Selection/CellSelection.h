@@ -42,4 +42,26 @@ namespace CellSelection
 		const FVector& RayDirection,
 		double MaxDistance,
 		FIntVector& OutCell);
+
+	/** То же, но с НОРМАЛЬЮ ГРАНИ, через которую луч вошёл в найденную клетку, -
+	 *  единичный вектор по одной оси, вроде (0,0,1). Это то, чем клетка
+	 *  "прилипает" к грани при рисовании: новая клетка ставится в
+	 *  `OutCell + OutFaceNormal` (см. AAutomataOrchestrator::
+	 *  ComputePlacementCell()).
+	 *
+	 *  Нормаль достаётся бесплатно: Amanatides-Woo шагает ровно по одной оси за
+	 *  итерацию, так что ось последнего шага и есть грань входа - никакой
+	 *  отдельной геометрии пересечения не считается.
+	 *
+	 *  Нулевая нормаль - ЗНАЧИМЫЙ ответ, а не ошибка: он означает, что луч
+	 *  начался уже внутри найденной клетки (камера залетела внутрь структуры),
+	 *  и грани входа не существует. Прилипать в этом случае не к чему, и
+	 *  вызывающий решает сам, что делать. */
+	CELLULARAUTOMATA_API bool PickCellAlongRay(
+		const FCellGrid& Grid,
+		const FVector& RayOrigin,
+		const FVector& RayDirection,
+		double MaxDistance,
+		FIntVector& OutCell,
+		FIntVector& OutFaceNormal);
 }

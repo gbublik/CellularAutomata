@@ -12,6 +12,7 @@
 #include "Automata/Persistence/AutomatonStateSerializer.h"
 #include "Automata/Rendering/CellVisibilityFilter.h"
 #include "Automata/Rendering/ColorRamp.h"
+#include "Automata/Selection/CellSelection.h"
 #include "Core/PlayerController/HotkeyRegistry.h"
 #include "GameFramework/InputSettings.h"
 #include "Automata/Simulation/LatticeNeighborhood.h"
@@ -2965,6 +2966,106 @@ bool FHotkeyRegistryTest::RunTest(const FString& Parameters)
 				AddWarning(TEXT("в DefaultInput.ini нет ни одной строки CA_* - раскладка целиком на значениях по умолчанию"));
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPickFaceNormalTest,
+	"CellularAutomata.Selection.PickFaceNormal",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FPickFaceNormalTest::RunTest(const FString& Parameters)
+{
+	// Нормаль грани, через которую луч вошёл в клетку (CellSelection::
+	// PickCellAlongRay). На ней стоит "прилипание" при рисовании: новая клетка
+	// ставится в HitCell + Normal, поэтому ошибка в знаке ставит клетку ВНУТРЬ
+	// структуры, а ошибка в оси - сбоку от того места, куда целились.
+	constexpr float CellSize = 100.0f;
+	constexpr int32 ChunkSize = 8;
+	FDenseCellGrid Grid(CellSize, ChunkSize);
+	Grid.SetAlive(FIntVector(0, 0, 0), true);
+
+	// Клетка (0,0,0) стоит в начале координат и занимает [-50, +50] по каждой
+	// оси: GridToWorld() даёт ЦЕНТР клетки.
+	struct FCase
+	{
+		FVector Origin;
+		FVector Direction;
+		FIntVector ExpectedNormal;
+		const TCHAR* Name;
+	};
+
+	const FCase Cases[] = {
+		{ FVector(500, 0, 0),  FVector(-1, 0, 0), FIntVector(1, 0, 0),  TEXT("справа") },
+		{ FVector(-500, 0, 0), FVector(1, 0, 0),  FIntVector(-1, 0, 0), TEXT("слева") },
+		{ FVector(0, 0, 500),  FVector(0, 0, -1), FIntVector(0, 0, 1),  TEXT("сверху") },
+		{ FVector(0, 0, -500), FVector(0, 0, 1),  FIntVector(0, 0, -1), TEXT("снизу") },
+		{ FVector(0, 500, 0),  FVector(0, -1, 0), FIntVector(0, 1, 0),  TEXT("сбоку по Y") },
+	};
+
+	for (const FCase& Case : Cases)
+	{
+		FIntVector HitCell;
+		FIntVector Normal;
+		if (!CellSelection::PickCellAlongRay(Grid, Case.Origin, Case.Direction, 10000.0, HitCell, Normal))
+		{
+			AddError(FString::Printf(TEXT("луч %s не нашёл клетку"), Case.Name));
+			continue;
+		}
+
+		TestEqual(*FString::Printf(TEXT("клетка под лучом %s"), Case.Name), HitCell, FIntVector(0, 0, 0));
+		TestEqual(*FString::Printf(TEXT("нормаль грани %s"), Case.Name), Normal, Case.ExpectedNormal);
+
+		// Главное следствие, ради которого нормаль и нужна: клетка, поставленная
+		// по ней, оказывается СНАРУЖИ, между камерой и попавшей клеткой. Знак
+		// проверяется именно так, а не сравнением с константой: ошибка в знаке
+		// ставит клетку внутрь структуры, и это то, что видно глазом.
+		const FIntVector Placed = HitCell + Normal;
+		const FVector PlacedWorld = Grid.GetLattice().GridToWorld(Placed);
+		const FVector HitWorld = Grid.GetLattice().GridToWorld(HitCell);
+		TestTrue(*FString::Printf(TEXT("новая клетка (%s) ближе к камере, чем та, в которую попали"), Case.Name),
+			FVector::DistSquared(Case.Origin, PlacedWorld) < FVector::DistSquared(Case.Origin, HitWorld));
+	}
+
+	// Нормаль всегда по ОДНОЙ оси, даже когда луч идёт наискось: DDA шагает по
+	// одной оси за итерацию, и диагональной "грани" не существует. Без этой
+	// проверки реализация, складывающая нормали двух последних шагов, прошла бы
+	// все случаи выше - они все осевые.
+	{
+		FIntVector HitCell;
+		FIntVector Normal;
+		const FVector Origin(400, 380, 360);
+		if (CellSelection::PickCellAlongRay(Grid, Origin, -Origin.GetSafeNormal(), 10000.0, HitCell, Normal))
+		{
+			const int32 NonZero = (Normal.X != 0 ? 1 : 0) + (Normal.Y != 0 ? 1 : 0) + (Normal.Z != 0 ? 1 : 0);
+			TestEqual(TEXT("у наклонного луча нормаль всё равно осевая"), NonZero, 1);
+		}
+		else
+		{
+			AddError(TEXT("наклонный луч не нашёл клетку"));
+		}
+	}
+
+	// Нулевая нормаль - ЗНАЧИМЫЙ ответ: луч начался внутри самой клетки (камера
+	// залетела в структуру), грани входа не существует. Вызывающий обязан
+	// отличать это от осевой нормали - иначе клетка встала бы сама в себя.
+	{
+		FIntVector HitCell;
+		FIntVector Normal;
+		TestTrue(TEXT("луч изнутри клетки всё равно находит её"),
+			CellSelection::PickCellAlongRay(Grid, FVector::ZeroVector, FVector(1, 0, 0), 10000.0, HitCell, Normal));
+		TestEqual(TEXT("изнутри клетки грани входа нет"), Normal, FIntVector::ZeroValue);
+	}
+
+	// Промах не должен оставлять нормаль от прошлого вызова: она обнуляется в
+	// начале, а не только при попадании.
+	{
+		FIntVector HitCell;
+		FIntVector Normal(7, 7, 7);
+		TestFalse(TEXT("луч мимо всего живого не находит клетку"),
+			CellSelection::PickCellAlongRay(Grid, FVector(500, 500, 500), FVector(1, 1, 1).GetSafeNormal(), 10000.0, HitCell, Normal));
+		TestEqual(TEXT("при промахе нормаль обнулена"), Normal, FIntVector::ZeroValue);
 	}
 
 	return true;
