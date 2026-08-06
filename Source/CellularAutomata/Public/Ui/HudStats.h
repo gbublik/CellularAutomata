@@ -189,6 +189,22 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bViewSliceActive = false;
 
+	/** Фильтр по возрасту (цифровой ряд) сейчас что-то прячет - четвёртый в той
+	 *  же троице индикаторов "режет", ставший четвёркой.
+	 *
+	 *  Пары "включён/режет" у него нет, в отличие от соседей: фильтр задаётся
+	 *  списком возрастов, и пустой список - это и есть "выключен", отдельному
+	 *  тумблеру взводиться нечем.
+	 *
+	 *  Нужен затем, что AliveCellCount считает ЖИВЫХ, а на экране при фильтре
+	 *  видна только их часть - без этого флага число и картинка расходятся, и
+	 *  объяснить расхождение нечем: всплывающее сообщение о фильтре гаснет
+	 *  через несколько секунд после нажатия. Какие именно слои показаны, отдаёт
+	 *  AAutomataOrchestrator::GetAgeFilterSwatches(); здесь только "фильтр
+	 *  вообще есть", чтобы виджету хватило одного bool для индикатора. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bAgeFilterActive = false;
+
 	/** Chunk-силуэт (H) - см. bEnableGhostShape. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bGhostShapeEnabled = false;

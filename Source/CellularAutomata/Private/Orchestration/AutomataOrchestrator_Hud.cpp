@@ -121,6 +121,10 @@ void AAutomataOrchestrator::UpdateHudStats()
 	FVector SliceForward;
 	LastHudStats.bViewSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
 
+	// Через тот же аксессор, которым фильтр проверяет сам рендер, - "пустой
+	// список значит выключен" записано ровно в одном месте.
+	LastHudStats.bAgeFilterActive = IsAgeFilterActive();
+
 	// Звук. Форма кривой берётся из ПОСЛЕДНЕГО измерения компонента, а не
 	// считается тут заново: мерить одно и то же дважды за кадр незачем, а
 	// главное - HUD обязан показывать ровно то, чем сейчас ведётся звук, иначе
