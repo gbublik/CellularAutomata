@@ -436,6 +436,21 @@ void AAutomataOrchestrator::StepAsync()
 
 bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewGrid, int64 ComputeUploadBytes, bool bFellBackToCpu, int32 Generations)
 {
+	// Первым делом, до всех ранних выходов, и по двум причинам сразу.
+	//
+	// Темп следующих заходов Tick() берёт отсюда - по ФАКТИЧЕСКОМУ размеру
+	// этого захода, а не по тому, что планировалось до dispatch'а: пачка могла
+	// быть урезана внутри стратегии (объём AABB упёрся в её потолок), и тогда
+	// ждать StepsPerRender/Speed ради одного посчитанного поколения значило бы
+	// замедлить симуляцию ровно в StepsPerRender раз. Так интервал сам сходится
+	// к реальности за один заход - в обе стороны.
+	//
+	// И это же уходит в FHudStats::GenerationsPerDispatch - "сколько сложилось"
+	// рядом со "сколько попросили". Раньше присвоение стояло в ApplyStepResult(),
+	// то есть только на пути Play, и после ручного шага показывало бы несвежее;
+	// здесь его выполняют оба пути.
+	LastDispatchGenerations = FMath::Max(1, Generations);
+
 	Grid = MoveTemp(NewGrid);
 	LastGpuComputeUploadBytes = ComputeUploadBytes;
 	bLastComputeFellBackToCpu = bFellBackToCpu;
@@ -517,14 +532,6 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// а не заходы, поэтому идут шагом GenerationsAdvanced. При обычном
 	// одиночном шаге это 1, и поведение прежнее.
 	const int32 Generations = FMath::Max(1, GenerationsAdvanced);
-
-	// Темп следующих заходов - по ФАКТИЧЕСКОМУ размеру этого, а не по тому,
-	// что планировалось до дispatch'а: пачка могла быть урезана внутри
-	// стратегии (объём AABB упёрся в её потолок), и тогда ждать
-	// StepsPerRender/Speed ради одного посчитанного поколения значило бы
-	// замедлить симуляцию ровно в StepsPerRender раз. Так интервал сам
-	// сходится к реальности за один заход - в обе стороны.
-	LastDispatchGenerations = Generations;
 
 	// Подстановка сетки, разрядка отложенных R/N/Ctrl+Z, вымирание и счётчики -
 	// общий хвост с ручным шагом, см. CommitComputedGenerations(). false -

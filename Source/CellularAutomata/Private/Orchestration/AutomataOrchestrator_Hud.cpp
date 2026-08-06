@@ -33,6 +33,7 @@ void AAutomataOrchestrator::UpdateHudStats()
 	// крутят хоткеи (+/- и T/G) и Details panel, а не хранил свою копию.
 	LastHudStats.SimulationSpeed = Speed;
 	LastHudStats.StepsPerRender = StepsPerRender;
+	LastHudStats.GenerationsPerDispatch = LastDispatchGenerations;
 	LastHudStats.CellBorderWidth = CellBorderWidth;
 
 	// Скорость камеры - фактическая, с учётом удержания Shift (см. doc-comment
