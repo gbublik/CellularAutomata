@@ -25,265 +25,179 @@ AGamePlayerController::AGamePlayerController()
 	PlayerCameraManagerClass = AGameCameraManager::StaticClass();
 }
 
-// YourPlayerController.cpp
+namespace
+{
+	using FHotkeyHandler = void (AGamePlayerController::*)();
+
+	/** Один обработчик и событие, по которому он зовётся. Событий на действие
+	 *  бывает два: нажал/отпустил (F, Shift, ЛКМ) либо "повторять, пока
+	 *  держат" плюс отдельная реакция на само нажатие (T/G). */
+	struct FHotkeyBinding
+	{
+		ETriggerEvent Event;
+		FHotkeyHandler Handler;
+	};
+
+	/** Строка таблицы хоткеев - одно действие целиком: как называется, на каких
+	 *  клавишах и что зовёт.
+	 *
+	 *  Таблицей, а не тремя проходами (создать действие -> смаппить клавишу ->
+	 *  привязать обработчик), потому что раньше это и было тремя проходами,
+	 *  разъехавшимися на полторы сотни строк: чтобы узнать, что делает клавиша,
+	 *  приходилось искать её в маппинге, оттуда идти к действию, а от действия -
+	 *  к биндингу. Рассинхрон между ними ловился только вручную; на профилях
+	 *  рендера пришлось даже завести static_assert, что клавиш столько же,
+	 *  сколько действий, - в таблице такой инвариант выразить нечем, потому что
+	 *  нечему разъехаться. Тот же приём, что у RulePresets/RenderPresets/
+	 *  CapturePresets: таблица-константа и один проход по ней.
+	 *
+	 *  Клавиши берутся не из Content-ассетов - см. doc-comment InputActions. */
+	struct FHotkeyRow
+	{
+		const TCHAR* ActionName;
+		TArray<FKey> Keys;
+		TArray<FHotkeyBinding> Bindings;
+	};
+}
+
 void AGamePlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 
-	FastStepAction = NewObject<UInputAction>(this, TEXT("IA_FastStep"));
-	FastStepAction->ValueType = EInputActionValueType::Boolean;
-
-	// По действию на профиль рендера. Их ровно столько, сколько клавиш F1-F4
-	// ниже. Это НЕ размер таблицы RenderPresets::GetAll() - профилей там уже
-	// пять: последний, Photo, клавиши не имеет намеренно, его применяет сама
-	// съёмка (TakePhotoShot() на F10), потому что вне снимка он не нужен.
-	// Профилю, который добавят для повседневной работы, понадобятся действие,
-	// клавиша и биндинг - поэтому счётчик здесь один на всё, а не
-	// переоткрывается в трёх местах.
-	constexpr int32 NumRenderPresetHotkeys = 4;
-	RenderPresetActions.Reset(NumRenderPresetHotkeys);
-	for (int32 PresetIndex = 0; PresetIndex < NumRenderPresetHotkeys; ++PresetIndex)
-	{
-		UInputAction* PresetAction = NewObject<UInputAction>(this, *FString::Printf(TEXT("IA_RenderPreset%d"), PresetIndex));
-		PresetAction->ValueType = EInputActionValueType::Boolean;
-		RenderPresetActions.Add(PresetAction);
-	}
-
-	ToggleBackgroundAction = NewObject<UInputAction>(this, TEXT("IA_ToggleBackground"));
-	ToggleBackgroundAction->ValueType = EInputActionValueType::Boolean;
-
-	SpeedBoostAction = NewObject<UInputAction>(this, TEXT("IA_SpeedBoost"));
-	SpeedBoostAction->ValueType = EInputActionValueType::Boolean;
-
-	ToggleChunkedRenderAction = NewObject<UInputAction>(this, TEXT("IA_ToggleChunkedRender"));
-	ToggleChunkedRenderAction->ValueType = EInputActionValueType::Boolean;
-
-	CycleChunkedRenderOrderAction = NewObject<UInputAction>(this, TEXT("IA_CycleChunkedRenderOrder"));
-	CycleChunkedRenderOrderAction->ValueType = EInputActionValueType::Boolean;
-
-	ToggleWaitForChunkedRenderToFinishAction = NewObject<UInputAction>(this, TEXT("IA_ToggleWaitForChunkedRenderToFinish"));
-	ToggleWaitForChunkedRenderToFinishAction->ValueType = EInputActionValueType::Boolean;
-
-	ToggleCellCullingAction = NewObject<UInputAction>(this, TEXT("IA_ToggleCellCulling"));
-	ToggleCellCullingAction->ValueType = EInputActionValueType::Boolean;
-
-	ToggleRenderCullVolumeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleRenderCullVolume"));
-	ToggleRenderCullVolumeAction->ValueType = EInputActionValueType::Boolean;
-
-	ToggleGhostShapeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleGhostShape"));
-	ToggleGhostShapeAction->ValueType = EInputActionValueType::Boolean;
-
-	IncreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseSpeed"));
-	IncreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
-
-	DecreaseSpeedAction = NewObject<UInputAction>(this, TEXT("IA_DecreaseSpeed"));
-	DecreaseSpeedAction->ValueType = EInputActionValueType::Boolean;
-
-	FrameAllCellsAction = NewObject<UInputAction>(this, TEXT("IA_FrameAllCells"));
-	FrameAllCellsAction->ValueType = EInputActionValueType::Boolean;
-
-	MoveCullVolumeUpAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeUp"));
-	MoveCullVolumeUpAction->ValueType = EInputActionValueType::Boolean;
-
-	MoveCullVolumeDownAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeDown"));
-	MoveCullVolumeDownAction->ValueType = EInputActionValueType::Boolean;
-
-	MoveCullVolumeLeftAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeLeft"));
-	MoveCullVolumeLeftAction->ValueType = EInputActionValueType::Boolean;
-
-	MoveCullVolumeRightAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeRight"));
-	MoveCullVolumeRightAction->ValueType = EInputActionValueType::Boolean;
-
-	ToggleViewSliceAction = NewObject<UInputAction>(this, TEXT("IA_ToggleViewSlice"));
-	ToggleViewSliceAction->ValueType = EInputActionValueType::Boolean;
-
-	ViewSliceNearerAction = NewObject<UInputAction>(this, TEXT("IA_ViewSliceNearer"));
-	ViewSliceNearerAction->ValueType = EInputActionValueType::Boolean;
-
-	ViewSliceFartherAction = NewObject<UInputAction>(this, TEXT("IA_ViewSliceFarther"));
-	ViewSliceFartherAction->ValueType = EInputActionValueType::Boolean;
-
-	IncreaseStepsPerRenderAction = NewObject<UInputAction>(this, TEXT("IA_IncreaseStepsPerRender"));
-	IncreaseStepsPerRenderAction->ValueType = EInputActionValueType::Boolean;
-
-	DecreaseStepsPerRenderAction = NewObject<UInputAction>(this, TEXT("IA_DecreaseStepsPerRender"));
-	DecreaseStepsPerRenderAction->ValueType = EInputActionValueType::Boolean;
-
-	ToggleSelectionModeAction = NewObject<UInputAction>(this, TEXT("IA_ToggleSelectionMode"));
-	ToggleSelectionModeAction->ValueType = EInputActionValueType::Boolean;
-
-	SelectDragAction = NewObject<UInputAction>(this, TEXT("IA_SelectDrag"));
-	SelectDragAction->ValueType = EInputActionValueType::Boolean;
-
-	ExtractSelectionAction = NewObject<UInputAction>(this, TEXT("IA_ExtractSelection"));
-	ExtractSelectionAction->ValueType = EInputActionValueType::Boolean;
-
-	InvertSelectionAction = NewObject<UInputAction>(this, TEXT("IA_InvertSelection"));
-	InvertSelectionAction->ValueType = EInputActionValueType::Boolean;
-
-	BakeCellsToMeshAction = NewObject<UInputAction>(this, TEXT("IA_BakeCellsToMesh"));
-	BakeCellsToMeshAction->ValueType = EInputActionValueType::Boolean;
-
-	DeleteSelectedCellsAction = NewObject<UInputAction>(this, TEXT("IA_DeleteSelectedCells"));
-	DeleteSelectedCellsAction->ValueType = EInputActionValueType::Boolean;
-
-	MoveCullVolumeToSelectionAction = NewObject<UInputAction>(this, TEXT("IA_MoveCullVolumeToSelection"));
-	MoveCullVolumeToSelectionAction->ValueType = EInputActionValueType::Boolean;
-
-	SelectCellsInCullVolumeAction = NewObject<UInputAction>(this, TEXT("IA_SelectCellsInCullVolume"));
-	SelectCellsInCullVolumeAction->ValueType = EInputActionValueType::Boolean;
-
-	SaveStateAction = NewObject<UInputAction>(this, TEXT("IA_SaveState"));
-	SaveStateAction->ValueType = EInputActionValueType::Boolean;
-
-	LoadStateAction = NewObject<UInputAction>(this, TEXT("IA_LoadState"));
-	LoadStateAction->ValueType = EInputActionValueType::Boolean;
-
-	// Пробел (пауза), R (сброс) и N (новый сид) намеренно не маппятся сюда - см.
+	// Пробел (пауза), R (сброс) и N (новый сид) намеренно не в таблице - см.
 	// InputKey() ниже, все три перехватываются на уровне сырых оконных событий
 	// в обход Enhanced Input (у R и N тот же лаговый баг пропущенного нажатия,
 	// что был у паузы - см. doc-comment InputKey()).
-	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
-	SimulationMappingContext->MapKey(FastStepAction, EKeys::F);
-	// F1-F4, а не 1-4: цифровой ряд отдан фильтру по возрасту (см. InputKey()),
-	// а возрастные слои перебирают постоянно при осмотре, тогда как профиль
-	// рендера ставят изредка.
 	//
-	// Отдельная клавиша на профиль, а не одна циклическая: профилей четыре, и
-	// "сделать быстро" нужно немедленно, а не после трёх нажатий вслепую -
-	// перебор имеет смысл там, где вариантов много и они равноправны
-	// (ChunkedRenderOrder на X), а не там, где есть явные "как задумано" и
-	// "максимально быстро" на краях списка.
-	static const FKey RenderPresetKeys[] = { EKeys::F1, EKeys::F2, EKeys::F3, EKeys::F4 };
-	static_assert(UE_ARRAY_COUNT(RenderPresetKeys) == 4, "Клавиш профилей рендера должно быть столько же, сколько действий выше");
-	for (int32 PresetIndex = 0; PresetIndex < RenderPresetActions.Num(); ++PresetIndex)
+	// Про ETriggerEvent в строках ниже: Started - однократно на нажатие,
+	// Completed - на отпускание, Triggered - каждый кадр удержания. Triggered
+	// стоит там, где величину подбирают на глаз (скорость, срез, сдвиг куба), и
+	// обработчик сам прореживает поток до частоты автоповтора - см.
+	// ShouldFireRepeat(). Started - там, где повтор на кадре был бы вреден:
+	// профиль рендера переприменялся бы полным RenderGridImmediate() каждый
+	// кадр, а удвоение StepsPerRender улетело бы в потолок мгновенно.
+	const TArray<FHotkeyRow> Hotkeys =
 	{
-		SimulationMappingContext->MapKey(RenderPresetActions[PresetIndex], RenderPresetKeys[PresetIndex]);
+		// F - тумблер (обычное нажатие) или hold-режим (Shift+F), а не
+		// "срабатывает каждый кадр, пока зажата", как было раньше.
+		{ TEXT("IA_FastStep"), { EKeys::F }, {
+			{ ETriggerEvent::Started, &AGamePlayerController::OnFastStepPressed },
+			{ ETriggerEvent::Completed, &AGamePlayerController::OnFastStepReleased } } },
+
+		// F1-F4, а не 1-4: цифровой ряд отдан фильтру по возрасту (см.
+		// InputKey()), а возрастные слои перебирают постоянно при осмотре,
+		// тогда как профиль рендера ставят изредка.
+		//
+		// Отдельная клавиша на профиль, а не одна циклическая: профилей четыре,
+		// и "сделать быстро" нужно немедленно, а не после трёх нажатий вслепую -
+		// перебор имеет смысл там, где вариантов много и они равноправны
+		// (ChunkedRenderOrder на X), а не там, где есть явные "как задумано" и
+		// "максимально быстро" на краях списка.
+		//
+		// Их ровно четыре, и это НЕ размер таблицы RenderPresets::GetAll() -
+		// профилей там пять: последний, Photo, клавиши не имеет намеренно, его
+		// применяет сама съёмка (TakePhotoShot() на F10), потому что вне снимка
+		// он не нужен. Профилю, который добавят для повседневной работы, нужна
+		// одна новая строка здесь - вместе с клавишей и обработчиком.
+		{ TEXT("IA_RenderPreset0"), { EKeys::F1 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset0 } } },
+		{ TEXT("IA_RenderPreset1"), { EKeys::F2 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset1 } } },
+		{ TEXT("IA_RenderPreset2"), { EKeys::F3 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset2 } } },
+		{ TEXT("IA_RenderPreset3"), { EKeys::F4 }, { { ETriggerEvent::Started, &AGamePlayerController::OnApplyRenderPreset3 } } },
+
+		{ TEXT("IA_ToggleBackground"), { EKeys::U }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleBackground } } },
+
+		{ TEXT("IA_SpeedBoost"), { EKeys::LeftShift }, {
+			{ ETriggerEvent::Started, &AGamePlayerController::OnSpeedBoostStarted },
+			{ ETriggerEvent::Completed, &AGamePlayerController::OnSpeedBoostEnded } } },
+
+		{ TEXT("IA_ToggleChunkedRender"), { EKeys::Z }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleChunkedRender } } },
+		{ TEXT("IA_CycleChunkedRenderOrder"), { EKeys::X }, { { ETriggerEvent::Started, &AGamePlayerController::OnCycleChunkedRenderOrder } } },
+		{ TEXT("IA_ToggleWaitForChunkedRenderToFinish"), { EKeys::V }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish } } },
+		{ TEXT("IA_ToggleCellCulling"), { EKeys::B }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleCellCulling } } },
+		{ TEXT("IA_ToggleRenderCullVolume"), { EKeys::C }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleRenderCullVolume } } },
+		{ TEXT("IA_ToggleGhostShape"), { EKeys::H }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleGhostShape } } },
+
+		// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от
+		// того, есть ли у клавиатуры цифровой блок.
+		{ TEXT("IA_IncreaseSpeed"), { EKeys::Equals, EKeys::Add }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnIncreaseSpeed } } },
+		{ TEXT("IA_DecreaseSpeed"), { EKeys::Hyphen, EKeys::Subtract }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnDecreaseSpeed } } },
+
+		{ TEXT("IA_FrameAllCells"), { EKeys::Home }, { { ETriggerEvent::Started, &AGamePlayerController::OnFrameAllCells } } },
+
+		// Одна клавиша, два события: Triggered повторяет шаг, пока держат, а
+		// Started под Shift переходит к следующей степени двойки. Какой из двух
+		// обработчиков сработает, решает проверка Shift внутри них самих -
+		// Enhanced Input не умеет требовать модификатор в маппинге клавиши.
+		{ TEXT("IA_IncreaseStepsPerRender"), { EKeys::T }, {
+			{ ETriggerEvent::Triggered, &AGamePlayerController::OnIncreaseStepsPerRender },
+			{ ETriggerEvent::Started, &AGamePlayerController::OnDoubleStepsPerRender } } },
+		{ TEXT("IA_DecreaseStepsPerRender"), { EKeys::G }, {
+			{ ETriggerEvent::Triggered, &AGamePlayerController::OnDecreaseStepsPerRender },
+			{ ETriggerEvent::Started, &AGamePlayerController::OnHalveStepsPerRender } } },
+
+		// Стрелки заняты ADefaultPawn (полёт и поворот), поэтому обработчики
+		// работают только в режиме выделения, где ввод пешки отключён - см.
+		// OnMoveCullVolume().
+		{ TEXT("IA_MoveCullVolumeUp"), { EKeys::Up }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeUp } } },
+		{ TEXT("IA_MoveCullVolumeDown"), { EKeys::Down }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeDown } } },
+		{ TEXT("IA_MoveCullVolumeLeft"), { EKeys::Left }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeLeft } } },
+		{ TEXT("IA_MoveCullVolumeRight"), { EKeys::Right }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnMoveCullVolumeRight } } },
+
+		{ TEXT("IA_ToggleViewSlice"), { EKeys::J }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleViewSlice } } },
+		// [ и ] освободились, когда StepsPerRender переехал на T/G.
+		{ TEXT("IA_ViewSliceNearer"), { EKeys::LeftBracket }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnViewSliceNearer } } },
+		{ TEXT("IA_ViewSliceFarther"), { EKeys::RightBracket }, { { ETriggerEvent::Triggered, &AGamePlayerController::OnViewSliceFarther } } },
+
+		{ TEXT("IA_ToggleSelectionMode"), { EKeys::Tab }, { { ETriggerEvent::Started, &AGamePlayerController::OnToggleSelectionMode } } },
+		{ TEXT("IA_SelectDrag"), { EKeys::LeftMouseButton }, {
+			{ ETriggerEvent::Started, &AGamePlayerController::OnSelectDragStarted },
+			{ ETriggerEvent::Completed, &AGamePlayerController::OnSelectDragFinished } } },
+		{ TEXT("IA_ExtractSelection"), { EKeys::Enter }, { { ETriggerEvent::Started, &AGamePlayerController::OnExtractSelection } } },
+		{ TEXT("IA_InvertSelection"), { EKeys::I }, { { ETriggerEvent::Started, &AGamePlayerController::OnInvertSelection } } },
+		{ TEXT("IA_BakeCellsToMesh"), { EKeys::M }, { { ETriggerEvent::Started, &AGamePlayerController::OnBakeCellsToMesh } } },
+		{ TEXT("IA_DeleteSelectedCells"), { EKeys::Delete }, { { ETriggerEvent::Started, &AGamePlayerController::OnDeleteSelectedCells } } },
+		{ TEXT("IA_MoveCullVolumeToSelection"), { EKeys::K }, { { ETriggerEvent::Started, &AGamePlayerController::OnMoveCullVolumeToSelection } } },
+		{ TEXT("IA_SelectCellsInCullVolume"), { EKeys::L }, { { ETriggerEvent::Started, &AGamePlayerController::OnSelectCellsInCullVolume } } },
+
+		// S/O замапплены БЕЗ модификатора - Enhanced Input не даёт потребовать
+		// Ctrl прямо в маппинге ключа (в отличие от старых FInputChord).
+		// Ctrl(+Shift) проверяется внутри OnSaveOrSaveAs()/OnLoadState() - та же
+		// идиома, что у Ctrl/Shift в OnSelectDragStarted(). Голый S по-прежнему
+		// уходит камере (DefaultPawn, движение назад) - это осознанный побочный
+		// эффект удержания Ctrl+S во время полёта, см. doc-comment.
+		{ TEXT("IA_SaveState"), { EKeys::S }, { { ETriggerEvent::Started, &AGamePlayerController::OnSaveOrSaveAs } } },
+		{ TEXT("IA_LoadState"), { EKeys::O }, { { ETriggerEvent::Started, &AGamePlayerController::OnLoadState } } },
+	};
+
+	SimulationMappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Simulation"));
+	UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent);
+
+	InputActions.Reset(Hotkeys.Num());
+	for (const FHotkeyRow& Row : Hotkeys)
+	{
+		UInputAction* Action = NewObject<UInputAction>(this, Row.ActionName);
+		// Все хоткеи проекта булевы: ни один не читает величину нажатия, а
+		// повтор при удержании даёт сам ETriggerEvent::Triggered.
+		Action->ValueType = EInputActionValueType::Boolean;
+		InputActions.Add(Action);
+
+		for (const FKey& Key : Row.Keys)
+		{
+			SimulationMappingContext->MapKey(Action, Key);
+		}
+
+		if (EnhancedInputComp)
+		{
+			for (const FHotkeyBinding& Binding : Row.Bindings)
+			{
+				EnhancedInputComp->BindAction(Action, Binding.Event, this, Binding.Handler);
+			}
+		}
 	}
-	SimulationMappingContext->MapKey(ToggleBackgroundAction, EKeys::U);
-	SimulationMappingContext->MapKey(SpeedBoostAction, EKeys::LeftShift);
-	SimulationMappingContext->MapKey(ToggleChunkedRenderAction, EKeys::Z);
-	SimulationMappingContext->MapKey(CycleChunkedRenderOrderAction, EKeys::X);
-	SimulationMappingContext->MapKey(ToggleWaitForChunkedRenderToFinishAction, EKeys::V);
-	SimulationMappingContext->MapKey(ToggleCellCullingAction, EKeys::B);
-	SimulationMappingContext->MapKey(ToggleRenderCullVolumeAction, EKeys::C);
-	SimulationMappingContext->MapKey(ToggleGhostShapeAction, EKeys::H);
-	// Основной ряд (=/-) и NumPad (+/-) - чтобы работало независимо от того,
-	// есть ли у клавиатуры цифровой блок.
-	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Equals);
-	SimulationMappingContext->MapKey(IncreaseSpeedAction, EKeys::Add);
-	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Hyphen);
-	SimulationMappingContext->MapKey(DecreaseSpeedAction, EKeys::Subtract);
-	SimulationMappingContext->MapKey(FrameAllCellsAction, EKeys::Home);
-	SimulationMappingContext->MapKey(IncreaseStepsPerRenderAction, EKeys::T);
-	SimulationMappingContext->MapKey(DecreaseStepsPerRenderAction, EKeys::G);
-	// [ и ] освободились, когда StepsPerRender переехал на T/G.
-	// Стрелки заняты ADefaultPawn (полёт и поворот), поэтому обработчики ниже
-	// работают только в режиме выделения, где ввод пешки отключён - см.
-	// OnMoveCullVolume().
-	SimulationMappingContext->MapKey(MoveCullVolumeUpAction, EKeys::Up);
-	SimulationMappingContext->MapKey(MoveCullVolumeDownAction, EKeys::Down);
-	SimulationMappingContext->MapKey(MoveCullVolumeLeftAction, EKeys::Left);
-	SimulationMappingContext->MapKey(MoveCullVolumeRightAction, EKeys::Right);
-	SimulationMappingContext->MapKey(ToggleViewSliceAction, EKeys::J);
-	SimulationMappingContext->MapKey(ViewSliceNearerAction, EKeys::LeftBracket);
-	SimulationMappingContext->MapKey(ViewSliceFartherAction, EKeys::RightBracket);
-	SimulationMappingContext->MapKey(ToggleSelectionModeAction, EKeys::Tab);
-	SimulationMappingContext->MapKey(SelectDragAction, EKeys::LeftMouseButton);
-	SimulationMappingContext->MapKey(ExtractSelectionAction, EKeys::Enter);
-	SimulationMappingContext->MapKey(InvertSelectionAction, EKeys::I);
-	SimulationMappingContext->MapKey(BakeCellsToMeshAction, EKeys::M);
-	SimulationMappingContext->MapKey(DeleteSelectedCellsAction, EKeys::Delete);
-	SimulationMappingContext->MapKey(MoveCullVolumeToSelectionAction, EKeys::K);
-	SimulationMappingContext->MapKey(SelectCellsInCullVolumeAction, EKeys::L);
-	// S/O замапплены БЕЗ модификатора - Enhanced Input не даёт потребовать
-	// Ctrl прямо в маппинге ключа (в отличие от старых FInputChord).
-	// Ctrl(+Shift) проверяется внутри OnSaveOrSaveAs()/OnLoadState() - та же
-	// идиома, что у Ctrl/Shift в OnSelectDragStarted(). Голый S по-прежнему
-	// уходит камере (DefaultPawn, движение назад) - это осознанный
-	// побочный эффект удержания Ctrl+S во время полёта, см. doc-comment.
-	SimulationMappingContext->MapKey(SaveStateAction, EKeys::S);
-	SimulationMappingContext->MapKey(LoadStateAction, EKeys::O);
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 	{
 		Subsystem->AddMappingContext(SimulationMappingContext, 0);
-	}
-
-	if (UEnhancedInputComponent* EnhancedInputComp = Cast<UEnhancedInputComponent>(InputComponent))
-	{
-		// Started/Completed (не Triggered) - F теперь тумблер (обычное
-		// нажатие) или hold-режим (Shift+F), а не "срабатывает каждый кадр,
-		// пока зажата", как раньше.
-		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFastStepPressed);
-		EnhancedInputComp->BindAction(FastStepAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnFastStepReleased);
-		// Started - профиль применяется однократно на нажатие; удержание F1
-		// не должно переприменять его каждый кадр (полный RenderGridImmediate()
-		// на кадр), поэтому не Triggered.
-		//
-		// Обработчики именованные, а не лямбды с захватом индекса: BindAction
-		// принимает указатель на метод, и это ровно та же схема, что у
-		// четырёх стрелок движения куба отсечения.
-		void (AGamePlayerController::* RenderPresetHandlers[])() = {
-			&AGamePlayerController::OnApplyRenderPreset0,
-			&AGamePlayerController::OnApplyRenderPreset1,
-			&AGamePlayerController::OnApplyRenderPreset2,
-			&AGamePlayerController::OnApplyRenderPreset3
-		};
-		for (int32 PresetIndex = 0; PresetIndex < RenderPresetActions.Num(); ++PresetIndex)
-		{
-			EnhancedInputComp->BindAction(RenderPresetActions[PresetIndex], ETriggerEvent::Started, this, RenderPresetHandlers[PresetIndex]);
-		}
-		EnhancedInputComp->BindAction(ToggleBackgroundAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleBackground);
-		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSpeedBoostStarted);
-		EnhancedInputComp->BindAction(SpeedBoostAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSpeedBoostEnded);
-		EnhancedInputComp->BindAction(ToggleChunkedRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleChunkedRender);
-		EnhancedInputComp->BindAction(CycleChunkedRenderOrderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnCycleChunkedRenderOrder);
-		EnhancedInputComp->BindAction(ToggleWaitForChunkedRenderToFinishAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleWaitForChunkedRenderToFinish);
-		EnhancedInputComp->BindAction(ToggleCellCullingAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleCellCulling);
-		EnhancedInputComp->BindAction(ToggleRenderCullVolumeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleRenderCullVolume);
-		EnhancedInputComp->BindAction(ToggleGhostShapeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleGhostShape);
-		// Triggered - держа +/-, Speed продолжает меняться, а не только на
-		// однократное нажатие (аналогично F/OnStepOnce()). Само событие
-		// приходит каждый кадр, но обработчик прореживает его до частоты
-		// автоповтора - см. ShouldFireRepeat().
-		EnhancedInputComp->BindAction(IncreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseSpeed);
-		EnhancedInputComp->BindAction(DecreaseSpeedAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseSpeed);
-		EnhancedInputComp->BindAction(FrameAllCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnFrameAllCells);
-		// Triggered - держа T/G, StepsPerRender продолжает меняться, а не
-		// только на однократное нажатие (аналогично +/- для Speed, с тем же
-		// прореживанием до частоты автоповтора).
-		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnIncreaseStepsPerRender);
-		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnDecreaseStepsPerRender);
-		// Те же клавиши ещё раз, но на Started и под Shift - переход к
-		// следующей/предыдущей степени двойки. Started, а не Triggered:
-		// удвоение на каждом кадре удержания улетело бы в потолок мгновенно.
-		// Какой из двух обработчиков сработает, решает проверка Shift внутри
-		// них самих - Enhanced Input не умеет требовать модификатор в
-		// маппинге клавиши.
-		EnhancedInputComp->BindAction(IncreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDoubleStepsPerRender);
-		EnhancedInputComp->BindAction(DecreaseStepsPerRenderAction, ETriggerEvent::Started, this, &AGamePlayerController::OnHalveStepsPerRender);
-		// Triggered - удержание повторяет сдвиг, как у +/- для Speed.
-		EnhancedInputComp->BindAction(MoveCullVolumeUpAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeUp);
-		EnhancedInputComp->BindAction(MoveCullVolumeDownAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeDown);
-		EnhancedInputComp->BindAction(MoveCullVolumeLeftAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeLeft);
-		EnhancedInputComp->BindAction(MoveCullVolumeRightAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnMoveCullVolumeRight);
-		EnhancedInputComp->BindAction(ToggleViewSliceAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleViewSlice);
-		// Triggered - срез подбирают на глаз, непрерывно, а не однократным
-		// нажатием (как +/- для Speed).
-		EnhancedInputComp->BindAction(ViewSliceNearerAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnViewSliceNearer);
-		EnhancedInputComp->BindAction(ViewSliceFartherAction, ETriggerEvent::Triggered, this, &AGamePlayerController::OnViewSliceFarther);
-		EnhancedInputComp->BindAction(ToggleSelectionModeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnToggleSelectionMode);
-		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSelectDragStarted);
-		EnhancedInputComp->BindAction(SelectDragAction, ETriggerEvent::Completed, this, &AGamePlayerController::OnSelectDragFinished);
-		EnhancedInputComp->BindAction(ExtractSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnExtractSelection);
-		EnhancedInputComp->BindAction(InvertSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnInvertSelection);
-		EnhancedInputComp->BindAction(BakeCellsToMeshAction, ETriggerEvent::Started, this, &AGamePlayerController::OnBakeCellsToMesh);
-		EnhancedInputComp->BindAction(DeleteSelectedCellsAction, ETriggerEvent::Started, this, &AGamePlayerController::OnDeleteSelectedCells);
-		EnhancedInputComp->BindAction(MoveCullVolumeToSelectionAction, ETriggerEvent::Started, this, &AGamePlayerController::OnMoveCullVolumeToSelection);
-		EnhancedInputComp->BindAction(SelectCellsInCullVolumeAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSelectCellsInCullVolume);
-		EnhancedInputComp->BindAction(SaveStateAction, ETriggerEvent::Started, this, &AGamePlayerController::OnSaveOrSaveAs);
-		EnhancedInputComp->BindAction(LoadStateAction, ETriggerEvent::Started, this, &AGamePlayerController::OnLoadState);
 	}
 }
 
@@ -539,7 +453,7 @@ bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 
 void AGamePlayerController::OnToggleSimulation()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleSimulation: AAutomataOrchestrator не найден в мире"));
@@ -558,7 +472,7 @@ void AGamePlayerController::OnToggleSimulation()
 
 void AGamePlayerController::OnFastStepPressed()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnFastStepPressed: AAutomataOrchestrator не найден в мире"));
@@ -585,7 +499,7 @@ void AGamePlayerController::OnFastStepPressed()
 
 void AGamePlayerController::OnFastStepReleased()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (Orchestrator && Orchestrator->IsFastStepActive())
 	{
 		Orchestrator->StopFastStep();
@@ -594,7 +508,7 @@ void AGamePlayerController::OnFastStepReleased()
 
 void AGamePlayerController::OnResetSimulation()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnResetSimulation: AAutomataOrchestrator не найден в мире"));
@@ -606,7 +520,7 @@ void AGamePlayerController::OnResetSimulation()
 
 void AGamePlayerController::OnNewSeed()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnNewSeed: AAutomataOrchestrator не найден в мире"));
@@ -629,7 +543,7 @@ void AGamePlayerController::OnNewSeed()
 
 void AGamePlayerController::OnGenerateState()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnGenerateState: AAutomataOrchestrator не найден в мире"));
@@ -658,7 +572,7 @@ void AGamePlayerController::OnGenerateState()
 
 void AGamePlayerController::OnToggleHudInfoPanel()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleHudInfoPanel: AAutomataOrchestrator не найден в мире"));
@@ -670,7 +584,7 @@ void AGamePlayerController::OnToggleHudInfoPanel()
 
 void AGamePlayerController::OnToggleSonification()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleSonification: AAutomataOrchestrator не найден в мире"));
@@ -691,7 +605,7 @@ void AGamePlayerController::OnToggleSonification()
 
 void AGamePlayerController::OnTakePhotoShot()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnTakePhotoShot: AAutomataOrchestrator не найден в мире"));
@@ -703,7 +617,7 @@ void AGamePlayerController::OnTakePhotoShot()
 
 void AGamePlayerController::OnCaptureTextureSlice()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnCaptureTextureSlice: AAutomataOrchestrator не найден в мире"));
@@ -722,7 +636,7 @@ void AGamePlayerController::OnCaptureTextureSlice()
 
 void AGamePlayerController::OnToggleSeriesCapture()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleSeriesCapture: AAutomataOrchestrator не найден в мире"));
@@ -747,7 +661,7 @@ void AGamePlayerController::OnToggleSeriesCapture()
 
 void AGamePlayerController::OnApplyRenderPreset(int32 PresetIndex)
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnApplyRenderPreset: AAutomataOrchestrator не найден в мире"));
@@ -777,7 +691,7 @@ void AGamePlayerController::OnToggleBackground()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleBackground: AAutomataOrchestrator не найден в мире"));
@@ -908,7 +822,7 @@ void AGamePlayerController::OnSpeedBoostStarted()
 	}
 
 	float Multiplier = 1.0f;
-	if (AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass())))
+	if (AAutomataOrchestrator* Orchestrator = FindOrchestrator())
 	{
 		Multiplier = Orchestrator->CameraSpeedMultiplier;
 	}
@@ -943,7 +857,7 @@ void AGamePlayerController::OnToggleChunkedRender()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleChunkedRender: AAutomataOrchestrator не найден в мире"));
@@ -955,7 +869,7 @@ void AGamePlayerController::OnToggleChunkedRender()
 
 void AGamePlayerController::OnUndoLastAction()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnUndoLastAction: AAutomataOrchestrator не найден в мире"));
@@ -967,7 +881,7 @@ void AGamePlayerController::OnUndoLastAction()
 
 void AGamePlayerController::OnRedoEdit()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnRedoEdit: AAutomataOrchestrator не найден в мире"));
@@ -979,7 +893,7 @@ void AGamePlayerController::OnRedoEdit()
 
 void AGamePlayerController::OnCycleChunkedRenderOrder()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnCycleChunkedRenderOrder: AAutomataOrchestrator не найден в мире"));
@@ -991,7 +905,7 @@ void AGamePlayerController::OnCycleChunkedRenderOrder()
 
 void AGamePlayerController::OnToggleWaitForChunkedRenderToFinish()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleWaitForChunkedRenderToFinish: AAutomataOrchestrator не найден в мире"));
@@ -1003,7 +917,7 @@ void AGamePlayerController::OnToggleWaitForChunkedRenderToFinish()
 
 void AGamePlayerController::OnToggleCellCulling()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleCellCulling: AAutomataOrchestrator не найден в мире"));
@@ -1024,7 +938,7 @@ void AGamePlayerController::OnToggleRenderCullVolume()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleRenderCullVolume: AAutomataOrchestrator не найден в мире"));
@@ -1066,7 +980,7 @@ void AGamePlayerController::OnToggleRenderCullVolumeVisibility()
 
 void AGamePlayerController::OnToggleGhostShape()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleGhostShape: AAutomataOrchestrator не найден в мире"));
@@ -1111,7 +1025,7 @@ void AGamePlayerController::OnIncreaseSpeed()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnIncreaseSpeed: AAutomataOrchestrator не найден в мире"));
@@ -1128,7 +1042,7 @@ void AGamePlayerController::OnDecreaseSpeed()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnDecreaseSpeed: AAutomataOrchestrator не найден в мире"));
@@ -1140,7 +1054,7 @@ void AGamePlayerController::OnDecreaseSpeed()
 
 void AGamePlayerController::OnFrameAllCells()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnFrameAllCells: AAutomataOrchestrator не найден в мире"));
@@ -1300,9 +1214,9 @@ bool AGamePlayerController::IsOrthographicCamera() const
 	return CameraManager ? CameraManager->IsOrthographic() : false;
 }
 
-void AGamePlayerController::ShowCameraStatusMessage(const FString& Message) const
+void AGamePlayerController::ShowCameraStatusMessage(const FString& Message)
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (Orchestrator)
 	{
 		Orchestrator->ShowStatusMessage(AAutomataOrchestrator::StatusKey_Camera, Message);
@@ -1311,7 +1225,7 @@ void AGamePlayerController::ShowCameraStatusMessage(const FString& Message) cons
 
 void AGamePlayerController::OnAlignCamera(const FVector& ViewDirection, const FString& ViewName, bool bVisibleOnly)
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnAlignCamera: AAutomataOrchestrator не найден в мире"));
@@ -1365,7 +1279,7 @@ void AGamePlayerController::OnToggleOrthographic()
 		// ровно ту пустоту, от которой эта подгонка и защищает.
 		CameraManager->ClearUserOrthoWidth();
 
-		AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 		FVector Center;
 		float Radius;
 		if (Orchestrator && Orchestrator->ComputeAliveCellsBounds(Center, Radius))
@@ -1408,7 +1322,7 @@ void AGamePlayerController::OnAdjustOrthoWidth(bool bZoomIn)
 
 void AGamePlayerController::OnFrameSelection()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnFrameSelection: AAutomataOrchestrator не найден в мире"));
@@ -1453,7 +1367,7 @@ void AGamePlayerController::OnMoveCullVolume(const FIntVector& CellDelta)
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnMoveCullVolume: AAutomataOrchestrator не найден в мире"));
@@ -1486,7 +1400,7 @@ void AGamePlayerController::OnMoveCullVolumeRight()
 
 void AGamePlayerController::OnSetAgeFilter(int32 Age)
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnSetAgeFilter: AAutomataOrchestrator не найден в мире"));
@@ -1533,7 +1447,7 @@ void AGamePlayerController::OnSetAgeFilter(int32 Age)
 
 void AGamePlayerController::OnToggleViewSlice()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnToggleViewSlice: AAutomataOrchestrator не найден в мире"));
@@ -1545,7 +1459,7 @@ void AGamePlayerController::OnToggleViewSlice()
 
 void AGamePlayerController::OnViewSliceNearer()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnViewSliceNearer: AAutomataOrchestrator не найден в мире"));
@@ -1567,7 +1481,7 @@ void AGamePlayerController::OnViewSliceNearer()
 
 void AGamePlayerController::OnViewSliceFarther()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnViewSliceFarther: AAutomataOrchestrator не найден в мире"));
@@ -1599,7 +1513,7 @@ void AGamePlayerController::OnIncreaseStepsPerRender()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnIncreaseStepsPerRender: AAutomataOrchestrator не найден в мире"));
@@ -1622,7 +1536,7 @@ void AGamePlayerController::OnDecreaseStepsPerRender()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnDecreaseStepsPerRender: AAutomataOrchestrator не найден в мире"));
@@ -1639,7 +1553,7 @@ void AGamePlayerController::OnDoubleStepsPerRender()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnDoubleStepsPerRender: AAutomataOrchestrator не найден в мире"));
@@ -1656,7 +1570,7 @@ void AGamePlayerController::OnHalveStepsPerRender()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnHalveStepsPerRender: AAutomataOrchestrator не найден в мире"));
@@ -1926,7 +1840,7 @@ void AGamePlayerController::OnSelectDragFinished()
 	const FVector2D RectMin(FMath::Min(DragStartScreenPos.X, CurrentScreenPos.X), FMath::Min(DragStartScreenPos.Y, CurrentScreenPos.Y));
 	const FVector2D RectMax(FMath::Max(DragStartScreenPos.X, CurrentScreenPos.X), FMath::Max(DragStartScreenPos.Y, CurrentScreenPos.Y));
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnSelectDragFinished: AAutomataOrchestrator не найден в мире"));
@@ -1991,7 +1905,7 @@ void AGamePlayerController::OnSelectDragFinished()
 
 void AGamePlayerController::OnExtractSelection()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnExtractSelection: AAutomataOrchestrator не найден в мире"));
@@ -2003,7 +1917,7 @@ void AGamePlayerController::OnExtractSelection()
 
 void AGamePlayerController::OnInvertSelection()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnInvertSelection: AAutomataOrchestrator не найден в мире"));
@@ -2015,7 +1929,7 @@ void AGamePlayerController::OnInvertSelection()
 
 void AGamePlayerController::OnBakeCellsToMesh()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnBakeCellsToMesh: AAutomataOrchestrator не найден в мире"));
@@ -2027,7 +1941,7 @@ void AGamePlayerController::OnBakeCellsToMesh()
 
 void AGamePlayerController::OnDeleteSelectedCells()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnDeleteSelectedCells: AAutomataOrchestrator не найден в мире"));
@@ -2039,7 +1953,7 @@ void AGamePlayerController::OnDeleteSelectedCells()
 
 void AGamePlayerController::OnMoveCullVolumeToSelection()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnMoveCullVolumeToSelection: AAutomataOrchestrator не найден в мире"));
@@ -2051,7 +1965,7 @@ void AGamePlayerController::OnMoveCullVolumeToSelection()
 
 void AGamePlayerController::OnSelectCellsInCullVolume()
 {
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnSelectCellsInCullVolume: AAutomataOrchestrator не найден в мире"));
@@ -2084,7 +1998,7 @@ void AGamePlayerController::OnSaveOrSaveAs()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnSaveOrSaveAs: AAutomataOrchestrator не найден в мире"));
@@ -2111,7 +2025,7 @@ void AGamePlayerController::OnLoadState()
 		return;
 	}
 
-	AAutomataOrchestrator* Orchestrator = Cast<AAutomataOrchestrator>(UGameplayStatics::GetActorOfClass(GetWorld(), AAutomataOrchestrator::StaticClass()));
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnLoadState: AAutomataOrchestrator не найден в мире"));

@@ -592,107 +592,20 @@ protected:
 	 *  ключа без модификатора - Ctrl проверяется внутри обработчика. */
 	void OnLoadState();
 
-	/** Создаются в рантайме через NewObject (см. SetupInputComponent()), а не
-	 *  как Content-ассеты - для пары хоткеев на весь проект не нужны
-	 *  отдельные .uasset. Пауза (пробел) и сброс (R) не среди них - см. InputKey(). */
+	/** Все UInputAction проекта, по одному на строку таблицы хоткеев в
+	 *  SetupInputComponent(). Массив, а не поле на действие: снаружи
+	 *  SetupInputComponent() их не читает никто - ни один обработчик, ни Tick,
+	 *  ни HUD, - так что тридцать два именованных поля были тридцатью двумя
+	 *  способами написать "оно живо". Держать их всё же надо: UInputMappingContext
+	 *  ссылается на действия, но полагаться на чужой контейнер как на владельца
+	 *  ровно того типа объектов, которые мы сами и создали, - лишнее допущение.
+	 *
+	 *  Создаются в рантайме через NewObject, а не как Content-ассеты: привязки
+	 *  тогда уехали бы в бинарные .uasset, невидимые в git diff, а клавишам,
+	 *  которые намеренно ловятся сырым InputKey() (пробел, R, N, цифры, NumPad -
+	 *  см. InputKey()), это всё равно ничем не помогло бы. */
 	UPROPERTY()
-	TObjectPtr<class UInputAction> FastStepAction;
-
-	/** По одному действию на профиль рендера (F1-F4). Массив, а не четыре
-	 *  именованных поля: они полностью однотипны и различаются только
-	 *  индексом, который тут же и уходит в ApplyRenderPreset(). */
-	UPROPERTY()
-	TArray<TObjectPtr<class UInputAction>> RenderPresetActions;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleBackgroundAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> SpeedBoostAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleChunkedRenderAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> CycleChunkedRenderOrderAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleWaitForChunkedRenderToFinishAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleCellCullingAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleRenderCullVolumeAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleGhostShapeAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> MoveCullVolumeUpAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> MoveCullVolumeDownAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> MoveCullVolumeLeftAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> MoveCullVolumeRightAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleViewSliceAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ViewSliceNearerAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ViewSliceFartherAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> IncreaseSpeedAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> DecreaseSpeedAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> FrameAllCellsAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> IncreaseStepsPerRenderAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> DecreaseStepsPerRenderAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ToggleSelectionModeAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> SelectDragAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> ExtractSelectionAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> InvertSelectionAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> BakeCellsToMeshAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> DeleteSelectedCellsAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> MoveCullVolumeToSelectionAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> SelectCellsInCullVolumeAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> SaveStateAction;
-
-	UPROPERTY()
-	TObjectPtr<class UInputAction> LoadStateAction;
+	TArray<TObjectPtr<class UInputAction>> InputActions;
 
 	UPROPERTY()
 	TObjectPtr<class UInputMappingContext> SimulationMappingContext;
@@ -716,11 +629,17 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<ARenderCullVolume> CachedCullVolume;
 
-	/** То же самое для оркестратора. Все хоткеи ниже резолвят его прямым
-	 *  GetActorOfClass() на каждое нажатие, и это правильно - нажатие редкое.
-	 *  Здесь нужен кэш ровно потому, что единственный вызывающий -
-	 *  UpdateHeadlight() из Tick(): перебирать актёров мира каждый кадр ради
-	 *  четырёх float'ов было бы платой не по товару. */
+	/** То же самое для оркестратора - и это ЕДИНСТВЕННЫЙ способ до него
+	 *  добраться отсюда.
+	 *
+	 *  Раньше кэш существовал ради одного вызывающего (UpdateHeadlight() из
+	 *  Tick(), которому нельзя перебирать актёров мира каждый кадр), а все
+	 *  сорок с лишним хоткеев писали GetActorOfClass() у себя - на том
+	 *  основании, что нажатие редкое. Основание верное, а вывод нет: цена там
+	 *  и правда не имеет значения, но сорок семь копий одной строки - это сорок
+	 *  семь мест, которые придётся править, если способ найти оркестратор
+	 *  когда-нибудь изменится (второй экземпляр в уровне, спавн по требованию,
+	 *  подписка на его уничтожение). Поэтому способ ровно один, и он здесь. */
 	AAutomataOrchestrator* FindOrchestrator();
 
 	UPROPERTY(Transient)
@@ -883,7 +802,7 @@ protected:
 	 *  AddOnScreenDebugMessage) намеренно: ключи там глобальные, и время жизни,
 	 *  цвет и нумерация ключей должны оставаться в одном месте, иначе сообщения
 	 *  о камере затирали бы чужие. */
-	void ShowCameraStatusMessage(const FString& Message) const;
+	void ShowCameraStatusMessage(const FString& Message);
 
 	/** Исходный MaxSpeed пешки до ускорения Shift'ом - 0 значит ещё не
 	 *  закэширован (см. OnSpeedBoostStarted()/OnSpeedBoostEnded()). */
