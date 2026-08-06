@@ -59,6 +59,9 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastHudStats.bAutoReseedOnExtinction = bAutoReseedOnExtinction;
 	LastHudStats.AutoReseedCount = AutoReseedCount;
 	LastHudStats.ComputeMethod = ComputeMethod;
+	// Только при выбранном Gpu: на Cpu откатываться не с чего, и флаг,
+	// оставшийся истинным с прошлого прогона, врал бы после переключения.
+	LastHudStats.bComputeFellBackToCpu = (ComputeMethod == EComputeMethod::Gpu) && bLastComputeFellBackToCpu;
 	LastHudStats.bChunkedRenderEnabled = bEnableChunkedRender;
 	LastHudStats.ChunkedRenderOrder = ChunkedRenderOrder;
 	LastHudStats.bWaitForChunkedRenderToFinish = bWaitForChunkedRenderToFinish;

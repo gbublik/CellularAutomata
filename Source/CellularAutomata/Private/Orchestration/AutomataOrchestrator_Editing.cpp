@@ -452,9 +452,11 @@ void AAutomataOrchestrator::StepBackward()
 
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
+			// Тут же и по той же причине: стратегия уничтожится вместе с лямбдой.
+			const bool bFellBackToCpu = ComputeStrategy->DidLastStepFallBackToCpu();
 
 			AsyncTask(ENamedThreads::GameThread,
-				[WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, TargetGeneration, ComputeUploadBytes]() mutable
+				[WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, TargetGeneration, ComputeUploadBytes, bFellBackToCpu]() mutable
 			{
 				AAutomataOrchestrator* StrongThis = WeakThis.Get();
 				if (!StrongThis)
@@ -486,6 +488,7 @@ void AAutomataOrchestrator::StepBackward()
 				// что даёт TargetGeneration шагов от изначального узора.
 				StrongThis->GenerationCount = TargetGeneration;
 				StrongThis->LastGpuComputeUploadBytes = ComputeUploadBytes;
+				StrongThis->bLastComputeFellBackToCpu = bFellBackToCpu;
 				StrongThis->StepsSinceLastRender = 0;
 
 				// График теряет только хвост после точки отката - история ДО неё

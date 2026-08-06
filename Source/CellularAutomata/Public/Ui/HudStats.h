@@ -118,9 +118,28 @@ struct FHudStats
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	bool bSelectionModeActive = false;
 
-	/** CPU или GPU - см. ComputeMethod. */
+	/** ВЫБРАННЫЙ метод расчёта - см. ComputeMethod. Именно выбранный, а не тот,
+	 *  которым посчитан последний шаг: см. bComputeFellBackToCpu ниже. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
 	EComputeMethod ComputeMethod = EComputeMethod::Cpu;
+
+	/** Выбран Gpu, но последний шаг посчитан на CPU: стратегия откатилась, не
+	 *  влезши в свои лимиты (см.
+	 *  FCellularAutomatonComputeStrategy::DidLastStepFallBackToCpu() - соседей
+	 *  больше, чем держит шейдер; объём AABB не влез в GpuVolumeCellLimit;
+	 *  объём вышел за 32-битную индексацию).
+	 *
+	 *  Та же разница, что между bViewSliceEnabled и bViewSliceActive, и тот же
+	 *  повод: ComputeMethod показывает НАМЕРЕНИЕ и продолжал говорить "Gpu",
+	 *  пока считал CPU, - откат был виден только предупреждением в логе. А
+	 *  замечать его стоит: он объясняет, почему шаг вдруг стал в разы дольше.
+	 *
+	 *  Виджету это скорее пометка рядом с ComputeMethod, чем отдельная строка -
+	 *  та же идиома, что звёздочка bRenderPresetModified. Описывает ПОСЛЕДНИЙ
+	 *  шаг: объём растёт вместе с сеткой, так что флаг может зажечься посреди
+	 *  прогона и больше не погаснуть. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")
+	bool bComputeFellBackToCpu = false;
 
 	/** Разлитый по кадрам рендер (Z) - см. bEnableChunkedRender. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|HUD")

@@ -258,9 +258,11 @@ void AAutomataOrchestrator::Next()
 			// (см. FHudStats::EstimatedGpuComputeUploadMB). Отражает только
 			// ПОСЛЕДНИЙ из NumSteps шагов - для HUD-индикатора этого достаточно.
 			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
+			// Тут же и по той же причине: стратегия уничтожится вместе с лямбдой.
+			const bool bFellBackToCpu = ComputeStrategy->DidLastStepFallBackToCpu();
 
 			// Grid/рендер трогаем только на game thread (см. StepAsync()).
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, NumSteps, ComputeUploadBytes]() mutable
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, ResultGrid = MoveTemp(ResultGrid), StepSeconds, NumSteps, ComputeUploadBytes, bFellBackToCpu]() mutable
 			{
 				AAutomataOrchestrator* StrongThis = WeakThis.Get();
 				if (!StrongThis)
@@ -272,7 +274,7 @@ void AAutomataOrchestrator::Next()
 				// и счётчики - общий хвост с непрерывным Play, см.
 				// CommitComputedGenerations(). false - управление уже перехвачено
 				// отложенным действием, рисовать нечего.
-				if (!StrongThis->CommitComputedGenerations(MoveTemp(ResultGrid), ComputeUploadBytes, NumSteps))
+				if (!StrongThis->CommitComputedGenerations(MoveTemp(ResultGrid), ComputeUploadBytes, bFellBackToCpu, NumSteps))
 				{
 					return;
 				}
@@ -416,24 +418,27 @@ void AAutomataOrchestrator::StepAsync()
 			// Снимаем ещё здесь, пока ComputeStrategy жива (уничтожится вместе
 			// с этой лямбдой) - см. FHudStats::EstimatedGpuComputeUploadMB.
 			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
+			// Тут же и по той же причине: стратегия уничтожится вместе с лямбдой.
+			const bool bFellBackToCpu = ComputeStrategy->DidLastStepFallBackToCpu();
 
 			// Grid/рендер трогаем только на game thread - AsyncTask сюда и
 			// маршрутизирует. WeakThis - на случай, если актор уничтожили
 			// (например, level unload) пока фоновый Step() ещё считался.
-			AsyncTask(ENamedThreads::GameThread, [WeakThis, NextGridBuffer = MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes, GenerationsAdvanced]() mutable
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, NextGridBuffer = MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes, bFellBackToCpu, GenerationsAdvanced]() mutable
 			{
 				if (AAutomataOrchestrator* StrongThis = WeakThis.Get())
 				{
-					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes, GenerationsAdvanced);
+					StrongThis->ApplyStepResult(MoveTemp(NextGridBuffer), StepSeconds, ComputeUploadBytes, bFellBackToCpu, GenerationsAdvanced);
 				}
 			});
 		});
 }
 
-bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewGrid, int64 ComputeUploadBytes, int32 Generations)
+bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewGrid, int64 ComputeUploadBytes, bool bFellBackToCpu, int32 Generations)
 {
 	Grid = MoveTemp(NewGrid);
 	LastGpuComputeUploadBytes = ComputeUploadBytes;
+	bLastComputeFellBackToCpu = bFellBackToCpu;
 	// Новое поколение делает старое выделение бессмысленным - сбрасываем сразу,
 	// независимо от того, дойдёт ли дело до фактического рендера у вызывающего
 	// (см. doc-comment SelectedCells в заголовке).
@@ -505,7 +510,7 @@ bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewG
 	return true;
 }
 
-void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, int32 GenerationsAdvanced)
+void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, bool bFellBackToCpu, int32 GenerationsAdvanced)
 {
 	// Один фоновый заход мог посчитать сразу несколько поколений (см.
 	// BatchGenerations в StepAsync()) - все счётчики ниже считают ПОКОЛЕНИЯ,
@@ -524,7 +529,7 @@ void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, doubl
 	// Подстановка сетки, разрядка отложенных R/N/Ctrl+Z, вымирание и счётчики -
 	// общий хвост с ручным шагом, см. CommitComputedGenerations(). false -
 	// управление уже перехвачено отложенным действием, рисовать нечего.
-	if (!CommitComputedGenerations(MoveTemp(NewGrid), ComputeUploadBytes, Generations))
+	if (!CommitComputedGenerations(MoveTemp(NewGrid), ComputeUploadBytes, bFellBackToCpu, Generations))
 	{
 		return;
 	}

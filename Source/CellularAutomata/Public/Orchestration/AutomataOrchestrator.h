@@ -2909,6 +2909,12 @@ private:
 	 *  CPU или сетка ещё не запускалась. */
 	int64 LastGpuComputeUploadBytes = 0;
 
+	/** Последний шаг посчитан на CPU, хотя выбран Gpu - см.
+	 *  FCellularAutomatonComputeStrategy::DidLastStepFallBackToCpu(). Снимается
+	 *  там же и тем же путём, что LastGpuComputeUploadBytes выше, и уходит в
+	 *  FHudStats::bComputeFellBackToCpu. */
+	bool bLastComputeFellBackToCpu = false;
+
 	/** Сквозной счётчик поколений с последнего GenerateRandom()/
 	 *  ResetToInitialState() - в отличие от StepsSinceLastRender (сбрасывается
 	 *  на каждом рендере) этот только растёт, пока не начат новый прогон.
@@ -3088,7 +3094,7 @@ private:
 	 *  ещё в фоновом потоке (см. FCellularAutomatonComputeStrategy::
 	 *  GetLastComputeUploadBytes()), до того как сама стратегия будет
 	 *  уничтожена по завершении фоновой лямбды. */
-	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, int32 GenerationsAdvanced);
+	void ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, bool bFellBackToCpu, int32 GenerationsAdvanced);
 
 	/** Общий хвост ОБОИХ применений посчитанного поколения - Next() (ручной F)
 	 *  и ApplyStepResult() (непрерывный Play). Подставляет сетку, снимает
@@ -3108,7 +3114,7 @@ private:
 	 *  двух местах и расходилась в мелочи: LastGpuComputeUploadBytes в Next()
 	 *  записывался ПОСЛЕ разрядки флагов, то есть терялся, если отложенное
 	 *  действие срабатывало. Теперь как в Play - до неё. */
-	bool CommitComputedGenerations(TUniquePtr<FCellGrid> NewGrid, int64 ComputeUploadBytes, int32 Generations);
+	bool CommitComputedGenerations(TUniquePtr<FCellGrid> NewGrid, int64 ComputeUploadBytes, bool bFellBackToCpu, int32 Generations);
 
 	/** Двигает счётчик поколений Ghost Shape и перестраивает его по достижении
 	 *  GhostShapeRefreshInterval. Отдельным методом, потому что зовётся из

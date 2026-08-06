@@ -91,6 +91,11 @@ bool FGpuComputeStrategy::SupportsStepBatching(const FCellularAutomatonRule& Rul
 
 int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& NextGrid, const FCellularAutomatonRule& Rule, int32 NumSteps) const
 {
+	// Сбрасывается в самом начале, до всех ранних выходов: флаг описывает
+	// ПОСЛЕДНИЙ заход, а не "случалось ли когда-нибудь" (см.
+	// DidLastStepFallBackToCpu()).
+	bLastStepFellBackToCpu = false;
+
 	const int32 RequestedSteps = FMath::Max(1, NumSteps);
 
 	// Разбивка по фазам - тот же приём и тот же формат лога, что у
@@ -137,6 +142,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FGpuComputeStrategy::StepBatch: %d соседей превышает потолок шейдерного массива (%d) - fallback на CPU"),
 			NeighborOffsets.Num(), MaxShaderNeighborOffsets);
+		bLastStepFellBackToCpu = true;
 		LastInputBufferBytes = 0;
 		FCpuComputeStrategy CpuFallback;
 		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
@@ -206,6 +212,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 		UE_LOG(LogTemp, Warning, TEXT("FGpuComputeStrategy::StepBatch: ограничивающий объём (%lld клеток) превышает лимит GPU-буфера - fallback на CPU"), VolumeCells);
 		// Фолбэк на CPU не строит GPU-буфер в этот раз - та же причина, что
 		// и на пустой сетке выше.
+		bLastStepFellBackToCpu = true;
 		LastInputBufferBytes = 0;
 		FCpuComputeStrategy CpuFallback;
 		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
@@ -240,6 +247,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FGpuComputeStrategy::StepBatch: объём %lld превышает 32-битный потолок индексации (%d) - fallback на CPU. GpuVolumeCellLimit выше этого значения смысла не имеет."),
 			VolumeCells, MAX_int32);
+		bLastStepFellBackToCpu = true;
 		LastInputBufferBytes = 0;
 		FCpuComputeStrategy CpuFallback;
 		CpuFallback.Step(CurrentGrid, NextGrid, Rule);
