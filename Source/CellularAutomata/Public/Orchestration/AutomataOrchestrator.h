@@ -44,6 +44,7 @@ class UMaterialInterface;
 class FCellularAutomatonComputeStrategy;
 class ARenderCullVolume;
 class UAutomataSonifierComponent;
+class UAutomataPhotoComponent;
 class USoundAttenuation;
 class USoundBase;
 
@@ -51,6 +52,18 @@ UCLASS()
 class CELLULARAUTOMATA_API AAutomataOrchestrator : public AActor
 {
 	GENERATED_BODY()
+
+	/** Компонент съёмки - часть реализации этого класса, вынесенная наружу
+	 *  из-за собственного тика (см. его doc-comment), а не самостоятельный
+	 *  участник. Ему нужны RenderGridImmediate(), RunRenderConsoleCommand(),
+	 *  EnsureRenderCullVolume(), SelectionMeshComponent и Grid - всё приватное.
+	 *
+	 *  friend, а не публикация этих четырёх: они приватны по существу, а не по
+	 *  случайности, и делать их частью публичного интерфейса ради одного
+	 *  вызывающего значило бы расплатиться за перенос кода расширением API для
+	 *  всех остальных. Единственный friend в проекте - и он ровно про то, чем
+	 *  friend и является: "этот класс - продолжение моей реализации". */
+	friend class UAutomataPhotoComponent;
 
 public:
 	AAutomataOrchestrator();
@@ -1732,68 +1745,15 @@ public:
 
 
 private:
-	/** Проверяет PhotoShotResolution до начала съёмки и отдаёт готовые к
-	 *  использованию стороны. false - снимать нельзя, и вызывающий обязан выйти,
-	 *  ничего не изменив.
-	 *
-	 *  Жёстко режет только выход за предел стороны 2D-текстуры RHI; на всё
-	 *  остальное лишь предупреждает, потому что сколько потянет конкретная
-	 *  карта, отсюда не видно, а запрещать по догадке хуже, чем предупредить. */
-	bool ValidatePhotoShotResolution(int32& OutWidth, int32& OutHeight) const;
+	/** Компонент, которому съёмка и принадлежит. Создаётся лениво через
+	 *  NewObject + RegisterComponent, а НЕ CreateDefaultSubobject в
+	 *  конструкторе: добавление default-subobject'а Live Coding не умеет
+	 *  хот-патчить на уже размещённый в уровне актор (тот же идиом, что
+	 *  EnsureSonifier() и EnsureHeadlight() на контроллере). */
+	UAutomataPhotoComponent* EnsurePhotoComponent();
 
-	/** Время выдачи команды HighResShot, либо 0 - снимка в полёте нет.
-	 *
-	 *  Нужно затем, что у съёмки нет никакого сигнала о завершении. Команда
-	 *  HighResShot возвращается МГНОВЕННО - она лишь поднимает флаг, а сам кадр
-	 *  рисуется позже, в отрисовке вьюпорта, и блокирует игровой поток целиком.
-	 *  Поэтому конец процесса ловится по факту: следующий Tick() наступает уже
-	 *  после съёмки, и разница со снятой здесь меткой и есть её длительность.
-	 *
-	 *  Готового делегата для этого нет. UGameViewportClient::OnScreenshotCaptured()
-	 *  выглядит подходящим, но подписка на него ОТМЕНЯЕТ запись файла на диск
-	 *  (GameViewportClient.cpp: "If delegate subscribed, fire it instead of
-	 *  writing out a file to disk") - то есть сломала бы ровно то, ради чего
-	 *  всё делается. */
-	double PhotoShotIssuedSeconds = 0.0;
-
-	/** Номер кадра, в котором выдана команда - см. GFrameCounter.
-	 *
-	 *  Без него итог подводился на кадр раньше съёмки. Порядок внутри кадра:
-	 *  ввод -> тик актёров -> отрисовка. F10 приходит во ввод, значит наш
-	 *  собственный Tick() того же кадра случается ДО отрисовки, в которой
-	 *  снимок и происходит. Подведение итога оттуда возвращало спрятанные
-	 *  коробку и ручки обратно на экран за мгновение до затвора, и они честно
-	 *  попадали в кадр. Ждём смены номера кадра - тогда отрисовка позади. */
-	uint64 PhotoShotIssuedFrame = 0;
-
-	/** Что было видно до снимка - чтобы вернуть после. См. HideEditingVisualsForPhoto().
-	 *  Плайн-члены: живут ровно от выдачи команды до следующего Tick(), пережить
-	 *  реинстансинг им не нужно. */
-	bool bPhotoRestoreVolumeVisible = false;
-	bool bPhotoRestoreGizmoVisible = false;
-	bool bPhotoRestoreSelectionVisible = false;
-
-	/** Прячет на время снимка всё, что относится к РЕДАКТИРОВАНИЮ, а не к самой
-	 *  структуре: коробку куба отсечения с её ручками и подсветку выделенных
-	 *  клеток. На парадном кадре им не место - это инструменты, а не предмет
-	 *  съёмки.
-	 *
-	 *  Отсечение при этом продолжает работать: видимость коробки и её действие
-	 *  разведены (см. GetActiveCullVolume()), так что клетки остаются
-	 *  отрезанными ровно так, как их настроили. Раньше это было невозможно -
-	 *  спрятанный куб переставал резать, и выбор стоял "или коробка в кадре,
-	 *  или другой кадр". */
-	void HideEditingVisualsForPhoto();
-
-	/** Возвращает спрятанное HideEditingVisualsForPhoto() - зовётся из
-	 *  ReportPhotoShotCompleted(), т.е. на первом же тике после съёмки, и
-	 *  безусловно: даже если файл не сохранился, экран обязан вернуться в то
-	 *  состояние, в котором его оставил пользователь. */
-	void RestoreEditingVisualsAfterPhoto();
-
-	/** Печатает в лог итог съёмки: сколько заняла и какой файл появился.
-	 *  Зовётся из Tick(), когда PhotoShotIssuedSeconds взведено. */
-	void ReportPhotoShotCompleted();
+	UPROPERTY(Transient)
+	TObjectPtr<UAutomataPhotoComponent> PhotoComponent;
 
 public:
 
