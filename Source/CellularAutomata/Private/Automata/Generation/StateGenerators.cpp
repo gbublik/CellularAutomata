@@ -414,6 +414,114 @@ namespace
 		}
 	}
 
+	/** Живые клетки двумерного паттерна в его собственных координатах (x вправо,
+	 *  y вниз, начало в левом верхнем углу габарита) - канонические раскладки из
+	 *  литературы по Game of Life, переписанные как есть.
+	 *
+	 *  Таблицей, а не построением: пульсар и ружьё описываются формулами только
+	 *  через собственную симметрию, и такое построение пришлось бы проверять
+	 *  ровно тем же списком координат - то есть оно было бы вторым способом
+	 *  записать то же самое, с местом для расхождения между ними. */
+	TArrayView<const FIntPoint> GetLifePatternCells(ELifePattern Pattern)
+	{
+		static const FIntPoint Glider[] = {
+			{1, 0}, {2, 1}, {0, 2}, {1, 2}, {2, 2}
+		};
+
+		static const FIntPoint LightweightSpaceship[] = {
+			{1, 0}, {4, 0},
+			{0, 1},
+			{0, 2}, {4, 2},
+			{0, 3}, {1, 3}, {2, 3}, {3, 3}
+		};
+
+		// Пульсар: 13x13, четыре одинаковые группы по симметрии, период 3.
+		static const FIntPoint Pulsar[] = {
+			{2, 0}, {3, 0}, {4, 0}, {8, 0}, {9, 0}, {10, 0},
+			{0, 2}, {5, 2}, {7, 2}, {12, 2},
+			{0, 3}, {5, 3}, {7, 3}, {12, 3},
+			{0, 4}, {5, 4}, {7, 4}, {12, 4},
+			{2, 5}, {3, 5}, {4, 5}, {8, 5}, {9, 5}, {10, 5},
+			{2, 7}, {3, 7}, {4, 7}, {8, 7}, {9, 7}, {10, 7},
+			{0, 8}, {5, 8}, {7, 8}, {12, 8},
+			{0, 9}, {5, 9}, {7, 9}, {12, 9},
+			{0, 10}, {5, 10}, {7, 10}, {12, 10},
+			{2, 12}, {3, 12}, {4, 12}, {8, 12}, {9, 12}, {10, 12}
+		};
+
+		// Ружьё Госпера: 36 клеток в поле 36x9. Слева блок-"якорь", справа
+		// второй, между ними два "челнока", которые и выстреливают глайдер
+		// каждые 30 поколений.
+		static const FIntPoint GosperGliderGun[] = {
+			{0, 4}, {0, 5}, {1, 4}, {1, 5},
+			{10, 4}, {10, 5}, {10, 6},
+			{11, 3}, {11, 7},
+			{12, 2}, {12, 8},
+			{13, 2}, {13, 8},
+			{14, 5},
+			{15, 3}, {15, 7},
+			{16, 4}, {16, 5}, {16, 6},
+			{17, 5},
+			{20, 2}, {20, 3}, {20, 4},
+			{21, 2}, {21, 3}, {21, 4},
+			{22, 1}, {22, 5},
+			{24, 0}, {24, 1}, {24, 5}, {24, 6},
+			{34, 2}, {34, 3},
+			{35, 2}, {35, 3}
+		};
+
+		switch (Pattern)
+		{
+		case ELifePattern::Glider:               return MakeArrayView(Glider);
+		case ELifePattern::LightweightSpaceship: return MakeArrayView(LightweightSpaceship);
+		case ELifePattern::Pulsar:               return MakeArrayView(Pulsar);
+		default:                                 return MakeArrayView(GosperGliderGun);
+		}
+	}
+
+	void GenerateLifePattern(const FStateGeneratorParams& Params, FCellEmitter& Emitter)
+	{
+		const TArrayView<const FIntPoint> Cells = GetLifePatternCells(Params.LifePattern);
+		if (Cells.Num() == 0)
+		{
+			return;
+		}
+
+		// Паттерн задан от левого верхнего угла, а генераторы этого проекта
+		// строят ОТНОСИТЕЛЬНО НУЛЯ (см. doc-comment namespace'а) - считаем
+		// габарит и вычитаем половину.
+		FIntPoint Min = Cells[0];
+		FIntPoint Max = Cells[0];
+		for (const FIntPoint& Cell : Cells)
+		{
+			Min.X = FMath::Min(Min.X, Cell.X);
+			Min.Y = FMath::Min(Min.Y, Cell.Y);
+			Max.X = FMath::Max(Max.X, Cell.X);
+			Max.Y = FMath::Max(Max.Y, Cell.Y);
+		}
+		const FIntPoint Center((Min.X + Max.X) / 2, (Min.Y + Max.Y) / 2);
+
+		const int32 Layers = FMath::Max(Params.Thickness, 1);
+		// Слои центрируются по Z по той же причине: чтобы фигура стояла в нуле,
+		// а не висела над ним.
+		const int32 FirstLayer = -(Layers - 1) / 2;
+
+		for (int32 Layer = 0; Layer < Layers; ++Layer)
+		{
+			const int32 Z = FirstLayer + Layer;
+			for (const FIntPoint& Cell : Cells)
+			{
+				// Y паттерна идёт ВНИЗ (так его печатают в литературе), а Y
+				// решётки - вверх; знак меняем, иначе глайдер полетит зеркально
+				// тому, что нарисовано в любом описании.
+				if (!Emitter.Emit(Cell.X - Center.X, Center.Y - Cell.Y, Z))
+				{
+					return;
+				}
+			}
+		}
+	}
+
 	void GenerateBoxShell(const FStateGeneratorParams& Params, FCellEmitter& Emitter)
 	{
 		const FIntVector& E = Params.Extent;
@@ -868,6 +976,10 @@ namespace StateGenerators
 			GenerateSymmetricSeed(Params, Seed, Emitter);
 			break;
 
+		case EStateGeneratorType::LifePattern:
+			GenerateLifePattern(Params, Emitter);
+			break;
+
 		default:
 			OutError = FString::Printf(TEXT("неизвестный тип генератора (%d)"), static_cast<int32>(Params.Type));
 			return false;
@@ -1020,6 +1132,11 @@ namespace StateGenerators
 			return static_cast<int64>(CoreVolume * Params.Density) * SymmetryImageCount(Params.Symmetry);
 		}
 
+		case EStateGeneratorType::LifePattern:
+			// Точное число, а не оценка: паттерн - таблица фиксированной длины,
+			// умноженная на слои.
+			return static_cast<int64>(GetLifePatternCells(Params.LifePattern).Num()) * FMath::Max(Params.Thickness, 1);
+
 		default:
 			return 0;
 		}
@@ -1073,6 +1190,7 @@ namespace StateGenerators
 		case EStateGeneratorType::NoisePerlin:         return TEXT("шум: Perlin");
 		case EStateGeneratorType::NoiseClusters:       return TEXT("шум: кластеры");
 		case EStateGeneratorType::SymmetricSeed:       return TEXT("симметричная затравка");
+		case EStateGeneratorType::LifePattern:         return TEXT("паттерн 2D-жизни");
 		default:                                       return TEXT("неизвестный");
 		}
 	}

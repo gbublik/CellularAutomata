@@ -1183,7 +1183,7 @@ bool FCellParityFilterTest::RunTest(const FString& Parameters)
 	// Проверка идёт по КАЖДОМУ типу генератора, потому что мимо воронки Emit()
 	// мог бы пройти отдельный генератор.
 	{
-		const int32 TypeCount = static_cast<int32>(EStateGeneratorType::SymmetricSeed) + 1;
+		const int32 TypeCount = static_cast<int32>(EStateGeneratorType::LifePattern) + 1;
 
 		for (int32 TypeIndex = 0; TypeIndex < TypeCount; ++TypeIndex)
 		{
@@ -3013,6 +3013,191 @@ bool FHotkeyRegistryTest::RunTest(const FString& Parameters)
 				AddWarning(TEXT("в DefaultInput.ini нет ни одной строки CA_* - раскладка целиком на значениях по умолчанию"));
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLifePatternTest,
+	"CellularAutomata.Generation.LifePattern",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FLifePatternTest::RunTest(const FString& Parameters)
+{
+	// Перенос двумерной жизни в 3D (EStateGeneratorType::LifePattern плюс
+	// правило 5,7/6). Проверяется не таблица координат - её проверяет глаз, -
+	// а АРИФМЕТИКА, на которой перенос держится: в двухслойной призме клетка
+	// видит своих соседей дважды плюс собственного двойника, поэтому N соседей
+	// в 2D превращаются в 2N+1 у живой клетки и 2N у мёртвой. Именно отсюда
+	// берутся 5,7/6 из B3/S23, и если равенство не выполняется, правило,
+	// записанное в пресет, просто неверно.
+
+	const ELifePattern Patterns[] = {
+		ELifePattern::Glider, ELifePattern::LightweightSpaceship,
+		ELifePattern::Pulsar, ELifePattern::GosperGliderGun
+	};
+
+	for (ELifePattern Pattern : Patterns)
+	{
+		FStateGeneratorParams Params;
+		Params.Type = EStateGeneratorType::LifePattern;
+		Params.LifePattern = Pattern;
+		Params.Thickness = 2;
+		Params.bAnalyzeNeighborCounts = false;
+
+		TArray<FIntVector> Cells;
+		StateGenerators::FGenerateStats Stats;
+		FString Error;
+		if (!StateGenerators::Generate(Params, /*Seed=*/0, MAX_int64, Cells, Stats, Error))
+		{
+			AddError(FString::Printf(TEXT("генератор паттерна отказал: %s"), *Error));
+			continue;
+		}
+
+		const int32 PatternIndex = static_cast<int32>(Pattern);
+
+		// Оценка обязана быть точной: паттерн - таблица фиксированной длины на
+		// число слоёв, оценивать тут нечего.
+		TestEqual(*FString::Printf(TEXT("паттерн %d: оценка совпала с фактом"), PatternIndex),
+			(int64)Cells.Num(), StateGenerators::EstimateCellCount(Params));
+
+		// Ровно два слоя, и они одинаковые: выдавливание - это копия, а не
+		// новая фигура.
+		TSet<FIntPoint> LayerA, LayerB;
+		TSet<int32> Layers;
+		for (const FIntVector& Cell : Cells)
+		{
+			Layers.Add(Cell.Z);
+			(Cell.Z == Cells[0].Z ? LayerA : LayerB).Add(FIntPoint(Cell.X, Cell.Y));
+		}
+		TestEqual(*FString::Printf(TEXT("паттерн %d: ровно два слоя"), PatternIndex), Layers.Num(), 2);
+		TestTrue(*FString::Printf(TEXT("паттерн %d: слои совпадают"), PatternIndex),
+			LayerA.Num() == LayerB.Num() && LayerA.Includes(LayerB));
+
+		// И главное. Для КАЖДОЙ клетки плоского паттерна считаем соседей по
+		// Moore-8 в 2D и по Moore-26 в выдавленной призме, и требуем 2N+1 у
+		// живых, 2N у пустых. Это ровно то тождество, из которого выведено
+		// правило 5,7/6, - проверенное на настоящих паттернах, а не на бумаге.
+		const TSet<FIntVector> Live(Cells);
+		const TSet<FIntPoint> Flat(LayerA);
+		const int32 ZLow = FMath::Min(Cells[0].Z, Cells.Last().Z);
+
+		TSet<FIntPoint> Checked;
+		for (const FIntPoint& Cell : Flat)
+		{
+			for (int32 dy = -1; dy <= 1; ++dy)
+			{
+				for (int32 dx = -1; dx <= 1; ++dx)
+				{
+					const FIntPoint Probe(Cell.X + dx, Cell.Y + dy);
+					if (Checked.Contains(Probe))
+					{
+						continue;
+					}
+					Checked.Add(Probe);
+
+					int32 FlatNeighbors = 0;
+					for (int32 ny = -1; ny <= 1; ++ny)
+					{
+						for (int32 nx = -1; nx <= 1; ++nx)
+						{
+							if ((nx != 0 || ny != 0) && Flat.Contains(FIntPoint(Probe.X + nx, Probe.Y + ny)))
+							{
+								++FlatNeighbors;
+							}
+						}
+					}
+
+					// Считаем в НИЖНЕМ слое призмы: у него сосед только сверху,
+					// и это тот самый случай, для которого выведена формула.
+					const FIntVector Probe3D(Probe.X, Probe.Y, ZLow);
+					int32 SpatialNeighbors = 0;
+					for (int32 nz = -1; nz <= 1; ++nz)
+					{
+						for (int32 ny = -1; ny <= 1; ++ny)
+						{
+							for (int32 nx = -1; nx <= 1; ++nx)
+							{
+								if ((nx != 0 || ny != 0 || nz != 0)
+									&& Live.Contains(FIntVector(Probe3D.X + nx, Probe3D.Y + ny, Probe3D.Z + nz)))
+								{
+									++SpatialNeighbors;
+								}
+							}
+						}
+					}
+
+					const bool bAlive = Flat.Contains(Probe);
+					const int32 Expected = bAlive ? (2 * FlatNeighbors + 1) : (2 * FlatNeighbors);
+					if (SpatialNeighbors != Expected)
+					{
+						AddError(FString::Printf(
+							TEXT("паттерн %d, клетка (%d,%d) %s: соседей в 2D %d, ожидалось в 3D %d, вышло %d"),
+							PatternIndex, Probe.X, Probe.Y, bAlive ? TEXT("живая") : TEXT("пустая"),
+							FlatNeighbors, Expected, SpatialNeighbors));
+					}
+				}
+			}
+		}
+	}
+
+	// Ружьё Госпера - отдельно, потому что оно и есть проверка ПОРОГА, за
+	// которым перенос ломается: клетка в слое над призмой видит только соседний
+	// слой (N соседей плюс двойника), и родится, если это даст шесть. Если у
+	// ружья найдётся пустая клетка с шестью соседями в 2D, оно начнёт расти
+	// вверх вместо того, чтобы стрелять, - и знать это надо заранее, а не
+	// обнаруживать глазом на сотом поколении.
+	{
+		FStateGeneratorParams Params;
+		Params.Type = EStateGeneratorType::LifePattern;
+		Params.LifePattern = ELifePattern::GosperGliderGun;
+		Params.Thickness = 2;
+		Params.bAnalyzeNeighborCounts = false;
+
+		TArray<FIntVector> Cells;
+		StateGenerators::FGenerateStats Stats;
+		FString Error;
+		StateGenerators::Generate(Params, 0, MAX_int64, Cells, Stats, Error);
+
+		TSet<FIntPoint> Flat;
+		for (const FIntVector& Cell : Cells)
+		{
+			Flat.Add(FIntPoint(Cell.X, Cell.Y));
+		}
+
+		int32 MaxEmptyNeighbors = 0;
+		TSet<FIntPoint> Checked;
+		for (const FIntPoint& Cell : Flat)
+		{
+			for (int32 dy = -1; dy <= 1; ++dy)
+			{
+				for (int32 dx = -1; dx <= 1; ++dx)
+				{
+					const FIntPoint Probe(Cell.X + dx, Cell.Y + dy);
+					if (Flat.Contains(Probe) || Checked.Contains(Probe))
+					{
+						continue;
+					}
+					Checked.Add(Probe);
+
+					int32 Neighbors = 0;
+					for (int32 ny = -1; ny <= 1; ++ny)
+					{
+						for (int32 nx = -1; nx <= 1; ++nx)
+						{
+							if ((nx != 0 || ny != 0) && Flat.Contains(FIntPoint(Probe.X + nx, Probe.Y + ny)))
+							{
+								++Neighbors;
+							}
+						}
+					}
+					MaxEmptyNeighbors = FMath::Max(MaxEmptyNeighbors, Neighbors);
+				}
+			}
+		}
+
+		AddInfo(FString::Printf(TEXT("ружьё Госпера: максимум соседей у пустой клетки - %d (порог роста вверх: 6)"), MaxEmptyNeighbors));
+		TestTrue(TEXT("ружьё остаётся плоским: пустых клеток с шестью соседями нет"), MaxEmptyNeighbors < 6);
 	}
 
 	return true;

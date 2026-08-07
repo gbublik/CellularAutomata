@@ -255,7 +255,9 @@ void AAutomataOrchestrator::ArrayCells()
 
 void AAutomataOrchestrator::CycleStateGeneratorType()
 {
-	const int32 TypeCount = static_cast<int32>(EStateGeneratorType::SymmetricSeed) + 1;
+	// Последний элемент перечисления - при добавлении нового генератора править
+	// здесь, иначе Shift+Y просто не будет до него доходить, молча.
+	const int32 TypeCount = static_cast<int32>(EStateGeneratorType::LifePattern) + 1;
 	const int32 NextType = (static_cast<int32>(GenerationParams.Type) + 1) % TypeCount;
 	GenerationParams.Type = static_cast<EStateGeneratorType>(NextType);
 

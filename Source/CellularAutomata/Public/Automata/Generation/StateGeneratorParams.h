@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Automata/Generation/CellParityFilter.h"
+#include "Automata/Generation/LifePattern.h"
 #include "Automata/Generation/SeedSymmetry.h"
 #include "Automata/Generation/StateGeneratorType.h"
 #include "StateGeneratorParams.generated.h"
@@ -79,7 +80,7 @@ struct FStateGeneratorParams
 	 *  соседей по Moore. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
 			  meta = (ClampMin = "1", UIMin = "1", UIMax = "32",
-					  EditCondition = "Type == EStateGeneratorType::LatticeFrame || Type == EStateGeneratorType::LatticePlanes || Type == EStateGeneratorType::SphereShell || Type == EStateGeneratorType::BoxShell",
+					  EditCondition = "Type == EStateGeneratorType::LatticeFrame || Type == EStateGeneratorType::LatticePlanes || Type == EStateGeneratorType::SphereShell || Type == EStateGeneratorType::BoxShell || Type == EStateGeneratorType::LifePattern",
 					  EditConditionHides))
 	int32 Thickness = 1;
 
@@ -179,6 +180,13 @@ struct FStateGeneratorParams
 			  meta = (EditCondition = "Type == EStateGeneratorType::SymmetricSeed",
 					  EditConditionHides))
 	ESeedSymmetry Symmetry = ESeedSymmetry::FullCubic;
+
+	/** Какой двумерный паттерн жизни выдавливать - см. ELifePattern. Толщину
+	 *  задаёт Thickness, и осмысленное её значение здесь ровно одно: 2. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (EditCondition = "Type == EStateGeneratorType::LifePattern",
+					  EditConditionHides))
+	ELifePattern LifePattern = ELifePattern::GosperGliderGun;
 
 	/** Отбросить при генерации клетки "не той" чётности суммы координат, получив
 	 *  ГЦК-подрешётку вместо кубической - см. ECellParityFilter, там же о том,
