@@ -2469,6 +2469,51 @@ bool FCellEditJournalTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("уход за неё чистит журнал"), Journal.Num(), 0);
 	}
 
+	// ПЕРЕНОС набора (гизмо выделения) - одна запись вместо пары
+	// "удалить + добавить", и вся сложность в ПЕРЕСЕЧЕНИИ старого и нового: при
+	// сдвиге меньше габарита часть клеток остаётся на месте, и наивная пара
+	// записей стёрла бы то, что вторая обязана была увидеть живым.
+	{
+		FDenseCellGrid Grid(100.0f, ChunkSize);
+		// Ряд из трёх клеток; сдвиг на 1 по X оставляет две из них на месте.
+		const TArray<FIntVector> Row = { FIntVector(0, 0, 0), FIntVector(1, 0, 0), FIntVector(2, 0, 0) };
+		for (const FIntVector& Cell : Row)
+		{
+			Grid.SetAlive(Cell, true);
+		}
+		Grid.SetAge(FIntVector(0, 0, 0), 40); // чтобы отмена вернула именно ЕГО
+
+		const int32 CountBefore = Grid.Num();
+		FCellEditRecord Move = CellEditJournal::MakeMoveRecord(Grid, Row, FIntVector(1, 0, 0), /*Generation=*/7);
+
+		// В записи только края: две клетки посередине как были живыми, так и
+		// остаются - изменения там нет, и хранить его значило бы записать
+		// несуществующую правку (плюс обнулить им возраст на ровном месте).
+		TestEqual(TEXT("перенос ряда на 1 задевает только края"), Move.Edits.Num(), 2);
+
+		CellEditJournal::ApplyForward(Grid, Move);
+		TestEqual(TEXT("перенос не меняет числа клеток"), Grid.Num(), CountBefore);
+		TestFalse(TEXT("исходный край освободился"), Grid.IsAlive(FIntVector(0, 0, 0)));
+		TestTrue(TEXT("новый край занят"), Grid.IsAlive(FIntVector(3, 0, 0)));
+
+		// И главное: отмена возвращает ВСЁ, включая возраст клетки, которая
+		// была стёрта переносом.
+		CellEditJournal::ApplyInverse(Grid, Move);
+		TestEqual(TEXT("отмена переноса возвращает число клеток"), Grid.Num(), CountBefore);
+		TestTrue(TEXT("отмена вернула исходный край"), Grid.IsAlive(FIntVector(0, 0, 0)));
+		TestFalse(TEXT("отмена убрала новый край"), Grid.IsAlive(FIntVector(3, 0, 0)));
+		TestEqual(TEXT("отмена вернула возраст, а не обнулила его"), (int32)Grid.GetAge(FIntVector(0, 0, 0)), 40);
+
+		// Сдвиг больше габарита - пересечения нет, задеты все шесть клеток.
+		FCellEditRecord FarMove = CellEditJournal::MakeMoveRecord(Grid, Row, FIntVector(10, 0, 0), 7);
+		TestEqual(TEXT("перенос без пересечения задевает оба набора целиком"), FarMove.Edits.Num(), 6);
+
+		// Нулевой сдвиг - не действие: пустая запись, которую RecordEdit()
+		// отсеет, а не "перенос на месте", отменяемый впустую.
+		FCellEditRecord NoMove = CellEditJournal::MakeMoveRecord(Grid, Row, FIntVector::ZeroValue, 7);
+		TestEqual(TEXT("нулевой сдвиг даёт пустую запись"), NoMove.Edits.Num(), 0);
+	}
+
 	return true;
 }
 

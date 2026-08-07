@@ -2,9 +2,9 @@
 
 Continuous play, the off-thread step, chunked rendering and `StepsPerRender`. Read before touching stepping, render pacing or anything that swaps `Grid`.
 
-## Where the code lives — one class, sixteen translation units
+## Where the code lives — one class, eighteen translation units
 
-`AAutomataOrchestrator` is **one `UCLASS` declared in one header**, but its implementation is split across sixteen `.cpp` files in `Private/Orchestration/`. The split is by responsibility, and it is purely physical: no reflection, no Blueprint binding and no `.umap` property override is affected by which file a method sits in, because UHT reads the *header*. The header stays whole on purpose — roughly two thirds of it is doc-comments, and splitting it would scatter the documentation that makes the class readable at all.
+`AAutomataOrchestrator` is **one `UCLASS` declared in one header**, but its implementation is split across eighteen `.cpp` files in `Private/Orchestration/`. The split is by responsibility, and it is purely physical: no reflection, no Blueprint binding and no `.umap` property override is affected by which file a method sits in, because UHT reads the *header*. The header stays whole on purpose — roughly two thirds of it is doc-comments, and splitting it would scatter the documentation that makes the class readable at all.
 
 | file | what it holds |
 |---|---|
@@ -13,6 +13,7 @@ Continuous play, the off-thread step, chunked rendering and `StepsPerRender`. Re
 | `_Rendering.cpp` | `BuildCellRenderData`, `RenderCurrentGrid`/`RenderGridImmediate`, colour LUTs, material instance, background, shadows, chunked reveal, render presets, and the `LogRenderTimings` helper |
 | `_Culling.cpp` | cull volume, view slice, age filter, distance culling |
 | `_Editing.cpp` | `StepBackward`, `UndoLastAction`, `RedoLastEdit`, `ResetToInitialState`, `DeleteSelectedCells`, `RecordEdit` |
+| `_SelectionGizmo.cpp` | `UpdateSelectionGizmo`, `TraceSelectionGizmo`, `Begin`/`Update`/`EndSelectionDrag` |
 | `_Painting.cpp` | `ComputePlacementCell`, `UpdateCellPreview`/`HideCellPreview`, `PaintCellUnderCursor` |
 | `_Capture.cpp` | slice capture, series capture, capture presets |
 | `_Persistence.cpp` | `.casave` save/load, thumbnail |

@@ -402,6 +402,64 @@ public:
 	 *  Ctrl+Z после промаха отменял бы "ничего". */
 	void PaintCellUnderCursor(const FVector& RayOrigin, const FVector& RayDirection, bool bErase);
 
+	/** Манипулятор перемещения выделения: три стрелки в центре габарита
+	 *  выделенных клеток, за которые их можно тянуть по осям (как гизмо у куба
+	 *  отсечения, см. ARenderCullVolume). Показывается сам, когда в режиме
+	 *  выделения (Tab) есть что двигать, и прячется, когда выделение пусто.
+	 *
+	 *  Зовётся каждый кадр из AGamePlayerController::Tick(): и позиция, и
+	 *  экранный масштаб зависят от камеры.
+	 *
+	 *  bVisible = false прячет манипулятор безусловно - им пользуются выход из
+	 *  режима выделения и смена инструмента. */
+	void UpdateSelectionGizmo(const FVector& CameraLocation, float CameraFOVDegrees, bool bVisible);
+
+	/** Попал ли луч в стрелку манипулятора; OutAxis - её направление (единичная
+	 *  ось). Возвращает индекс оси (0/1/2) или INDEX_NONE.
+	 *
+	 *  Своя трассировка, а не движковая: у клеточных компонентов коллизия
+	 *  выключена (та же причина, по которой пикинг клетки идёт своим DDA), да и
+	 *  стрелка тут - геометрический отрезок, а не физическое тело. */
+	int32 TraceSelectionGizmo(const FVector& RayOrigin, const FVector& RayDirection, FVector& OutAxis) const;
+
+	/** Начать перетаскивание выделения по оси. AxisParam - параметр вдоль оси в
+	 *  момент захвата (считает AGamePlayerController::ComputeGizmoAxisParam(),
+	 *  тот же, что у куба). */
+	void BeginSelectionDrag(int32 Axis, const FVector& AxisDirection, float AxisParam);
+
+	/** Продолжить перетаскивание: сдвиг = (AxisParam - захваченный), округлённый
+	 *  до клеток.
+	 *
+	 *  Сетку при этом НЕ ТРОГАЕТ - двигается только подсветка выделения
+	 *  (SelectionMeshComponent целиком, одним трансформом). Причина не в
+	 *  экономии: правка сетки на каждом кадре драга завалила бы журнал сотней
+	 *  записей, из которых осмысленна одна - итоговая. Ровно тот же приём, что у
+	 *  призрака буфера обмена. */
+	void UpdateSelectionDrag(float AxisParam);
+
+	/** Завершить перетаскивание: перенести клетки на накопленный сдвиг ОДНОЙ
+	 *  записью журнала (CellEditJournal::MakeMoveRecord()) и вернуть подсветку
+	 *  на место. Нулевой сдвиг - ничего не пишет. */
+	void EndSelectionDrag();
+
+	bool IsSelectionDragging() const { return SelectionDragAxis != INDEX_NONE; }
+
+	/** Показан ли сейчас манипулятор выделения. Контроллеру - чтобы на это
+	 *  время убрать манипулятор куба отсечения: два набора стрелок в одной
+	 *  сцене спорят за один и тот же клик, и какой из них схвачен, становится
+	 *  вопросом попадания в пиксель. */
+	bool IsSelectionGizmoVisible() const;
+
+	/** Ось текущего перетаскивания - контроллеру, чтобы пересчитывать AxisParam
+	 *  каждый кадр (зеркалит ARenderCullVolume::GetActiveGizmoAxis()). */
+	FVector GetSelectionDragAxis() const { return SelectionDragAxisDirection; }
+
+	/** Точка, от которой считается параметр оси, - центр выделения на МОМЕНТ
+	 *  ЗАХВАТА, а не текущий: считать от текущего значит гнаться за собственным
+	 *  хвостом, выделение дрожит между двумя положениями (та же причина, что у
+	 *  ARenderCullVolume::GetGizmoDragOrigin()). */
+	FVector GetSelectionDragOrigin() const { return SelectionDragOrigin; }
+
 	/** Скопировать клетки в буфер обмена (Ctrl+Shift+C): выделение, если оно
 	 *  есть, иначе все живые клетки - тот же принцип "выделение значит вот
 	 *  это", что у ArrayCells().
@@ -2631,6 +2689,38 @@ private:
 	/** Создаёт ClipboardGhostComponent при первом обращении - зеркалит
 	 *  EnsureSelectionMeshComponent(). */
 	void EnsureClipboardGhostComponent();
+
+	/** Корень манипулятора выделения и его стрелки (по две детали на ось:
+	 *  стержень-цилиндр и наконечник-конус, меши из /Engine/BasicShapes - те же,
+	 *  что у гизмо куба). Создаются лениво, как SelectionMeshComponent, а не в
+	 *  конструкторе: манипулятор нужен далеко не в каждой сессии, и лишние семь
+	 *  компонентов на акторе, который и так тяжёлый, ни к чему. */
+	UPROPERTY(Transient)
+	USceneComponent* SelectionGizmoRoot = nullptr;
+
+	UPROPERTY(Transient)
+	TArray<UStaticMeshComponent*> SelectionGizmoParts;
+
+	void EnsureSelectionGizmoComponents();
+
+	/** Мировой масштаб манипулятора, выставленный последним
+	 *  UpdateSelectionGizmo(): длина стрелки на экране постоянна, значит в мире
+	 *  она зависит от расстояния до камеры - и трассировка обязана мерить тем же
+	 *  масштабом, иначе целиться придётся мимо нарисованного. */
+	float SelectionGizmoWorldScale = 1.0f;
+
+	/** Ось активного перетаскивания выделения (0/1/2) или INDEX_NONE. */
+	int32 SelectionDragAxis = INDEX_NONE;
+	FVector SelectionDragAxisDirection = FVector::ZeroVector;
+
+	/** Параметр вдоль оси в момент захвата и центр выделения тогда же - см.
+	 *  GetSelectionDragOrigin(). */
+	float SelectionDragStartParam = 0.0f;
+	FVector SelectionDragOrigin = FVector::ZeroVector;
+
+	/** Накопленный сдвиг в КЛЕТКАХ, показанный подсветкой, но ещё не внесённый в
+	 *  сетку. Именно он уходит в журнал одной записью на EndSelectionDrag(). */
+	FIntVector SelectionDragCellOffset = FIntVector::ZeroValue;
 
 	/** Перезаливает инстансы призрака из ClipboardCells - зовётся только при
 	 *  копировании, не каждый кадр. */

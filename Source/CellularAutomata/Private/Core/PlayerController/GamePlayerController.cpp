@@ -1726,6 +1726,57 @@ void AGamePlayerController::SetDrawModeActive(bool bActive)
 	UE_LOG(LogTemp, Log, TEXT("Режим рисования клеток: %s"), bActive ? TEXT("включён") : TEXT("выключен"));
 }
 
+void AGamePlayerController::TickSelectionGizmo()
+{
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator || !PlayerCameraManager)
+	{
+		return;
+	}
+
+	// Манипулятор живёт ровно там же, где мышиное взаимодействие с клетками, -
+	// в режиме выделения. В рисовании ЛКМ уже занята постановкой клеток, и
+	// стрелка под курсором означала бы там третье значение одного нажатия.
+	const bool bWantGizmo = bSelectionModeActive && !bDrawModeActive;
+	Orchestrator->UpdateSelectionGizmo(PlayerCameraManager->GetCameraLocation(),
+		PlayerCameraManager->GetFOVAngle(), bWantGizmo);
+
+	// Пока показан манипулятор выделения, манипулятор КУБА убран: два набора
+	// стрелок в одной сцене спорят за один и тот же клик, и какой схвачен,
+	// становится вопросом попадания в пиксель. Куб при этом никуда не девается -
+	// снял выделение, и его стрелки вернулись сами.
+	//
+	// Сравнение с текущим состоянием обязательно: SetGizmoVisible() трогает
+	// девять компонентов и переназначает им материалы, а мы здесь каждый кадр.
+	if (ARenderCullVolume* CullVolume = FindCullVolume())
+	{
+		const bool bWantCullGizmo = bSelectionModeActive
+			&& !bDrawModeActive
+			&& !Orchestrator->IsSelectionGizmoVisible()
+			&& CullVolume->IsVolumeVisible();
+
+		if (CullVolume->IsGizmoVisible() != bWantCullGizmo)
+		{
+			CullVolume->SetGizmoVisible(bWantCullGizmo);
+		}
+	}
+
+	if (!Orchestrator->IsSelectionDragging())
+	{
+		return;
+	}
+
+	// Точка отсчёта - центр выделения НА МОМЕНТ ЗАХВАТА, а не текущий: центр
+	// уезжает вместе с подсветкой, и драг, считающий от него, гнался бы за
+	// собственным хвостом (та же причина, что у драга куба).
+	float AxisParam = 0.0f;
+	FVector RayOrigin = FVector::ZeroVector;
+	if (ComputeGizmoAxisParam(Orchestrator->GetSelectionDragOrigin(), Orchestrator->GetSelectionDragAxis(), RayOrigin, AxisParam))
+	{
+		Orchestrator->UpdateSelectionDrag(AxisParam);
+	}
+}
+
 void AGamePlayerController::TickCellPainting()
 {
 	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
@@ -2118,6 +2169,10 @@ void AGamePlayerController::Tick(float DeltaTime)
 		TickCellPainting();
 	}
 
+	// И манипулятор выделения - по той же причине: он к кубу отсечения
+	// отношения не имеет, а ранний выход ниже стоит именно на кубе.
+	TickSelectionGizmo();
+
 	ARenderCullVolume* CullVolume = FindCullVolume();
 	if (!CullVolume || !CullVolume->IsGizmoVisible())
 	{
@@ -2183,7 +2238,38 @@ void AGamePlayerController::OnSelectDragStarted()
 		return;
 	}
 
-	// Манипулятор проверяется ПЕРЕД рамкой: если нажали на ручку, ЛКМ занята
+	// Манипулятор ВЫДЕЛЕНИЯ - первым из двух: он появляется только когда
+	// выделение есть, стоит прямо на нём, и человек, целясь в его стрелку,
+	// заведомо не собирался тянуть рамку. Куб отсечения проверяется следом.
+	if (AAutomataOrchestrator* Orchestrator = FindOrchestrator())
+	{
+		FVector RayOrigin = FVector::ZeroVector;
+		FVector RayDirection = FVector::ZeroVector;
+		if (DeprojectMousePositionToWorld(RayOrigin, RayDirection))
+		{
+			FVector HandleAxis = FVector::ZeroVector;
+			const int32 Axis = Orchestrator->TraceSelectionGizmo(RayOrigin, RayDirection, HandleAxis);
+
+			FVector SelectionCenter = FVector::ZeroVector;
+			float SelectionRadius = 0.0f;
+			if (Axis != INDEX_NONE && Orchestrator->ComputeSelectedCellsBounds(SelectionCenter, SelectionRadius))
+			{
+				// Параметр оси считается от центра выделения - той же точки, от
+				// которой его будет считать каждый кадр драга (см.
+				// GetSelectionDragOrigin()); разные точки в начале и в
+				// продолжении дали бы рывок на первом же движении мыши.
+				float AxisParam = 0.0f;
+				FVector UnusedOrigin = FVector::ZeroVector;
+				if (ComputeGizmoAxisParam(SelectionCenter, HandleAxis, UnusedOrigin, AxisParam))
+				{
+					Orchestrator->BeginSelectionDrag(Axis, HandleAxis, AxisParam);
+					return;
+				}
+			}
+		}
+	}
+
+	// Манипулятор куба проверяется ПЕРЕД рамкой: если нажали на ручку, ЛКМ занята
 	// перетаскиванием куба, и выделение в этот раз не начинается вовсе.
 	if (ARenderCullVolume* CullVolume = FindCullVolume())
 	{
@@ -2238,6 +2324,17 @@ void AGamePlayerController::OnSelectDragFinished()
 	if (bDrawModeActive)
 	{
 		return;
+	}
+
+	// Тянули выделение за стрелку - переносим клетки одной правкой и выходим:
+	// рамки в этот раз не было.
+	if (AAutomataOrchestrator* Orchestrator = FindOrchestrator())
+	{
+		if (Orchestrator->IsSelectionDragging())
+		{
+			Orchestrator->EndSelectionDrag();
+			return;
+		}
 	}
 
 	// Тянули ручку манипулятора, а не рамку - завершаем драг (там же уйдёт

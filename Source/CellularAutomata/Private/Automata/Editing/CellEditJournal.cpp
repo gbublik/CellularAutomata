@@ -63,6 +63,72 @@ FCellEditRecord CellEditJournal::MakeAddRecord(const FCellGrid& Grid,
 	return Record;
 }
 
+FCellEditRecord CellEditJournal::MakeMoveRecord(const FCellGrid& Grid,
+	const TArray<FIntVector>& Cells, const FIntVector& Offset, int64 Generation)
+{
+	FCellEditRecord Record;
+	Record.Generation = Generation;
+
+	if (Offset == FIntVector::ZeroValue || Cells.Num() == 0)
+	{
+		Record.Description = TEXT("перенос 0 клеток");
+		return Record;
+	}
+
+	// Живые из исходного набора - выделение переживает шаги симуляции, и клетка
+	// под ним могла умереть (та же фильтрация, что в StartFromSelection()).
+	TArray<FIntVector> Source;
+	Source.Reserve(Cells.Num());
+	for (const FIntVector& Cell : Cells)
+	{
+		if (Grid.IsAlive(Cell))
+		{
+			Source.Add(Cell);
+		}
+	}
+
+	// Новый набор целиком - по нему решается судьба каждой затронутой клетки.
+	TSet<FIntVector> Destination;
+	Destination.Reserve(Source.Num());
+	for (const FIntVector& Cell : Source)
+	{
+		Destination.Add(Cell + Offset);
+	}
+
+	// Затронуто объединение старого и нового: старые гаснут, новые загораются, а
+	// пересечение (сдвиг меньше габарита - обычное дело) обязано быть учтено
+	// РОВНО ОДИН РАЗ, иначе одна и та же клетка попала бы в запись дважды с
+	// противоположными исходами.
+	TSet<FIntVector> Touched;
+	Touched.Reserve(Source.Num() * 2);
+	Touched.Append(Destination);
+	for (const FIntVector& Cell : Source)
+	{
+		Touched.Add(Cell);
+	}
+
+	Record.Edits.Reserve(Touched.Num());
+	for (const FIntVector& Cell : Touched)
+	{
+		FCellEdit Edit = CaptureCell(Grid, Cell);
+		Edit.bNowAlive = Destination.Contains(Cell);
+
+		// Клетка, которая была живой и остаётся живой (пересечение старого и
+		// нового), в записи не нужна: ни отменять, ни накатывать нечего. Но
+		// возраст ей всё равно обнулится при ApplyForward(), так что оставить её
+		// значило бы записать несуществующее изменение.
+		if (Edit.bWasAlive == Edit.bNowAlive)
+		{
+			continue;
+		}
+
+		Record.Edits.Add(Edit);
+	}
+
+	Record.Description = FString::Printf(TEXT("перенос %d клеток"), Source.Num());
+	return Record;
+}
+
 void CellEditJournal::ApplyForward(FCellGrid& Grid, const FCellEditRecord& Record)
 {
 	for (const FCellEdit& Edit : Record.Edits)
