@@ -1986,9 +1986,23 @@ void AGamePlayerController::RebindPawnVerticalMovement()
 
 	// Снимаем движковый биндинг целиком: точечно убрать из него LeftControl и C
 	// нельзя, сами клавиши лежат в приватном статическом реестре UPlayerInput.
+	//
+	// Заодно снимаем и горизонтальные оси - по другой причине, но с тем же
+	// исходом. Половина хоткеев проекта это Ctrl+буква, и буквы те же, что у
+	// полёта: Ctrl+D (тираж) уезжал камерой вправо, Ctrl+S (сохранение) - назад.
+	// Клавиша доходит и до хоткея, и до оси - Enhanced Input и оси движения
+	// работают параллельно, - поэтому единственное место, где это разруливается,
+	// сами оси (см. PawnMoveForward()).
 	static const FName EngineMoveUpAxis(TEXT("DefaultPawn_MoveUp"));
+	static const FName EngineMoveForwardAxis(TEXT("DefaultPawn_MoveForward"));
+	static const FName EngineMoveRightAxis(TEXT("DefaultPawn_MoveRight"));
 	const int32 RemovedCount = PawnInput->AxisBindings.RemoveAll(
-		[](const FInputAxisBinding& Binding) { return Binding.AxisName == EngineMoveUpAxis; });
+		[](const FInputAxisBinding& Binding)
+		{
+			return Binding.AxisName == EngineMoveUpAxis
+				|| Binding.AxisName == EngineMoveForwardAxis
+				|| Binding.AxisName == EngineMoveRightAxis;
+		});
 
 	// Своя ось с тем же поведением, но без конфликтующих клавиш. Имя своё, а не
 	// движковое: движковые привязки клавиш к DefaultPawn_MoveUp никуда не
@@ -1998,15 +2012,86 @@ void AGamePlayerController::RebindPawnVerticalMovement()
 	// E, спуск на Q - пробел был третьей клавишей на то же действие, тогда как
 	// пауза без него осталась бы на P, куда рука не тянется.
 	static const FName OwnMoveUpAxis(TEXT("CellularAutomata_MoveUp"));
+	static const FName OwnMoveForwardAxis(TEXT("CellularAutomata_MoveForward"));
+	static const FName OwnMoveRightAxis(TEXT("CellularAutomata_MoveRight"));
 	if (PlayerInput)
 	{
 		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::E, 1.0f));
 		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveUpAxis, EKeys::Q, -1.0f));
-	}
-	PawnInput->BindAxis(OwnMoveUpAxis, FlyingPawn, &ADefaultPawn::MoveUp_World);
 
-	UE_LOG(LogTemp, Log, TEXT("RebindPawnVerticalMovement: снято движковых биндингов оси %s: %d; вертикаль теперь E вверх, Q вниз (Ctrl и C освобождены под хоткеи, пробел - под паузу)"),
-		*EngineMoveUpAxis.ToString(), RemovedCount);
+		// Клавиши горизонтали повторяют движковый набор один в один, включая
+		// стрелки: смысл перевешивания не в том, чтобы поменять раскладку, а
+		// только в том, чтобы оси проходили через свой обработчик и умели
+		// замолкать под Ctrl.
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveForwardAxis, EKeys::W, 1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveForwardAxis, EKeys::S, -1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveForwardAxis, EKeys::Up, 1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveForwardAxis, EKeys::Down, -1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveRightAxis, EKeys::D, 1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveRightAxis, EKeys::A, -1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveRightAxis, EKeys::Right, 1.0f));
+		PlayerInput->AddAxisMapping(FInputAxisKeyMapping(OwnMoveRightAxis, EKeys::Left, -1.0f));
+	}
+
+	// Все три оси - через СВОИ обработчики на контроллере, а не напрямую в
+	// ADefaultPawn: только так у них появляется место, где проверить Ctrl.
+	PawnInput->BindAxis(OwnMoveUpAxis, this, &AGamePlayerController::PawnMoveUp);
+	PawnInput->BindAxis(OwnMoveForwardAxis, this, &AGamePlayerController::PawnMoveForward);
+	PawnInput->BindAxis(OwnMoveRightAxis, this, &AGamePlayerController::PawnMoveRight);
+
+	UE_LOG(LogTemp, Log, TEXT("RebindPawnVerticalMovement: снято движковых биндингов осей полёта: %d; вертикаль на E/Q (Ctrl и C освобождены под хоткеи, пробел - под паузу), горизонталь молчит под Ctrl"),
+		RemovedCount);
+}
+
+bool AGamePlayerController::IsCtrlHeld() const
+{
+	return IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+}
+
+void AGamePlayerController::PawnMoveForward(float Value)
+{
+	// Ctrl зажат - значит человек набирает хоткей (Ctrl+S, Ctrl+D, Ctrl+C...),
+	// а не летит. Клавиша при этом всё равно доходит и сюда, и до хоткея, так
+	// что промолчать может только ось.
+	if (Value == 0.0f || IsCtrlHeld())
+	{
+		return;
+	}
+
+	if (ADefaultPawn* FlyingPawn = Cast<ADefaultPawn>(GetPawn()))
+	{
+		FlyingPawn->MoveForward(Value);
+	}
+}
+
+void AGamePlayerController::PawnMoveRight(float Value)
+{
+	if (Value == 0.0f || IsCtrlHeld())
+	{
+		return;
+	}
+
+	if (ADefaultPawn* FlyingPawn = Cast<ADefaultPawn>(GetPawn()))
+	{
+		FlyingPawn->MoveRight(Value);
+	}
+}
+
+void AGamePlayerController::PawnMoveUp(float Value)
+{
+	// Вертикали Ctrl не мешает (он снят с неё ещё в
+	// RebindPawnVerticalMovement()), но правило держим одно на все три оси:
+	// иначе Ctrl+E и Ctrl+Q оставались бы единственными комбинациями, которые
+	// двигают камеру, и разбираться, почему именно они, пришлось бы заново.
+	if (Value == 0.0f || IsCtrlHeld())
+	{
+		return;
+	}
+
+	if (ADefaultPawn* FlyingPawn = Cast<ADefaultPawn>(GetPawn()))
+	{
+		FlyingPawn->MoveUp_World(Value);
+	}
 }
 
 void AGamePlayerController::Tick(float DeltaTime)
