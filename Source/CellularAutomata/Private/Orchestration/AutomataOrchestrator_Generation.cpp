@@ -139,6 +139,69 @@ void AAutomataOrchestrator::GenerateState()
 
 	ShowStatusMessage(StatusKey_Generation,
 		FString::Printf(TEXT("Генератор: %s - %d клеток"), *GeneratorName, Grid->Num()));
+
+	// Последним - чтобы предупреждение о несогласованности перекрыло собой
+	// бодрое "построено N клеток": оно и есть главное, что нужно прочитать.
+	WarnIfLifePatternMismatch();
+}
+
+void AAutomataOrchestrator::WarnIfLifePatternMismatch()
+{
+	if (GenerationParams.Type != EStateGeneratorType::LifePattern)
+	{
+		return;
+	}
+
+	// Генератор остаётся чистой геометрией (правило он не читает - см.
+	// StateGenerators), но ОРКЕСТРАТОР знает и то, и другое, и промолчать здесь
+	// нельзя: паттерн двумерной жизни, построенный не с тем правилом или не с
+	// той толщиной, выглядит совершенно нормально и просто НЕ ОЖИВАЕТ - ни
+	// ошибки, ни подсказки, ни единой зацепки, что искать.
+	TArray<FString> Problems;
+
+	if (GenerationParams.Thickness != 2)
+	{
+		Problems.Add(FString::Printf(TEXT("Thickness = %d, нужно 2"), GenerationParams.Thickness));
+	}
+
+	// Фильтр чётности выбросит ровно половину клеток паттерна - от фигуры
+	// останется решето. Ловушка тихая: фильтр включают под ГЦК/ОЦК-опыты и
+	// забывают.
+	if (GenerationParams.ParityFilter != ECellParityFilter::None)
+	{
+		Problems.Add(TEXT("включён фильтр чётности - он выбросит половину клеток паттерна"));
+	}
+
+	if (Neighborhood != ENeighborhood::PlanarMoore)
+	{
+		Problems.Add(FString::Printf(TEXT("соседство %s, нужно PlanarMoore (плоскость XY + ось Z)"),
+			GetNeighborhoodDisplayName(Neighborhood)));
+	}
+
+	if (States != 2)
+	{
+		Problems.Add(FString::Printf(TEXT("States = %d, нужно 2 (угасание ломает перенос)"), States));
+	}
+
+	// Правило: ровно S{3,4} B{3} - см. вывод формулы в doc-comment ELifePattern.
+	TArray<int32> Survival = SurvivalCounts;
+	TArray<int32> Birth = BirthCounts;
+	Survival.Sort();
+	Birth.Sort();
+	const bool bRuleMatches = Survival == TArray<int32>({ 3, 4 }) && Birth == TArray<int32>({ 3 });
+	if (!bRuleMatches)
+	{
+		Problems.Add(FString::Printf(TEXT("правило %s, нужно 3,4/3/2/PM (пресет \"Плоская жизнь\")"), *GetActiveRuleString()));
+	}
+
+	if (Problems.Num() == 0)
+	{
+		return;
+	}
+
+	const FString Message = FString::Printf(TEXT("Паттерн 2D-жизни не оживёт: %s"), *FString::Join(Problems, TEXT("; ")));
+	UE_LOG(LogTemp, Warning, TEXT("GenerateState: %s"), *Message);
+	ShowStatusMessage(StatusKey_Generation, Message);
 }
 
 void AAutomataOrchestrator::ArrayCells()

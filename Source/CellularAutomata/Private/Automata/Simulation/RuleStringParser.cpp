@@ -107,6 +107,8 @@ namespace
 		{ TEXT("CFA"),  TEXT("CornersFarAxes"),      ENeighborhood::CornersFarAxes },
 		{ TEXT("FCFA"), TEXT("FacesCornersFarAxes"), ENeighborhood::FacesCornersFarAxes },
 		{ TEXT("ECFA"), TEXT("EdgesCornersFarAxes"), ENeighborhood::EdgesCornersFarAxes },
+		// Анизотропное: Moore в плоскости XY плюс ось Z - см. ENeighborhood.
+		{ TEXT("PM"),   TEXT("PlanarMoore"),         ENeighborhood::PlanarMoore },
 	};
 
 	bool ParseNeighborhoodName(const FString& Name, ENeighborhood& OutNeighborhood)

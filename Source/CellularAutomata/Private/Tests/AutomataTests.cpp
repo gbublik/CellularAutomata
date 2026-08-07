@@ -501,6 +501,7 @@ bool FRuleStringRoundTripTest::RunTest(const FString& Parameters)
 			{ ENeighborhood::CornersFarAxes,      TEXT("CFA") },
 			{ ENeighborhood::FacesCornersFarAxes, TEXT("FCFA") },
 			{ ENeighborhood::EdgesCornersFarAxes, TEXT("ECFA") },
+			{ ENeighborhood::PlanarMoore,         TEXT("PM") },
 		};
 
 		for (const TPair<ENeighborhood, FString>& Token : Tokens)
@@ -3136,68 +3137,166 @@ bool FLifePatternTest::RunTest(const FString& Parameters)
 							PatternIndex, Probe.X, Probe.Y, bAlive ? TEXT("живая") : TEXT("пустая"),
 							FlatNeighbors, Expected, SpatialNeighbors));
 					}
+
+					// То же самое под PlanarMoore - соседством, ради которого
+					// оно всё и затевалось: там клетка видит только свой слой и
+					// двух прямых соседей по Z, поэтому N+1 у живой и N у
+					// мёртвой. Отсюда 3,4/3 из B3/S23.
+					int32 PlanarNeighbors = 0;
+					for (int32 nz = -1; nz <= 1; ++nz)
+					{
+						for (int32 ny = -1; ny <= 1; ++ny)
+						{
+							for (int32 nx = -1; nx <= 1; ++nx)
+							{
+								// Плоскость XY целиком плюс чистая ось Z - без
+								// вертикальных диагоналей.
+								const bool bInPlanarSet = (nz == 0 && (nx != 0 || ny != 0))
+													   || (nz != 0 && nx == 0 && ny == 0);
+								if (bInPlanarSet
+									&& Live.Contains(FIntVector(Probe3D.X + nx, Probe3D.Y + ny, Probe3D.Z + nz)))
+								{
+									++PlanarNeighbors;
+								}
+							}
+						}
+					}
+
+					const int32 ExpectedPlanar = bAlive ? (FlatNeighbors + 1) : FlatNeighbors;
+					if (PlanarNeighbors != ExpectedPlanar)
+					{
+						AddError(FString::Printf(
+							TEXT("паттерн %d, клетка (%d,%d) %s под PlanarMoore: ожидалось %d, вышло %d"),
+							PatternIndex, Probe.X, Probe.Y, bAlive ? TEXT("живая") : TEXT("пустая"),
+							ExpectedPlanar, PlanarNeighbors));
+					}
 				}
 			}
 		}
 	}
 
-	// Ружьё Госпера - отдельно, потому что оно и есть проверка ПОРОГА, за
-	// которым перенос ломается: клетка в слое над призмой видит только соседний
-	// слой (N соседей плюс двойника), и родится, если это даст шесть. Если у
-	// ружья найдётся пустая клетка с шестью соседями в 2D, оно начнёт расти
-	// вверх вместо того, чтобы стрелять, - и знать это надо заранее, а не
-	// обнаруживать глазом на сотом поколении.
+	// ГЕРМЕТИЧНОСТЬ - то, ради чего заведено соседство PlanarMoore, и то, что
+	// первая версия этого теста проверяла НЕВЕРНО. Считалось, что паттерн
+	// остаётся плоским, пока у пустой клетки нет шести соседей, - и у ружья
+	// Госпера выходило четыре, то есть "всё хорошо". В действительности клетка
+	// над призмой видит N соседей ПЛЮС ДВОЙНИКА, живого когда позиция жива, так
+	// что считать надо N + [жива]: у ружья это 6 (живая клетка с пятью
+	// соседями), у пульсара тоже 6 (пустая с шестью). Оба обрастали вверх на
+	// первом же шаге, и только глайдер с его пятёркой летел - ровно то, что и
+	// наблюдалось вживую, пока ошибку не нашли.
+	//
+	// Поэтому проверяются ОБА соседства: под Moore-26 - фактический порог
+	// каждого паттерна (знание, а не утверждение), под PlanarMoore - что
+	// протечки нет вовсе.
 	{
-		FStateGeneratorParams Params;
-		Params.Type = EStateGeneratorType::LifePattern;
-		Params.LifePattern = ELifePattern::GosperGliderGun;
-		Params.Thickness = 2;
-		Params.bAnalyzeNeighborCounts = false;
+		struct FThresholdCase { ELifePattern Pattern; const TCHAR* Name; int32 ExpectedMoore; };
+		const FThresholdCase Cases[] = {
+			{ ELifePattern::Glider,               TEXT("глайдер"),      5 },
+			{ ELifePattern::LightweightSpaceship, TEXT("LWSS"),         5 },
+			{ ELifePattern::Pulsar,               TEXT("пульсар"),      6 },
+			{ ELifePattern::GosperGliderGun,      TEXT("ружьё"),        6 },
+		};
 
-		TArray<FIntVector> Cells;
-		StateGenerators::FGenerateStats Stats;
-		FString Error;
-		StateGenerators::Generate(Params, 0, MAX_int64, Cells, Stats, Error);
-
-		TSet<FIntPoint> Flat;
-		for (const FIntVector& Cell : Cells)
+		for (const FThresholdCase& Case : Cases)
 		{
-			Flat.Add(FIntPoint(Cell.X, Cell.Y));
-		}
+			FStateGeneratorParams Params;
+			Params.Type = EStateGeneratorType::LifePattern;
+			Params.LifePattern = Case.Pattern;
+			Params.Thickness = 2;
+			Params.bAnalyzeNeighborCounts = false;
 
-		int32 MaxEmptyNeighbors = 0;
-		TSet<FIntPoint> Checked;
-		for (const FIntPoint& Cell : Flat)
-		{
-			for (int32 dy = -1; dy <= 1; ++dy)
+			TArray<FIntVector> Cells;
+			StateGenerators::FGenerateStats Stats;
+			FString Error;
+			StateGenerators::Generate(Params, 0, MAX_int64, Cells, Stats, Error);
+
+			TSet<FIntPoint> Flat;
+			for (const FIntVector& Cell : Cells)
 			{
-				for (int32 dx = -1; dx <= 1; ++dx)
-				{
-					const FIntPoint Probe(Cell.X + dx, Cell.Y + dy);
-					if (Flat.Contains(Probe) || Checked.Contains(Probe))
-					{
-						continue;
-					}
-					Checked.Add(Probe);
+				Flat.Add(FIntPoint(Cell.X, Cell.Y));
+			}
 
-					int32 Neighbors = 0;
-					for (int32 ny = -1; ny <= 1; ++ny)
+			int32 MaxSeenFromAbove = 0;
+			TSet<FIntPoint> Checked;
+			for (const FIntPoint& Cell : Flat)
+			{
+				for (int32 dy = -1; dy <= 1; ++dy)
+				{
+					for (int32 dx = -1; dx <= 1; ++dx)
 					{
-						for (int32 nx = -1; nx <= 1; ++nx)
+						const FIntPoint Probe(Cell.X + dx, Cell.Y + dy);
+						if (Checked.Contains(Probe))
 						{
-							if ((nx != 0 || ny != 0) && Flat.Contains(FIntPoint(Probe.X + nx, Probe.Y + ny)))
+							continue;
+						}
+						Checked.Add(Probe);
+
+						int32 Neighbors = 0;
+						for (int32 ny = -1; ny <= 1; ++ny)
+						{
+							for (int32 nx = -1; nx <= 1; ++nx)
 							{
-								++Neighbors;
+								if ((nx != 0 || ny != 0) && Flat.Contains(FIntPoint(Probe.X + nx, Probe.Y + ny)))
+								{
+									++Neighbors;
+								}
 							}
 						}
+
+						// Вот она, забытая единица: двойник под клеткой.
+						const int32 SeenFromAbove = Neighbors + (Flat.Contains(Probe) ? 1 : 0);
+						MaxSeenFromAbove = FMath::Max(MaxSeenFromAbove, SeenFromAbove);
 					}
-					MaxEmptyNeighbors = FMath::Max(MaxEmptyNeighbors, Neighbors);
 				}
+			}
+
+			AddInfo(FString::Printf(TEXT("%s: клетка над призмой видит максимум %d (Moore-26, рождение при 6); под PlanarMoore - максимум 1"),
+				Case.Name, MaxSeenFromAbove));
+			TestEqual(*FString::Printf(TEXT("%s: порог под Moore-26"), Case.Name), MaxSeenFromAbove, Case.ExpectedMoore);
+		}
+	}
+
+	// И само утверждение о герметичности - прямым счётом по смещениям
+	// PlanarMoore, а не рассуждением: сколько клеток двухслойной призмы видит
+	// клетка НАД ней. Ответ обязан быть не больше единицы (двойник под собой), а
+	// значит при B={3} рождение вне двух слоёв невозможно ни для какого
+	// паттерна - в этом всё отличие от Moore-26.
+	{
+		const TArray<FIntVector> PlanarOffsets = FCellularAutomatonRule::BuildNeighborOffsets(ENeighborhood::PlanarMoore);
+		TestEqual(TEXT("PlanarMoore - ровно 10 соседей"), PlanarOffsets.Num(), 10);
+
+		int32 MaxFromAbove = 0;
+		// Худший случай: сплошной двухслойный блок 5x5x2, плотнее любого
+		// паттерна жизни. Клетка над ним всё равно не должна видеть больше
+		// одного.
+		TSet<FIntVector> Slab;
+		for (int32 X = -2; X <= 2; ++X)
+		{
+			for (int32 Y = -2; Y <= 2; ++Y)
+			{
+				Slab.Add(FIntVector(X, Y, 0));
+				Slab.Add(FIntVector(X, Y, 1));
 			}
 		}
 
-		AddInfo(FString::Printf(TEXT("ружьё Госпера: максимум соседей у пустой клетки - %d (порог роста вверх: 6)"), MaxEmptyNeighbors));
-		TestTrue(TEXT("ружьё остаётся плоским: пустых клеток с шестью соседями нет"), MaxEmptyNeighbors < 6);
+		for (int32 X = -2; X <= 2; ++X)
+		{
+			for (int32 Y = -2; Y <= 2; ++Y)
+			{
+				const FIntVector Above(X, Y, 2);
+				int32 Neighbors = 0;
+				for (const FIntVector& Offset : PlanarOffsets)
+				{
+					if (Slab.Contains(Above + Offset))
+					{
+						++Neighbors;
+					}
+				}
+				MaxFromAbove = FMath::Max(MaxFromAbove, Neighbors);
+			}
+		}
+
+		TestEqual(TEXT("над сплошной призмой клетка видит ровно одного соседа - двойника"), MaxFromAbove, 1);
 	}
 
 	return true;
