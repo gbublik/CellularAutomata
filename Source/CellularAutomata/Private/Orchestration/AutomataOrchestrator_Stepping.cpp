@@ -9,6 +9,7 @@
 #include "Automata/Simulation/CellAging.h"
 #include "Automata/Simulation/CellDecay.h"
 #include "Automata/Simulation/ComputeStrategy/CellularAutomatonComputeStrategy.h"
+#include "Automata/Sonification/SonificationCurve.h"
 #include "Async/Async.h"
 
 
@@ -50,6 +51,180 @@ bool AAutomataOrchestrator::TryAutoReseedOnExtinction(int32 GenerationsAdvanced)
 	// дошла: проверка стоит раньше, чтобы не платить за рендер пустоты.
 	UE_LOG(LogTemp, Log, TEXT("Автоперекат сида: сид %d вымер на поколении %lld, попытка №%d"),
 		Seed, GenerationCount + GenerationsAdvanced, AutoReseedCount);
+
+	NewSeed();
+	return true;
+}
+
+bool AAutomataOrchestrator::TryAutoReseedOnStasis()
+{
+	if (!bAutoReseedOnExtinction || !bAutoReseedOnStasis || !Grid.IsValid() || Grid->Num() == 0)
+	{
+		// Пустую сетку сюда не пускаем не из осторожности: вымирание уже
+		// разобрала TryAutoReseedOnExtinction(), и мёртвая сетка, попав в окно,
+		// выглядела бы как идеальный застой.
+		return false;
+	}
+
+	// Ёмкость окна перечитывается каждый раз - настройку правят в Details panel
+	// на живом прогоне (см. "Details-панельные UPROPERTY не кешируются" в
+	// CLAUDE.md). Смена ёмкости обнуляет накопленное: судить о застое по окну,
+	// собранному при другой длине, нельзя.
+	const int32 DesiredCapacity = FMath::Max(AutoReseedStasisWindow, 2);
+	if (StasisWindow.Samples.Num() != DesiredCapacity)
+	{
+		StasisWindow.Reset(DesiredCapacity);
+		bHaveStasisCenter = false;
+	}
+
+	StasisWindow.Push(Grid->Num());
+
+	// ПЕРВЫЙ шаг, дешёвый: численность стоит на месте. Сам по себе не значит
+	// ничего - у глайдера она тоже стоит (см. doc-comment bAutoReseedOnStasis).
+	if (!StasisWindow.IsStable(AutoReseedStasisTolerance))
+	{
+		return false;
+	}
+
+	// ВТОРОЙ шаг, дорогой и потому редкий - раз в окно, а не на поколение:
+	// сместился ли габарит. Обход живых клеток здесь единственный.
+	FVector Center = FVector::ZeroVector;
+	float Radius = 0.0f;
+	if (!ComputeAliveCellsBounds(Center, Radius))
+	{
+		return false;
+	}
+
+	if (!bHaveStasisCenter)
+	{
+		// Первое срабатывание триггера: сравнивать не с чем, запоминаем и ждём
+		// ещё окно. Именно этот интервал и даёт глайдеру время уехать.
+		LastStasisCenter = Center;
+		bHaveStasisCenter = true;
+		StasisWindow.Clear();
+		return false;
+	}
+
+	// Порог - половина клетки: центр считается по габариту в мировых
+	// координатах, и структура, сдвинувшаяся хотя бы на одну клетку, уедет
+	// заведомо дальше. Транслятору этого достаточно, чтобы не попасть под
+	// отбраковку, а дрожания у неподвижной фигуры нет вовсе - габарит целочислен.
+	const double MovedThreshold = Grid->GetLattice().GetMaxCellWorldExtent() * 0.5;
+	const double Moved = FVector::Dist(Center, LastStasisCenter);
+
+	LastStasisCenter = Center;
+	StasisWindow.Clear();
+
+	if (Moved > MovedThreshold)
+	{
+		// Численность постоянна, но фигура едет - это транслятор, ровно то, что
+		// в этом режиме и ищут. Не трогаем.
+		UE_LOG(LogTemp, Log, TEXT("Автоперекат сида: численность стоит (%d клеток), но структура сместилась на %.1f - похоже на транслятор, сид оставлен"),
+			Grid->Num(), Moved);
+		return false;
+	}
+
+	++AutoReseedCount;
+	UE_LOG(LogTemp, Log, TEXT("Автоперекат сида: сид %d застыл на поколении %lld (%d клеток, окно %d замеров), попытка №%d"),
+		Seed, GenerationCount, Grid->Num(), DesiredCapacity, AutoReseedCount);
+
+	NewSeed();
+	return true;
+}
+
+bool AAutomataOrchestrator::TryAutoReseedOnExplosion(int32 GenerationsAdvanced)
+{
+	if (!bAutoReseedOnExtinction || !Grid.IsValid())
+	{
+		return false;
+	}
+
+	const int64 AgeInGenerations = GenerationCount + GenerationsAdvanced;
+
+	// Потолок по ВОЗРАСТУ проверяется первым и живёт отдельно от взрыва: он не
+	// про структуру вовсе, а про то, что перебор не должен застревать навсегда
+	// на сиде, который не приходит ни к одному концу.
+	if (AutoReseedMaxGenerations > 0 && AgeInGenerations >= AutoReseedMaxGenerations)
+	{
+		++AutoReseedCount;
+		UE_LOG(LogTemp, Log, TEXT("Автоперекат сида: сид %d дожил до поколения %lld без исхода (потолок %lld), попытка №%d"),
+			Seed, AgeInGenerations, AutoReseedMaxGenerations, AutoReseedCount);
+		NewSeed();
+		return true;
+	}
+
+	if (!bAutoReseedOnExplosion)
+	{
+		return false;
+	}
+
+	FString Reason;
+
+	// Потолок численности - O(1), сетка ведёт счётчик сама. Смысл у него не
+	// "взорвалось", а "слишком дорого": медленно доросшая структура попадёт под
+	// него так же, как рванувшая.
+	if (AutoReseedMaxCells > 0 && Grid->Num() >= AutoReseedMaxCells)
+	{
+		Reason = FString::Printf(TEXT("клеток %d при потолке %lld"), Grid->Num(), AutoReseedMaxCells);
+	}
+	// Темп роста - тем же измерителем, что ведёт звук: наклон ln(1 + N) по
+	// номеру поколения. Своей математики здесь нет ни строчки, и это не
+	// экономия, а условие того, что порог значит одно и то же при любом
+	// StepsPerRender и при любом размере сетки (см.
+	// AutoReseedGrowthPerGeneration).
+	else if (AutoReseedGrowthPerGeneration > 1.0f && GenerationSamples.Num() >= 2)
+	{
+		const int32 First = SonificationCurve::FindWindowStart(GenerationSamples,
+			FMath::Max(AutoReseedGrowthWindowGenerations, 4), /*MinSamples=*/4);
+
+		double Slope = 0.0;
+		double CentroidX = 0.0;
+		if (First != INDEX_NONE
+			&& SonificationCurve::FitLogSlope(GenerationSamples, First, GenerationSamples.Num() - 1, Slope, CentroidX))
+		{
+			// Наклон - это d ln(N)/dn, то есть логарифм множителя за поколение;
+			// exp() возвращает его в те единицы, в которых порог задан в
+			// панели ("во сколько раз за поколение").
+			const double FactorPerGeneration = FMath::Exp(Slope);
+			if (FactorPerGeneration >= AutoReseedGrowthPerGeneration)
+			{
+				Reason = FString::Printf(TEXT("рост x%.3f за поколение при пороге x%.3f"),
+					FactorPerGeneration, AutoReseedGrowthPerGeneration);
+			}
+		}
+	}
+
+	if (Reason.IsEmpty())
+	{
+		return false;
+	}
+
+	if (AutoReseedExplosionAction == EAutoReseedAction::StopSimulation)
+	{
+		// Не перекатываем и не считаем попыткой: сид не забракован, он ОТОБРАН -
+		// человек просил показать такое. Прогон останавливаем, кадр рисуется как
+		// обычно (возвращаем false), иначе на экране осталось бы предыдущее
+		// поколение.
+		if (bSimulationRunning)
+		{
+			Stop();
+		}
+		if (bFastStepActive)
+		{
+			StopFastStep();
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("Автоперекат сида: сид %d показал взрывной рост на поколении %lld (%s) - прогон остановлен"),
+			Seed, AgeInGenerations, *Reason);
+		ShowStatusMessage(StatusKey_Generation,
+			FString::Printf(TEXT("Взрывной рост: сид %d, поколение %lld (%s) - прогон остановлен"),
+				Seed, AgeInGenerations, *Reason));
+		return false;
+	}
+
+	++AutoReseedCount;
+	UE_LOG(LogTemp, Log, TEXT("Автоперекат сида: сид %d отбракован по росту на поколении %lld (%s), попытка №%d"),
+		Seed, AgeInGenerations, *Reason, AutoReseedCount);
 
 	NewSeed();
 	return true;
@@ -548,6 +723,23 @@ bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewG
 	// стоит ПЕРЕД счётчиками, потому что NewSeed() всё равно перестроит сетку с
 	// нуля и обнулит их (RebuildGridFromCells()).
 	if (TryAutoReseedOnExtinction(Generations))
+	{
+		return false;
+	}
+
+	// Второй критерий отбраковки, там же и по тем же правилам: структура
+	// перестала развиваться. Строго ПОСЛЕ вымирания - мёртвая сетка иначе
+	// выглядела бы идеальным застоем (см. TryAutoReseedOnStasis()).
+	if (TryAutoReseedOnStasis())
+	{
+		return false;
+	}
+
+	// Третий и четвёртый: взрывной рост и возраст сида. Последними, потому что
+	// оба смотрят на историю численности, а она пополняется ниже - то есть на
+	// этом заходе они судят по предыдущим поколениям, что и правильно: судить
+	// по поколению, которого ещё нет в ряду, было бы просто ошибкой на один шаг.
+	if (TryAutoReseedOnExplosion(Generations))
 	{
 		return false;
 	}

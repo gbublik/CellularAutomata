@@ -22,6 +22,7 @@
 #include "Automata/Capture/CapturePresets.h"
 #include "Automata/Generation/StateGeneratorPresets.h"
 #include "Automata/Generation/CellArrayParams.h"
+#include "Automata/Generation/AutoReseedAction.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Automata/Editing/CellEditJournal.h"
 #include "Automata/Simulation/Neighborhood.h"
@@ -34,6 +35,7 @@
 #include "Automata/Sonification/SonificationParams.h"
 #include "Automata/Sonification/SonificationPresets.h"
 #include "Orchestration/GenerationHistory.h"
+#include "Orchestration/StabilityWindow.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
 
@@ -2170,6 +2172,117 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|Generation")
 	int32 AutoReseedCount = 0;
 
+	/** Перекатывать сид не только когда сетка вымерла, но и когда она ЗАСТЫЛА:
+	 *  структура перестала развиваться и дальше смотреть на неё нечего.
+	 *  Работает только вместе с bAutoReseedOnExtinction - это уточнение к
+	 *  перебору, а не отдельный режим.
+	 *
+	 *  Застой определяется В ДВА ШАГА, и первый шаг сам по себе НЕ является
+	 *  признаком - в этом вся суть. Дешёвый триггер: численность живых клеток
+	 *  не меняется на протяжении окна (FStabilityWindow, O(1) на поколение).
+	 *  Но у ГЛАЙДЕРА численность тоже постоянна, а глайдер здесь как раз и
+	 *  ищут, - поэтому по одному триггеру пересевать нельзя, иначе перебор
+	 *  выбрасывал бы именно свои находки. Второй шаг, дорогой и потому редкий:
+	 *  когда триггер сработал, сравнивается ЦЕНТР ГАБАРИТА с тем, что был при
+	 *  прошлом срабатывании. Не сдвинулся - структура стоит на месте
+	 *  (натюрморт или осциллятор), сид перекатывается. Сдвинулся - это
+	 *  транслятор, он летит, и трогать его нельзя.
+	 *
+	 *  Цена второго шага - один обход живых клеток раз в окно, а не на каждом
+	 *  поколении. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (DisplayName = "Auto Reseed On Stasis", EditCondition = "bAutoReseedOnExtinction"))
+	bool bAutoReseedOnStasis = false;
+
+	/** Длина окна неизменной численности, в ЗАМЕРАХ (не в поколениях): замер
+	 *  делается на каждое применённое поколение, а при StepsPerRender > 1 или
+	 *  батче GPU одно применение - это несколько поколений сразу. То есть при
+	 *  StepsPerRender = 8 окно в 16 замеров покрывает 128 поколений.
+	 *
+	 *  Окно заодно задаёт, сколько времени даётся глайдеру, чтобы уехать: между
+	 *  двумя сравнениями габарита проходит ровно окно, и структура, сместившаяся
+	 *  за это время хотя бы на клетку, застоем не считается. Слишком короткое
+	 *  окно поэтому опаснее слишком длинного - оно начнёт выбрасывать медленные
+	 *  трансляторы. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (ClampMin = "2", UIMin = "4", UIMax = "128", EditCondition = "bAutoReseedOnExtinction && bAutoReseedOnStasis"))
+	int32 AutoReseedStasisWindow = 16;
+
+	/** Допустимый разброс численности внутри окна, в клетках. 0 - численность
+	 *  обязана стоять намертво.
+	 *
+	 *  Нужен для осцилляторов: их численность честно колеблется, а развитие у
+	 *  них кончилось так же, как у натюрморта. Ставить его большим опасно по той
+	 *  же причине, что и короткое окно: под допуск начнёт попадать медленно
+	 *  растущая структура, которой ещё есть куда развиваться. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (ClampMin = "0", UIMin = "0", UIMax = "64", EditCondition = "bAutoReseedOnExtinction && bAutoReseedOnStasis"))
+	int32 AutoReseedStasisTolerance = 0;
+
+	/** Третий критерий отбраковки - ВЗРЫВНОЙ РОСТ. Как и застой, уточнение к
+	 *  перебору (работает вместе с bAutoReseedOnExtinction).
+	 *
+	 *  В отличие от вымирания и застоя, тут отбраковывается то, что МОЖЕТ
+	 *  оказаться находкой: фрактальный рост выглядит ровно как каша, пока не
+	 *  присмотришься. Поэтому у него две регулировки вместо одной (потолок и
+	 *  темп - они ловят разное) и своя реакция на выбор
+	 *  (AutoReseedExplosionAction), включая "не выбрасывать, а показать". */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (DisplayName = "Auto Reseed On Explosion", EditCondition = "bAutoReseedOnExtinction"))
+	bool bAutoReseedOnExplosion = false;
+
+	/** Жёсткий потолок численности: столько живых клеток - и сид забракован.
+	 *  0 - потолок выключен.
+	 *
+	 *  Стоит O(1) (счётчик живых клеток сетка ведёт сама) и ловит ровно одно:
+	 *  "перебор завяз в тяжёлом сиде". Именно как страховка он и полезен - по
+	 *  смыслу это не "взрыв", а "слишком дорого": структура, дораставшая до
+	 *  порога тысячу поколений, попадёт под него так же, как рванувшая за
+	 *  десять. За смысл отвечает соседний AutoReseedGrowthPerGeneration. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (ClampMin = "0", UIMin = "0", EditCondition = "bAutoReseedOnExtinction && bAutoReseedOnExplosion"))
+	int64 AutoReseedMaxCells = 0;
+
+	/** Во сколько раз численность в среднем растёт ЗА ПОКОЛЕНИЕ. 1.0 (или
+	 *  меньше) - критерий выключен, 1.05 - рост на пять процентов за поколение,
+	 *  то есть удвоение примерно за четырнадцать.
+	 *
+	 *  Меряется не делением "сейчас на было", а наклоном ln(1 + N) по номеру
+	 *  поколения на окне (SonificationCurve::FitLogSlope() - тот же измеритель,
+	 *  что ведёт звук, никакой своей математики здесь нет). Из-за этого он
+	 *  переживает дыры, которые пробивают в ряду замеров StepsPerRender и
+	 *  батчи GPU, и не зависит от того, сто клеток в сетке или семь миллионов:
+	 *  наклон в лог-пространстве - это ОТНОСИТЕЛЬНЫЙ темп. Порог сравнивается с
+	 *  exp(наклон). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (ClampMin = "1.0", UIMin = "1.0", UIMax = "2.0", EditCondition = "bAutoReseedOnExtinction && bAutoReseedOnExplosion"))
+	float AutoReseedGrowthPerGeneration = 1.0f;
+
+	/** Ширина окна измерения темпа, в ПОКОЛЕНИЯХ (не в замерах, в отличие от
+	 *  окна застоя): окно определено по номеру поколения именно затем, чтобы
+	 *  пережить прорежённость ряда - см. SonificationCurve::FindWindowStart().
+	 *  Узкое окно ловит короткие всплески, широкое - только устойчивый разгон. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (ClampMin = "4", UIMin = "8", UIMax = "512", EditCondition = "bAutoReseedOnExtinction && bAutoReseedOnExplosion"))
+	int32 AutoReseedGrowthWindowGenerations = 64;
+
+	/** Что делать с забракованным по взрыву сидом - катить дальше или
+	 *  остановиться и показать. См. EAutoReseedAction. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (EditCondition = "bAutoReseedOnExtinction && bAutoReseedOnExplosion"))
+	EAutoReseedAction AutoReseedExplosionAction = EAutoReseedAction::Reseed;
+
+	/** Потолок по возрасту сида: столько поколений - и катим следующий, что бы
+	 *  на экране ни происходило. 0 - выключено.
+	 *
+	 *  Четвёртый критерий, и единственный, который не описывает структуру
+	 *  вовсе. Нужен потому, что три остальных ловят КОНЦЫ (вымерло, застыло,
+	 *  рвануло), а сид может не прийти ни к одному из них и просто медленно
+	 *  вариться - перебор на нём остановится навсегда. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Generation",
+			  meta = (ClampMin = "0", UIMin = "0", EditCondition = "bAutoReseedOnExtinction"))
+	int64 AutoReseedMaxGenerations = 0;
+
 	/** Количества живых соседей, при которых мёртвая клетка рождается. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	TArray<int32> BirthCounts = { 3 };
@@ -2995,6 +3108,44 @@ private:
 	 *  только логу, который печатает прожитый сидом возраст до того, как
 	 *  GenerationCount обнулится вместе с сеткой. */
 	bool TryAutoReseedOnExtinction(int32 GenerationsAdvanced);
+
+	/** Второй критерий отбраковки сида - ЗАСТОЙ (см. bAutoReseedOnStasis).
+	 *  Зовётся из того же места и по тем же правилам, что
+	 *  TryAutoReseedOnExtinction(), сразу после неё: вымершая сетка застойной
+	 *  уже не считается, её разобрали раньше.
+	 *
+	 *  Возвращает true, если сид перекачен, - вызывающий тогда бросает
+	 *  дальнейшую работу с этим поколением, как и при вымирании. */
+	bool TryAutoReseedOnStasis();
+
+	/** Третий и четвёртый критерии отбраковки - взрывной рост и возраст сида
+	 *  (см. bAutoReseedOnExplosion/AutoReseedMaxGenerations). Зовётся оттуда же,
+	 *  после вымирания и застоя.
+	 *
+	 *  Возвращает true, если сид перекачен ИЛИ прогон остановлен, - в обоих
+	 *  случаях вызывающему с этим поколением делать больше нечего.
+	 *
+	 *  GenerationsAdvanced нужен потолку по возрасту: счётчик поколений
+	 *  прибавляется вызывающим ПОСЛЕ этих проверок, а судить надо по тому
+	 *  возрасту, который сид уже прожил. */
+	bool TryAutoReseedOnExplosion(int32 GenerationsAdvanced);
+
+	/** Окно численности для детектора застоя - см. bAutoReseedOnStasis.
+	 *  Transient: это накопленное состояние прогона, а не настройка; переживать
+	 *  реинстансинг ему нужно, иначе хот-патч посреди перебора начал бы окно
+	 *  заново и застой не нашёлся бы ещё столько же. */
+	FStabilityWindow StasisWindow;
+
+	/** Центр габарита живых клеток на прошлом срабатывании дешёвого триггера -
+	 *  то, с чем сравнивается нынешний, чтобы отличить стоящую структуру от
+	 *  летящей (см. bAutoReseedOnStasis). */
+	FVector LastStasisCenter = FVector::ZeroVector;
+
+	/** Был ли уже снят LastStasisCenter. Отдельный флаг, а не нулевой вектор:
+	 *  ноль - совершенно законный центр (генерация центрирована в нуле), и
+	 *  структура, застывшая ровно там, иначе перекатывалась бы на первом же
+	 *  срабатывании триггера, без второй проверки. */
+	bool bHaveStasisCenter = false;
 	/** Общая часть "начать новый прогон вот с этого набора клеток": сброс
 	 *  снимков и счётчиков, свежая сетка, последовательная заливка,
 	 *  запоминание точки возврата и немедленный рендер. Общая для

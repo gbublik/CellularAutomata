@@ -26,6 +26,7 @@
 #include "Automata/Sonification/SonificationCurve.h"
 #include "Math/RandomStream.h"
 #include "Orchestration/GenerationHistory.h"
+#include "Orchestration/StabilityWindow.h"
 #include "RHI.h"
 
 /**
@@ -2967,6 +2968,94 @@ bool FHotkeyRegistryTest::RunTest(const FString& Parameters)
 				AddWarning(TEXT("в DefaultInput.ini нет ни одной строки CA_* - раскладка целиком на значениях по умолчанию"));
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FStabilityWindowTest,
+	"CellularAutomata.Generation.StabilityWindow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FStabilityWindowTest::RunTest(const FString& Parameters)
+{
+	// Окно численности - дешёвый триггер детектора застоя (см.
+	// AAutomataOrchestrator::bAutoReseedOnStasis). Цена ошибки несимметрична:
+	// пропущенный застой стоит нескольких лишних секунд перебора, а ЛОЖНЫЙ
+	// застой выбрасывает сид, который мог оказаться находкой, - поэтому
+	// проверяется прежде всего то, что мешает окну срабатывать раньше времени.
+
+	// ПЕРВОЕ: незрелое окно не стабильно НИКОГДА, даже если все замеры равны.
+	// Иначе первые же два одинаковых замера в начале прогона объявили бы
+	// застоем структуру, которая ещё не начала разворачиваться.
+	{
+		FStabilityWindow Window;
+		Window.Reset(8);
+		for (int32 Index = 0; Index < 7; ++Index)
+		{
+			Window.Push(100);
+			TestFalse(TEXT("незрелое окно не объявляет застой"), Window.IsStable(0));
+		}
+		Window.Push(100);
+		TestTrue(TEXT("созревшее окно из равных замеров - застой"), Window.IsStable(0));
+	}
+
+	// ВТОРОЕ: одно изменение внутри окна снимает застой - и снимает его до тех
+	// пор, пока не выйдет за пределы окна. Это то, что отличает "структура
+	// стоит" от "структура почти стоит".
+	{
+		FStabilityWindow Window;
+		Window.Reset(4);
+		Window.Push(10); Window.Push(10); Window.Push(11); Window.Push(10);
+		TestFalse(TEXT("разброс в окне - не застой"), Window.IsStable(0));
+
+		// Пропихиваем изменение за край окна.
+		Window.Push(10); Window.Push(10); Window.Push(10);
+		TestTrue(TEXT("изменение вышло за окно - снова застой"), Window.IsStable(0));
+	}
+
+	// ТРЕТЬЕ: допуск - это разброс, а не "равно соседу". Осциллятор при
+	// StepsPerRender > 1 попадает в замеры разными фазами, так что численность
+	// честно скачет между двумя значениями; строгое равенство соседей не поймало
+	// бы ни одного осциллятора.
+	{
+		FStabilityWindow Window;
+		Window.Reset(6);
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			Window.Push(Index % 2 == 0 ? 40 : 43);
+		}
+		TestFalse(TEXT("колебание шире допуска - не застой"), Window.IsStable(2));
+		TestTrue(TEXT("колебание в пределах допуска - застой"), Window.IsStable(3));
+	}
+
+	// ЧЕТВЁРТОЕ: Clear() забывает накопленное, но не ёмкость - им пользуется
+	// каждый новый сид, и окно после него обязано созревать заново, а не
+	// объявлять застой на первом же замере.
+	{
+		FStabilityWindow Window;
+		Window.Reset(3);
+		Window.Push(5); Window.Push(5); Window.Push(5);
+		TestTrue(TEXT("окно созрело"), Window.IsStable(0));
+
+		Window.Clear();
+		TestFalse(TEXT("после Clear() окно снова незрелое"), Window.IsStable(0));
+		Window.Push(5); Window.Push(5);
+		TestFalse(TEXT("двух замеров из трёх всё ещё мало"), Window.IsStable(0));
+		Window.Push(5);
+		TestTrue(TEXT("третий замер снова даёт застой"), Window.IsStable(0));
+	}
+
+	// ПЯТОЕ, вырожденное: ёмкость меньше двух бессмысленна (разброс не из чего
+	// считать) и обязана подниматься до двух, а не давать окно из одного замера,
+	// которое стабильно всегда.
+	{
+		FStabilityWindow Window;
+		Window.Reset(1);
+		Window.Push(7);
+		TestFalse(TEXT("окно из одного замера не объявляет застой"), Window.IsStable(0));
+		Window.Push(7);
+		TestTrue(TEXT("минимальное окно - два замера"), Window.IsStable(0));
 	}
 
 	return true;

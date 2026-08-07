@@ -188,6 +188,13 @@ void AAutomataOrchestrator::ResetGenerationCounter()
 	EditJournal.Reset();
 	EditRedoStack.Reset();
 	bEditJournalOverflowed = false;
+
+	// И окно детектора застоя: замеры от прошлого сида к новому не относятся
+	// вовсе, а запомненный центр габарита - тем более. Оставь их, и первый же
+	// сид, случайно совпавший по численности с предыдущим, был бы объявлен
+	// застойным на второй проверке (см. bAutoReseedOnStasis).
+	StasisWindow.Clear();
+	bHaveStasisCenter = false;
 }
 
 void AAutomataOrchestrator::AppendGenerationSample()
