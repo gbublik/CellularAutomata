@@ -44,6 +44,39 @@ void CellClipboard::Normalize(TArray<FIntVector>& Cells)
 	}
 }
 
+void CellClipboard::Rotate90(TArray<FIntVector>& Cells, int32 Axis, bool bClockwise)
+{
+	if (Cells.Num() == 0 || Axis < 0 || Axis > 2)
+	{
+		return;
+	}
+
+	for (FIntVector& Cell : Cells)
+	{
+		const FIntVector Old = Cell;
+		switch (Axis)
+		{
+		case 0: // вокруг X: Y и Z меняются местами со сменой знака у одной из них
+			Cell.Y = bClockwise ? -Old.Z : Old.Z;
+			Cell.Z = bClockwise ? Old.Y : -Old.Y;
+			break;
+		case 1: // вокруг Y
+			Cell.X = bClockwise ? Old.Z : -Old.Z;
+			Cell.Z = bClockwise ? -Old.X : Old.X;
+			break;
+		default: // вокруг Z
+			Cell.X = bClockwise ? -Old.Y : Old.Y;
+			Cell.Y = bClockwise ? Old.X : -Old.X;
+			break;
+		}
+	}
+
+	// Вращение идёт вокруг нуля, а центр габарита с чётной стороной при этом
+	// уезжает на полклетки - без пересчёта буфер отползал бы от курсора с
+	// каждым поворотом, по чуть-чуть и незаметно.
+	Normalize(Cells);
+}
+
 FIntVector CellClipboard::ComputePasteOrigin(const FIntVector& BufferMin, const FIntVector& BufferMax,
 											 const FIntVector& BaseCell, const FIntVector& FaceNormal)
 {

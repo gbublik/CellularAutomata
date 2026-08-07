@@ -374,6 +374,34 @@ void AAutomataOrchestrator::HideClipboardGhost()
 	}
 }
 
+void AAutomataOrchestrator::RotateClipboard(int32 Axis, bool bClockwise)
+{
+	if (ClipboardCells.Num() == 0)
+	{
+		ShowStatusMessage(StatusKey_Clipboard, TEXT("Буфер пуст - поворачивать нечего"));
+		return;
+	}
+
+	CellClipboard::Rotate90(ClipboardCells, Axis, bClockwise);
+
+	// Единственное место, кроме копирования, где инстансы призрака
+	// пересобираются: он обязан показывать текущую ориентацию, иначе вставится
+	// не то, что видно.
+	RebuildClipboardGhostInstances();
+
+	static const TCHAR* AxisNames[] = { TEXT("X"), TEXT("Y"), TEXT("Z") };
+	const TCHAR* AxisName = (Axis >= 0 && Axis <= 2) ? AxisNames[Axis] : TEXT("?");
+
+	UE_LOG(LogTemp, Log, TEXT("RotateClipboard: буфер повёрнут на %s90 вокруг %s"),
+		bClockwise ? TEXT("+") : TEXT("-"), AxisName);
+
+	// Printf с consteval-проверкой формата не даёт выбрать строку тернарником
+	// (см. CLAUDE.md) - собираем знак отдельно.
+	const FString Sign = bClockwise ? TEXT("+") : TEXT("-");
+	ShowStatusMessage(StatusKey_Clipboard,
+		FString::Printf(TEXT("Поворот буфера: %s90 вокруг %s"), *Sign, AxisName));
+}
+
 void AAutomataOrchestrator::PasteClipboard(const FVector& RayOrigin, const FVector& RayDirection)
 {
 	if (ClipboardCells.Num() == 0)

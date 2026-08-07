@@ -65,6 +65,17 @@ namespace HotkeyRegistry
 			// нажатие с модификатором. Та же пара, что Z / Ctrl+Z.
 			{ EHotkey::CopyCells,                          TEXT("CA_CopyCells"),                          EKeys::C, /*bModifierGuarded=*/true },
 			{ EHotkey::PasteCells,                         TEXT("CA_PasteCells"),                         EKeys::V, /*bModifierGuarded=*/true },
+			// Поворот буфера перед вставкой. Стрелки делят клавиши с движением
+			// куба отсечения, но разведены РЕЖИМОМ, а не модификатором: те
+			// работают только в режиме выделения, эти - только в рисовании (см.
+			// bModifierGuarded). PageUp/PageDown свободны и достались третьей
+			// оси - для неё пары стрелок уже не осталось.
+			{ EHotkey::RotateClipboardYawLeft,             TEXT("CA_RotateClipboardYawLeft"),             EKeys::Left,     /*bModifierGuarded=*/true },
+			{ EHotkey::RotateClipboardYawRight,            TEXT("CA_RotateClipboardYawRight"),            EKeys::Right,    /*bModifierGuarded=*/true },
+			{ EHotkey::RotateClipboardPitchUp,             TEXT("CA_RotateClipboardPitchUp"),             EKeys::Up,       /*bModifierGuarded=*/true },
+			{ EHotkey::RotateClipboardPitchDown,           TEXT("CA_RotateClipboardPitchDown"),           EKeys::Down,     /*bModifierGuarded=*/true },
+			{ EHotkey::RotateClipboardRollLeft,            TEXT("CA_RotateClipboardRollLeft"),            EKeys::PageUp },
+			{ EHotkey::RotateClipboardRollRight,           TEXT("CA_RotateClipboardRollRight"),           EKeys::PageDown },
 
 			// --- Через сырой InputKey() ---
 			{ EHotkey::ToggleSimulation,                   TEXT("CA_ToggleSimulation"),                   EKeys::SpaceBar },

@@ -204,6 +204,18 @@ void AGamePlayerController::SetupInputComponent()
 		// нажатие с модификатором, чтобы одно нажатие не сделало обе вещи.
 		{ TEXT("IA_CopyCells"), { EHotkey::CopyCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnCopyCells } } },
 		{ TEXT("IA_PasteCells"), { EHotkey::PasteCells }, { { ETriggerEvent::Started, &AGamePlayerController::OnPasteCells } } },
+
+		// Поворот буфера перед вставкой. Started, а не Triggered: поворот на 90
+		// градусов - дискретный шаг, и автоповтор при удержании прокручивал бы
+		// ориентацию мимо нужной. Все шесть работают только в режиме рисования;
+		// стрелки в это время у куба отсечения простаивают (его обработчики
+		// гейтятся режимом выделения).
+		{ TEXT("IA_RotateClipboardYawLeft"), { EHotkey::RotateClipboardYawLeft }, { { ETriggerEvent::Started, &AGamePlayerController::OnRotateClipboardYawLeft } } },
+		{ TEXT("IA_RotateClipboardYawRight"), { EHotkey::RotateClipboardYawRight }, { { ETriggerEvent::Started, &AGamePlayerController::OnRotateClipboardYawRight } } },
+		{ TEXT("IA_RotateClipboardPitchUp"), { EHotkey::RotateClipboardPitchUp }, { { ETriggerEvent::Started, &AGamePlayerController::OnRotateClipboardPitchUp } } },
+		{ TEXT("IA_RotateClipboardPitchDown"), { EHotkey::RotateClipboardPitchDown }, { { ETriggerEvent::Started, &AGamePlayerController::OnRotateClipboardPitchDown } } },
+		{ TEXT("IA_RotateClipboardRollLeft"), { EHotkey::RotateClipboardRollLeft }, { { ETriggerEvent::Started, &AGamePlayerController::OnRotateClipboardRollLeft } } },
+		{ TEXT("IA_RotateClipboardRollRight"), { EHotkey::RotateClipboardRollRight }, { { ETriggerEvent::Started, &AGamePlayerController::OnRotateClipboardRollRight } } },
 	};
 
 	// Раскладка разрешается ОДИН раз здесь, и дальше только читается: и таблица
@@ -1805,6 +1817,51 @@ void AGamePlayerController::OnPasteCells()
 	Orchestrator->PasteClipboard(RayOrigin, RayDirection);
 }
 
+void AGamePlayerController::RotateClipboard(int32 Axis, bool bClockwise)
+{
+	// Только в режиме рисования: вне его стрелки принадлежат кубу отсечения, а
+	// PageUp/PageDown не должны молча крутить невидимый буфер.
+	if (!bDrawModeActive)
+	{
+		return;
+	}
+
+	if (AAutomataOrchestrator* Orchestrator = FindOrchestrator())
+	{
+		Orchestrator->RotateClipboard(Axis, bClockwise);
+	}
+}
+
+void AGamePlayerController::OnRotateClipboardYawLeft()
+{
+	RotateClipboard(/*Axis=*/2, /*bClockwise=*/false);
+}
+
+void AGamePlayerController::OnRotateClipboardYawRight()
+{
+	RotateClipboard(/*Axis=*/2, /*bClockwise=*/true);
+}
+
+void AGamePlayerController::OnRotateClipboardPitchUp()
+{
+	RotateClipboard(/*Axis=*/0, /*bClockwise=*/true);
+}
+
+void AGamePlayerController::OnRotateClipboardPitchDown()
+{
+	RotateClipboard(/*Axis=*/0, /*bClockwise=*/false);
+}
+
+void AGamePlayerController::OnRotateClipboardRollLeft()
+{
+	RotateClipboard(/*Axis=*/1, /*bClockwise=*/false);
+}
+
+void AGamePlayerController::OnRotateClipboardRollRight()
+{
+	RotateClipboard(/*Axis=*/1, /*bClockwise=*/true);
+}
+
 void AGamePlayerController::OnEraseCellPressed()
 {
 	if (!bDrawModeActive)
@@ -2018,7 +2075,20 @@ void AGamePlayerController::OnSelectDragStarted()
 		FVector RayDirection = FVector::ZeroVector;
 		if (Orchestrator && DeprojectMousePositionToWorld(RayOrigin, RayDirection))
 		{
-			Orchestrator->PaintCellUnderCursor(RayOrigin, RayDirection, /*bErase=*/false);
+			// Зажатый Ctrl при непустом буфере - ВСТАВКА, и это ровно то
+			// состояние, в котором под курсором уже висит призрак буфера (см.
+			// TickCellPainting()). Клик по тому, что видишь, - и есть вставка;
+			// отдельный Ctrl+V для этого оказался неинтуитивным именно потому,
+			// что призрак уже стоял на месте и просил нажатия мышью.
+			const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+			if (bCtrl && Orchestrator->GetClipboardCellCount() > 0)
+			{
+				Orchestrator->PasteClipboard(RayOrigin, RayDirection);
+			}
+			else
+			{
+				Orchestrator->PaintCellUnderCursor(RayOrigin, RayDirection, /*bErase=*/false);
+			}
 		}
 		return;
 	}

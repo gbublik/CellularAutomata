@@ -44,6 +44,22 @@ namespace CellClipboard
 	CELLULARAUTOMATA_API FIntVector ComputePasteOrigin(const FIntVector& BufferMin, const FIntVector& BufferMax,
 													   const FIntVector& BaseCell, const FIntVector& FaceNormal);
 
+	/** Поворот набора на 90 градусов вокруг оси (0 = X, 1 = Y, 2 = Z).
+	 *
+	 *  Ровно 90, а не произвольный угол: на целочисленной решётке точны только
+	 *  повороты, переводящие узлы в узлы, а любой другой угол потребовал бы
+	 *  округления - то есть терял бы форму, причём тем сильнее, чем мельче
+	 *  деталь. Четыре поворота подряд обязаны вернуть исходный набор бит в бит.
+	 *
+	 *  Набор после поворота НОРМАЛИЗУЕТСЯ заново (см. Normalize()): вращение
+	 *  идёт вокруг нуля, а центр габарита с чётной стороной при этом
+	 *  сдвигается на полклетки - без пересчёта буфер бы медленно уползал от
+	 *  курсора с каждым поворотом.
+	 *
+	 *  bClockwise - направление; обратный поворот это не три прямых, а своя
+	 *  формула, чтобы Shift-версия хоткея стоила столько же. */
+	CELLULARAUTOMATA_API void Rotate90(TArray<FIntVector>& Cells, int32 Axis, bool bClockwise);
+
 	/** Буфер, сдвинутый в Origin, - то, что реально ляжет в сетку. */
 	CELLULARAUTOMATA_API void Place(const TArray<FIntVector>& Buffer, const FIntVector& Origin,
 									TArray<FIntVector>& OutCells);

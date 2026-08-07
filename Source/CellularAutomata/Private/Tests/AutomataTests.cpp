@@ -3059,7 +3059,85 @@ bool FCellClipboardTest::RunTest(const FString& Parameters)
 			Placed.Contains(FIntVector(10, 10, 10)) && Placed.Contains(FIntVector(11, 12, 13)));
 	}
 
-	// ПЯТОЕ, вырожденное: пустой буфер не должен ни падать, ни выдумывать
+	// ПЯТОЕ: поворот на 90. Проверяется не "координаты стали такими-то", а три
+	// свойства, каждое из которых ловит свой класс ошибки.
+	{
+		// Фигура намеренно НЕсимметричная по всем трём осям: на симметричной
+		// перепутанный знак или ось не видны вовсе.
+		const TArray<FIntVector> Original = {
+			FIntVector(0, 0, 0), FIntVector(3, 0, 0), FIntVector(0, 1, 0), FIntVector(0, 0, 5), FIntVector(3, 1, 5),
+		};
+
+		for (int32 Axis = 0; Axis < 3; ++Axis)
+		{
+			// ЧЕТЫРЕ поворота - тождество, бит в бит. Это то, что делает
+			// поворот на решётке точным: любое округление накапливалось бы, и
+			// круг не сошёлся бы. Сравнение как МНОЖЕСТВО - порядок клеток
+			// внутри буфера ничего не значит.
+			TArray<FIntVector> Cells = Original;
+			for (int32 Turn = 0; Turn < 4; ++Turn)
+			{
+				CellClipboard::Rotate90(Cells, Axis, /*bClockwise=*/true);
+			}
+
+			TArray<FIntVector> NormalizedOriginal = Original;
+			CellClipboard::Normalize(NormalizedOriginal);
+			TestEqual(*FString::Printf(TEXT("ось %d: четыре поворота не теряют клеток"), Axis), Cells.Num(), Original.Num());
+			TestTrue(*FString::Printf(TEXT("ось %d: четыре поворота дают исходную фигуру"), Axis),
+				TSet<FIntVector>(Cells).Includes(TSet<FIntVector>(NormalizedOriginal)));
+
+			// Обратный поворот - действительно обратный, а не ещё один прямой:
+			// у него своя формула, и перепутанный знак виден только здесь.
+			TArray<FIntVector> ThereAndBack = Original;
+			CellClipboard::Rotate90(ThereAndBack, Axis, /*bClockwise=*/true);
+			CellClipboard::Rotate90(ThereAndBack, Axis, /*bClockwise=*/false);
+			TestTrue(*FString::Printf(TEXT("ось %d: поворот туда-обратно возвращает фигуру"), Axis),
+				TSet<FIntVector>(ThereAndBack).Includes(TSet<FIntVector>(NormalizedOriginal)));
+
+			// И анти-вакуумность: один поворот обязан что-то ИЗМЕНИТЬ. Без этого
+			// реализация, не делающая ничего, прошла бы обе проверки выше.
+			TArray<FIntVector> Once = Original;
+			CellClipboard::Rotate90(Once, Axis, /*bClockwise=*/true);
+			TestFalse(*FString::Printf(TEXT("ось %d: один поворот меняет фигуру"), Axis),
+				TSet<FIntVector>(Once).Includes(TSet<FIntVector>(NormalizedOriginal)));
+		}
+
+		// Габариты обязаны МЕНЯТЬСЯ МЕСТАМИ - это отличает настоящий поворот от
+		// зеркала, которое тоже прошло бы "четыре раза = тождество" на этой
+		// фигуре. Вокруг Z меняются X и Y, Z остаётся.
+		{
+			TArray<FIntVector> Cells = Original;
+			FIntVector MinBefore, MaxBefore;
+			CellClipboard::ComputeBounds(Cells, MinBefore, MaxBefore);
+
+			CellClipboard::Rotate90(Cells, /*Axis=*/2, /*bClockwise=*/true);
+
+			FIntVector MinAfter, MaxAfter;
+			CellClipboard::ComputeBounds(Cells, MinAfter, MaxAfter);
+			TestEqual(TEXT("поворот вокруг Z: X стал прежним Y"), MaxAfter.X - MinAfter.X, MaxBefore.Y - MinBefore.Y);
+			TestEqual(TEXT("поворот вокруг Z: Y стал прежним X"), MaxAfter.Y - MinAfter.Y, MaxBefore.X - MinBefore.X);
+			TestEqual(TEXT("поворот вокруг Z: Z не тронут"), MaxAfter.Z - MinAfter.Z, MaxBefore.Z - MinBefore.Z);
+		}
+
+		// Буфер обязан оставаться у нуля: поворот идёт вокруг него, и центр
+		// габарита с чётной стороной уезжает на полклетки. Без пересчёта буфер
+		// отползал бы от курсора с каждым поворотом - по чуть-чуть, то есть
+		// незаметно до десятого нажатия.
+		{
+			TArray<FIntVector> Cells = { FIntVector(0, 0, 0), FIntVector(1, 0, 0) }; // чётная сторона
+			for (int32 Turn = 0; Turn < 8; ++Turn)
+			{
+				CellClipboard::Rotate90(Cells, /*Axis=*/2, /*bClockwise=*/true);
+
+				FIntVector Min, Max;
+				CellClipboard::ComputeBounds(Cells, Min, Max);
+				TestTrue(TEXT("буфер не уползает от нуля при повторных поворотах"),
+					FMath::Abs(Min.X + Max.X) <= 1 && FMath::Abs(Min.Y + Max.Y) <= 1);
+			}
+		}
+	}
+
+	// ШЕСТОЕ, вырожденное: пустой буфер не должен ни падать, ни выдумывать
 	// габарит - ComputeBounds() честно отвечает false, а Normalize() ничего не
 	// делает.
 	{
