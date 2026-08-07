@@ -268,25 +268,6 @@ void AAutomataOrchestrator::CombineWithSelection(TArray<FIntVector>&& NewCells, 
 	}
 }
 
-void AAutomataOrchestrator::ClearSelection()
-{
-	// Драг закрываем ПЕРВЫМ и через штатный путь: он вернёт подсветку на место
-	// и, если сдвиг был, внесёт перенос в сетку. Бросить драг на полпути значило
-	// бы потерять уже показанное пользователю перемещение.
-	if (IsSelectionDragging())
-	{
-		EndSelectionDrag();
-	}
-
-	if (SelectedCells.Num() == 0)
-	{
-		return;
-	}
-
-	SelectedCells.Reset();
-	RenderSelectionOverlay();
-}
-
 void AAutomataOrchestrator::InvertSelection()
 {
 	if (!Grid)
