@@ -4,6 +4,7 @@
 #include "CellularAutomata/Public/Orchestration/AutomataOrchestrator.h"
 
 #include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
@@ -139,7 +140,15 @@ namespace AutomataConsole
 			Ar.Logf(TEXT("CA.CellShape: формы клетки (%d):"), Presets.Num());
 			for (int32 It = 0; It < Presets.Num(); ++It)
 			{
-				Ar.Logf(TEXT("  %2d  %-32s граней: %d"), It, *Presets[It].Name, Presets[It].FaceCount);
+				// Состояние слота меша печатается прямо здесь: пустой слот -
+				// самая частая причина того, что форма переключилась, а картинка
+				// осталась кубической, и искать это в логе применения дольше,
+				// чем увидеть в списке.
+				const UStaticMesh* SlotMesh = Orchestrator->GetCellMeshForShape(Presets[It].Shape);
+				Ar.Logf(TEXT("  %c%2d  %-32s граней: %2d  меш: %s"),
+					Orchestrator->CellShape == Presets[It].Shape ? TEXT('*') : TEXT(' '),
+					It, *Presets[It].Name, Presets[It].FaceCount,
+					SlotMesh ? *SlotMesh->GetName() : TEXT("СЛОТ ПУСТ"));
 			}
 			return;
 		}

@@ -48,6 +48,17 @@ bool AAutomataOrchestrator::TryApplyRuleString(const FString& InRuleString, FStr
 		*InRuleString, BirthCounts.Num(), SurvivalCounts.Num(), States,
 		GetNeighborhoodDisplayName(Neighborhood));
 
+	// Ловушка, которая иначе не даёт вообще никакого симптома, кроме "правило
+	// ведёт себя не как написано": BuildRule() предпочитает список смещений
+	// формы, когда та его задаёт, поэтому на такой решётке токен соседства из
+	// строки разобран, записан в поле и не применён - работают только
+	// Birth/Survival/States.
+	if (NeighborhoodShape != ELatticeNeighborhood::Shells)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TryApplyRuleString: активна форма клетки со своим списком соседей (%s) - соседство '%s' из строки правила не применится"),
+			*GetLatticeNeighborhoodDisplayName(NeighborhoodShape), GetNeighborhoodDisplayName(Neighborhood));
+	}
+
 	return true;
 }
 
@@ -72,14 +83,50 @@ void AAutomataOrchestrator::ApplyRulePreset(int32 PresetIndex, bool bApplySpawnS
 
 	const FRulePreset& Preset = Presets[PresetIndex];
 
+	// Разбираем строку ЗАРАНЕЕ, ничего ещё не применяя: пресет, привязанный к
+	// решётке, ниже пересоберёт сетку, и делать это ради правила, которое
+	// потом не применится, значило бы стереть состояние ни за чем. Разбор
+	// дешёвый, а второй раз он произойдёт уже внутри TryApplyRuleString() -
+	// единственного пути применения правила, который мы обходить не хотим.
+	RuleStringParser::FParsedRule Probe;
 	FString Error;
-	if (!TryApplyRuleString(Preset.RuleString, Error))
+	if (!RuleStringParser::ParseRuleString(Preset.RuleString, Probe, Error))
 	{
 		// Строки в таблице пресетов константны, так что сюда можно попасть
 		// только если таблица разъехалась с парсером - это ошибка кода, а не
 		// пользовательский ввод, поэтому Error, а не Warning.
 		UE_LOG(LogTemp, Error, TEXT("ApplyRulePreset: пресет '%s' содержит неразбираемое правило '%s' - %s"),
 			*Preset.Name, *Preset.RuleString, *Error);
+		return;
+	}
+
+	// Решётка - ПЕРЕД правилом. Пресет формы выставляет в том числе соседство,
+	// так что в обратном порядке он затёр бы токен, только что разобранный из
+	// строки правила (у "Плоской жизни" это /PM - ровно то, ради чего привязка
+	// и заведена). Трогаем только если она уже не та: смена решётки
+	// пересобирает сетку, а пресет правила по умолчанию состояние не рушит.
+	bool bLatticeChanged = false;
+	if (Preset.bRequiresCellShape && CellShape != Preset.RequiredCellShape)
+	{
+		const int32 ShapeIndex = CellShapePresets::IndexOf(Preset.RequiredCellShape);
+		bLatticeChanged = ShapeIndex != INDEX_NONE && ApplyCellShapeFields(ShapeIndex);
+		if (!bLatticeChanged)
+		{
+			// Форма не применилась (её нет в таблице или она требует ещё не
+			// реализованной решётки). Правило всё равно применим - оно само по
+			// себе законно, - но сказать об этом надо: считаться оно будет не по
+			// тому соседству, которое записано в его строке.
+			UE_LOG(LogTemp, Warning, TEXT("ApplyRulePreset: пресет '%s' требует форму %d, применить её не удалось - правило пойдёт на текущей решётке"),
+				*Preset.Name, static_cast<int32>(Preset.RequiredCellShape));
+		}
+	}
+
+	if (!TryApplyRuleString(Preset.RuleString, Error))
+	{
+		// Недостижимо: строку только что разобрал тот же парсер. Оставлено
+		// защитой от расхождения ParseRuleString() и TryApplyRuleString().
+		UE_LOG(LogTemp, Error, TEXT("ApplyRulePreset: правило '%s' разобралось, но не применилось - %s"),
+			*Preset.RuleString, *Error);
 		return;
 	}
 
@@ -100,6 +147,17 @@ void AAutomataOrchestrator::ApplyRulePreset(int32 PresetIndex, bool bApplySpawnS
 		bApplySpawnSettings
 			? *FString::Printf(TEXT(", Radius=%d, Amount=%d"), GenerationParams.Radius, GenerationParams.Amount)
 			: TEXT(""));
+
+	// Единственный случай, когда пресет правила рушит состояние: решётка
+	// хранится внутри сетки, и клетки старой стоят по прежней геометрии.
+	// Генерация одна на всё применение - поля формы и правило к этому моменту
+	// уже на местах.
+	if (bLatticeChanged)
+	{
+		ShowStatusMessage(StatusKey_CellShape, FString::Printf(
+			TEXT("Пресет '%s' требует другую решётку - сетка построена заново"), *Preset.Name));
+		GenerateState();
+	}
 }
 
 TArray<FCellShapePreset> AAutomataOrchestrator::GetCellShapePresets() const
@@ -107,13 +165,115 @@ TArray<FCellShapePreset> AAutomataOrchestrator::GetCellShapePresets() const
 	return CellShapePresets::GetAll();
 }
 
+UStaticMesh* AAutomataOrchestrator::GetCellMeshForShape(ECellShape Shape) const
+{
+	// Единственное место, где имя формы превращается в поле-слот. Switch без
+	// default: добавление шестой формы в перечисление (чего не будет -
+	// классификация Фёдорова закрыта) обязано стать ошибкой компиляции, а не
+	// молчаливым nullptr.
+	switch (Shape)
+	{
+	case ECellShape::Cube:					return CubeMesh;
+	case ECellShape::HexagonalPrism:		return HexagonalPrismMesh;
+	case ECellShape::RhombicDodecahedron:	return RhombicDodecahedronMesh;
+	case ECellShape::ElongatedDodecahedron:	return ElongatedDodecahedronMesh;
+	case ECellShape::TruncatedOctahedron:	return TruncatedOctahedronMesh;
+	}
+
+	return nullptr;
+}
+
+void AAutomataOrchestrator::SetCellShape(ECellShape NewShape)
+{
+	const int32 Index = CellShapePresets::IndexOf(NewShape);
+	if (Index == INDEX_NONE)
+	{
+		// Форма есть в перечислении, но её нет в таблице - расхождение двух
+		// таблиц, то есть ошибка кода (её и стережёт тест
+		// CellShape.PresetTableCoversEnum), а не пользовательский ввод.
+		UE_LOG(LogTemp, Error, TEXT("SetCellShape: формы %d нет в таблице пресетов"), static_cast<int32>(NewShape));
+	}
+	else if (ApplyCellShapeFields(Index))
+	{
+		// Решётка поменялась - сетку надо построить заново: старая хранит
+		// прежний шаг внутри себя, и клетки в ней стоят по прежней геометрии.
+		GenerateState();
+		return;
+	}
+
+	// Отказ. Поле CellShape к этому моменту уже могло быть переписано движком
+	// (тумблер в Details panel пишет значение ДО PostEditChangeProperty), и
+	// оставить его так значило бы показывать форму, которая не применена.
+	// Восстанавливаем подпись по фактическим полям - тем же кодом, что после
+	// загрузки файла.
+	SyncCellShapeFromLatticeFields();
+}
+
+void AAutomataOrchestrator::SyncCellShapeFromLatticeFields()
+{
+	const TArray<FCellShapePreset>& Presets = CellShapePresets::GetAll();
+	for (int32 Index = 0; Index < Presets.Num(); ++Index)
+	{
+		const FCellShapePreset& Preset = Presets[Index];
+
+		// Формы, которые применить нельзя, и распознавать нечего: у
+		// гексагональной призмы поля решётки совпадают с кубическими (скошенность
+		// живёт не в них), так что без этой строки куб мог бы опознаться призмой.
+		if (CellShapePresets::RequiresShearedLattice(Preset))
+		{
+			continue;
+		}
+
+		// Ключ - ровно те три поля, которыми формы различаются между собой:
+		// какая подрешётка заселена, каким списком заданы соседи и как решётка
+		// растянута. Множитель меша в ключ не входит намеренно - он следствие
+		// формы, а не признак, и его-то мы здесь и восстанавливаем (в .casave
+		// он не пишется вовсе, см. FAutomatonSaveHeader).
+		if (Preset.ParityFilter != GenerationParams.ParityFilter
+			|| Preset.NeighborhoodShape != NeighborhoodShape
+			|| !FMath::IsNearlyEqual(Preset.LatticeZScale, LatticeZScale, 0.01f))
+		{
+			continue;
+		}
+
+		CellShape = Preset.Shape;
+		ActiveCellShapePresetIndex = Index;
+		CellMeshScaleMultiplier = Preset.CellMeshScaleMultiplier;
+		if (UStaticMesh* ShapeMesh = GetCellMeshForShape(Preset.Shape))
+		{
+			CellMesh = ShapeMesh;
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("SyncCellShapeFromLatticeFields: поля решётки опознаны как '%s'"), *Preset.Name);
+		return;
+	}
+
+	// Комбинация, которой не соответствует ни одна из пяти форм, - законное
+	// состояние: поля обычные и правятся руками (на этом стоит тест
+	// Generation.ParityFilter - Moore на ГЦК обязан ломать чётность). Тумблер
+	// в этом случае остаётся на прошлом значении и просто неактуален.
+	UE_LOG(LogTemp, Log, TEXT("SyncCellShapeFromLatticeFields: комбинация полей не совпала ни с одной формой - тумблер оставлен как есть"));
+}
+
 void AAutomataOrchestrator::ApplyCellShapePreset(int32 PresetIndex)
+{
+	if (!ApplyCellShapeFields(PresetIndex))
+	{
+		return;
+	}
+
+	// Решётка поменялась - сетку надо построить заново: старая хранит прежний
+	// шаг внутри себя, и клетки в ней стоят по прежней геометрии.
+	GenerateState();
+}
+
+bool AAutomataOrchestrator::ApplyCellShapeFields(int32 PresetIndex)
 {
 	const TArray<FCellShapePreset>& Presets = CellShapePresets::GetAll();
 	if (!Presets.IsValidIndex(PresetIndex))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: индекс %d вне диапазона (форм: %d)"), PresetIndex, Presets.Num());
-		return;
+		return false;
 	}
 
 	const FCellShapePreset& Preset = Presets[PresetIndex];
@@ -122,13 +282,14 @@ void AAutomataOrchestrator::ApplyCellShapePreset(int32 PresetIndex)
 	// сейчас нет. Отказываемся вслух, а не выставляем настройки, которые
 	// нарисуют шестиугольники на кубической решётке - это выглядело бы
 	// правдоподобно и было бы неверно, ровно та ошибка, из-за которой прошлая
-	// попытка гекс-решётки была отменена.
-	if (Preset.bRequiresCustomMesh && Preset.ExpectedMeshAabb.Y > Preset.ExpectedMeshAabb.X + UE_KINDA_SMALL_NUMBER)
+	// попытка гекс-решётки была отменена. Никакой меш этого не чинит, поэтому
+	// отказ стоит ДО подстановки слота.
+	if (CellShapePresets::RequiresShearedLattice(Preset))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: '%s' требует скошенной решётки, которая ещё не реализована"), *Preset.Name);
 		ShowStatusMessage(StatusKey_CellShape, FString::Printf(
 			TEXT("Форма '%s' ещё не поддержана: нужна скошенная решётка"), *Preset.Name));
-		return;
+		return false;
 	}
 
 	// Пишем поля напрямую, а не через сеттеры: каждый из них перерисовывает
@@ -140,13 +301,31 @@ void AAutomataOrchestrator::ApplyCellShapePreset(int32 PresetIndex)
 	LatticeZScale = Preset.LatticeZScale;
 	CellMeshScaleMultiplier = Preset.CellMeshScaleMultiplier;
 	ActiveCellShapePresetIndex = PresetIndex;
+	CellShape = Preset.Shape;
+
+	// Меш - из слота этой формы. Пустой слот НЕ ошибка и не повод отказываться:
+	// прежний меш даст щели или наложение, но решётка при этом честная, и
+	// увидеть её так всё же лучше, чем не переключиться вовсе. Говорим вслух -
+	// ровно как о разъехавшихся пропорциях ниже.
+	FString MeshWarning;
+	if (UStaticMesh* ShapeMesh = GetCellMeshForShape(Preset.Shape))
+	{
+		CellMesh = ShapeMesh;
+	}
+	else
+	{
+		MeshWarning = TEXT(" | слот меша пуст, оставлен прежний");
+		UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: слот меша формы '%s' пуст - назначьте ассет в Details panel (Automata|Cells|Meshes)"),
+			*Preset.Name);
+	}
 
 	// Движок пропорции меша не проверяет никак: неверный ассет даёт щели или
 	// наложение, а это неотличимо от неверно выбранной решётки. Поэтому
 	// сверяем и говорим вслух - в статус-строку, а не только в лог (прецедент
 	// - CellMaterial без ноды PerInstanceCustomData3Vector, который молча не
-	// работает).
-	FString MeshWarning;
+	// работает). Проверка стоит ПОСЛЕ подстановки слота, так что ловит она
+	// именно тот меш, которым и будет рисоваться, - в том числе ассет,
+	// положенный не в свой слот.
 	if (CellMesh)
 	{
 		const FVector MeshAabb = CellMesh->GetBounds().BoxExtent * 2.0;
@@ -186,9 +365,10 @@ void AAutomataOrchestrator::ApplyCellShapePreset(int32 PresetIndex)
 	ShowStatusMessage(StatusKey_CellShape, FString::Printf(TEXT("Форма клетки: %s (%d граней)%s"),
 		*Preset.Name, Preset.FaceCount, *MeshWarning));
 
-	// Решётка поменялась - сетку надо построить заново: старая хранит прежний
-	// шаг внутри себя, и клетки в ней стоят по прежней геометрии.
-	GenerateState();
+	// Сетку здесь НЕ пересобираем - это делает вызывающий (см. doc-comment):
+	// ApplyRulePreset() успевает между этой строкой и пересборкой применить
+	// правило, чтобы заплатить за генерацию один раз, а не два.
+	return true;
 }
 
 void AAutomataOrchestrator::SpawnRuleVerificationPattern()

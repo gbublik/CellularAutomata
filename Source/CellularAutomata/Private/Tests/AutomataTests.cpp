@@ -7,8 +7,10 @@
 #include "Automata/Editing/CellEditJournal.h"
 #include "Automata/Generation/CellArrayModifier.h"
 #include "Automata/Generation/StateGenerators.h"
+#include "Automata/Grid/CellShapePresets.h"
 #include "Automata/Grid/DenseCellGrid.h"
 #include "Automata/Grid/LatticeTransform.h"
+#include "Automata/Simulation/RulePresets.h"
 #include "Automata/Meshing/ChunkGridView.h"
 #include "Automata/Persistence/AutomatonStateSerializer.h"
 #include "Automata/Rendering/CellVisibilityFilter.h"
@@ -2352,6 +2354,143 @@ bool FLatticeElongatedDodecahedronFacesTest::RunTest(const FString& Parameters)
 		if (Offsets.Contains(Excluded))
 		{
 			AddError(FString::Printf(TEXT("Смещение %s не должно входить в набор"), *Excluded.ToString()));
+			return false;
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCellShapePresetTableTest,
+	"CellularAutomata.CellShape.PresetTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+/** Стережёт три связи, которые появились вместе с тумблером формы и без которых
+ *  он врёт молча.
+ *
+ *  Первая: перечисление ECellShape и таблица CellShapePresets - два списка одних
+ *  и тех же пяти фигур, и разойтись они могут только в одну сторону (форма без
+ *  строки в таблице). Тогда SetCellShape() получает INDEX_NONE, тумблер
+ *  откатывается, а причина видна лишь в логе.
+ *
+ *  Вторая: SyncCellShapeFromLatticeFields() узнаёт форму по тройке
+ *  (фильтр чётности, соседство-списком, растяжение по Z). Если две применимые
+ *  формы совпадут по всем трём полям, загрузка .casave начнёт опознавать не ту -
+ *  с чужим множителем меша и чужим ассетом, то есть со щелями в картинке.
+ *
+ *  Третья: FRulePreset::RequiredCellShape обязан ссылаться на форму, которую
+ *  можно применить. Привязка к гексагональной призме означала бы пресет
+ *  правила, который при каждом применении честно пишет в лог отказ. */
+bool FCellShapePresetTableTest::RunTest(const FString& Parameters)
+{
+	const TArray<FCellShapePreset>& Presets = CellShapePresets::GetAll();
+
+	// NumEnums() считает и скрытый _MAX, отсюда -1.
+	const UEnum* ShapeEnum = StaticEnum<ECellShape>();
+	const int32 ShapeCount = ShapeEnum ? ShapeEnum->NumEnums() - 1 : 0;
+	if (ShapeCount <= 0)
+	{
+		AddError(TEXT("Не удалось получить UEnum для ECellShape"));
+		return false;
+	}
+
+	if (Presets.Num() != ShapeCount)
+	{
+		AddError(FString::Printf(TEXT("Форм в таблице %d, значений в ECellShape %d - списки разошлись"),
+			Presets.Num(), ShapeCount));
+		return false;
+	}
+
+	for (int32 It = 0; It < ShapeCount; ++It)
+	{
+		const ECellShape Shape = static_cast<ECellShape>(ShapeEnum->GetValueByIndex(It));
+		const int32 Index = CellShapePresets::IndexOf(Shape);
+		if (Index == INDEX_NONE)
+		{
+			AddError(FString::Printf(TEXT("Формы %s нет в таблице пресетов"), *ShapeEnum->GetNameStringByIndex(It)));
+			return false;
+		}
+		if (Presets[Index].Shape != Shape)
+		{
+			AddError(FString::Printf(TEXT("IndexOf(%s) дал строку с формой %d"),
+				*ShapeEnum->GetNameStringByIndex(It), static_cast<int32>(Presets[Index].Shape)));
+			return false;
+		}
+	}
+
+	// Ключ распознавания уникален среди ПРИМЕНИМЫХ форм. Гексагональная призма
+	// из проверки исключена намеренно: её поля решётки совпадают с кубическими
+	// (скошенность живёт не в них), и ровно поэтому
+	// SyncCellShapeFromLatticeFields() её пропускает.
+	for (int32 It = 0; It < Presets.Num(); ++It)
+	{
+		if (CellShapePresets::RequiresShearedLattice(Presets[It]))
+		{
+			continue;
+		}
+
+		for (int32 Other = It + 1; Other < Presets.Num(); ++Other)
+		{
+			if (CellShapePresets::RequiresShearedLattice(Presets[Other]))
+			{
+				continue;
+			}
+
+			if (Presets[It].ParityFilter == Presets[Other].ParityFilter
+				&& Presets[It].NeighborhoodShape == Presets[Other].NeighborhoodShape
+				&& FMath::IsNearlyEqual(Presets[It].LatticeZScale, Presets[Other].LatticeZScale, 0.01f))
+			{
+				AddError(FString::Printf(TEXT("Формы '%s' и '%s' неразличимы по полям решётки - обратный поиск формы опознает не ту"),
+					*Presets[It].Name, *Presets[Other].Name));
+				return false;
+			}
+		}
+	}
+
+	// Одна грань на соседа - определение ячейки Вороного. Выбор набора здесь
+	// повторяет BuildRule()/BuildNeighborOffsetsForAnalysis() (список формы
+	// главнее оболочки), потому что проверяется именно то, что увидит
+	// симуляция, а не то, что записано в поле FaceCount.
+	for (const FCellShapePreset& Preset : Presets)
+	{
+		if (CellShapePresets::RequiresShearedLattice(Preset))
+		{
+			continue;
+		}
+
+		const TArray<FIntVector> LatticeOffsets = BuildLatticeNeighborOffsets(Preset.NeighborhoodShape);
+		const int32 NeighborCount = LatticeOffsets.Num() > 0
+			? LatticeOffsets.Num()
+			: FCellularAutomatonRule::BuildNeighborOffsets(Preset.Neighborhood).Num();
+
+		if (NeighborCount != Preset.FaceCount)
+		{
+			AddError(FString::Printf(TEXT("У формы '%s' %d граней, а соседей %d - рост не совпадёт с видимыми контактами"),
+				*Preset.Name, Preset.FaceCount, NeighborCount));
+			return false;
+		}
+	}
+
+	// Привязки пресетов правил к решётке.
+	for (const FRulePreset& RulePreset : RulePresets::GetAll())
+	{
+		if (!RulePreset.bRequiresCellShape)
+		{
+			continue;
+		}
+
+		const int32 Index = CellShapePresets::IndexOf(RulePreset.RequiredCellShape);
+		if (Index == INDEX_NONE)
+		{
+			AddError(FString::Printf(TEXT("Пресет правила '%s' требует форму %d, которой нет в таблице"),
+				*RulePreset.Name, static_cast<int32>(RulePreset.RequiredCellShape)));
+			return false;
+		}
+
+		if (CellShapePresets::RequiresShearedLattice(Presets[Index]))
+		{
+			AddError(FString::Printf(TEXT("Пресет правила '%s' требует форму '%s', которую применить нельзя"),
+				*RulePreset.Name, *Presets[Index].Name));
 			return false;
 		}
 	}

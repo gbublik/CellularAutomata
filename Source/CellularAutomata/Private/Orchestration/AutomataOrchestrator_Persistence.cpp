@@ -94,6 +94,15 @@ void AAutomataOrchestrator::ApplySaveHeader(const FAutomatonSaveHeader& Header)
 	GenerationParams.Amount = FMath::Max(1, Header.Amount);
 	GenerationParams.Radius = FMath::Max(1, Header.SpawnRadius);
 	// Header.ClusterFactor намеренно игнорируется - см. BuildSaveHeader().
+
+	// Форма клетки в файле не хранится - и не должна: она следствие полей,
+	// которые только что восстановлены выше, а меш это ассет, а не состояние
+	// автомата (см. doc-comment FAutomatonSaveHeader). Но тумблер и меш обязаны
+	// теперь соответствовать этим полям: без синхронизации ОЦК-структура из
+	// файла рисовалась бы кубами с прежним множителем масштаба - то есть с
+	// щелями, - а подпись формы показывала бы то, что было открыто до неё.
+	// Заодно восстанавливается CellMeshScaleMultiplier, которого в шапке нет.
+	SyncCellShapeFromLatticeFields();
 }
 
 bool AAutomataOrchestrator::CaptureThumbnailPng(TArray64<uint8>& OutPngBytes) const

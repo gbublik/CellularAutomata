@@ -57,6 +57,15 @@ void AAutomataOrchestrator::BeginPlay()
 	EnsureCellsRenderer();
 	EnsureSelectionMeshComponent();
 
+	// Тумблер формы приводится к фактическим полям решётки ДО первой генерации:
+	// актор расставлен в уровне, а форма в нём не сохраняется (она следствие
+	// четырёх полей, см. FCellShapePreset), так что без этой строки уровень с
+	// ОЦК-настройками стартовал бы с подписью "Куб" и, что важнее, с мешем и
+	// множителем масштаба от прошлой формы - то есть со щелями. Заодно это
+	// подставляет меш из слота, если поле CellMesh осталось от времён, когда
+	// слотов не было.
+	SyncCellShapeFromLatticeFields();
+
 	// Стартуем ТЕМ генератором, что выбран в GenerationParams (то же, что даёт
 	// хоткей Y). Случайный шар - не отдельный путь, а обычное значение
 	// EStateGeneratorType::RandomBall, поэтому и запасной ветки здесь больше
@@ -224,6 +233,15 @@ void AAutomataOrchestrator::PostEditChangeProperty(FPropertyChangedEvent& Proper
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellMeshComponentType))
 	{
 		EnsureCellsRenderer();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellShape))
+	{
+		// Тумблер формы. Движок к этому моменту уже записал новое значение в
+		// поле, но форма - это ещё четыре поля и меш, поэтому применяем её
+		// целиком тем же путём, что консоль и HUD. Отказ (гексагональная
+		// призма) SetCellShape() откатит сам, вернув подпись к фактической
+		// геометрии.
+		SetCellShape(CellShape);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, CellMaterial)
 		|| PropertyName == GET_MEMBER_NAME_CHECKED(AAutomataOrchestrator, AgeColors)

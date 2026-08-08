@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Automata/Generation/CellParityFilter.h"
+#include "Automata/Grid/CellShape.h"
 #include "Automata/Simulation/Neighborhood.h"
 #include "Automata/Simulation/LatticeNeighborhood.h"
 #include "CellShapePresets.generated.h"
@@ -34,6 +35,12 @@ USTRUCT(BlueprintType)
 struct FCellShapePreset
 {
 	GENERATED_BODY()
+
+	/** Устойчивое имя формы - им адресуются тумблер в Details panel, слот меша
+	 *  и FRulePreset::RequiredCellShape. Индекс в таблице для этого не годится:
+	 *  он меняется от перестановки строк. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Cells")
+	ECellShape Shape = ECellShape::Cube;
 
 	/** Отображаемое имя фигуры. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|Cells")
@@ -81,11 +88,6 @@ struct FCellShapePreset
 	 *  разошлись. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|Cells")
 	FVector ExpectedMeshAabb = FVector::OneVector;
-
-	/** Правда, если для этой формы в проекте пока нет подходящего меша и его
-	 *  надо смоделировать (контрольные числа - в Description). */
-	UPROPERTY(BlueprintReadOnly, Category = "Automata|Cells")
-	bool bRequiresCustomMesh = false;
 };
 
 /** Таблица форм клетки - плайн-namespace, как RulePresets/RenderPresets. */
@@ -94,4 +96,23 @@ namespace CellShapePresets
 	/** Все формы в порядке отображения. Ссылка на статическую таблицу,
 	 *  строится один раз при первом обращении. */
 	CELLULARAUTOMATA_API const TArray<FCellShapePreset>& GetAll();
+
+	/** Место формы в GetAll() - единственный переход от устойчивого имени к
+	 *  индексу, которым таблица адресуется (ApplyCellShapePreset(), консольная
+	 *  команда CA.CellShape, выпадашка в HUD). INDEX_NONE не бывает, пока
+	 *  таблица покрывает всё перечисление, и ровно это проверяет тест
+	 *  CellShape.PresetTableCoversEnum. */
+	CELLULARAUTOMATA_API int32 IndexOf(ECellShape Shape);
+
+	/** Правда, если форма живёт на скошенной решётке, которой FLatticeTransform
+	 *  пока не умеет (сейчас это только гексагональная призма).
+	 *
+	 *  Признак выводится из самого пресета - ожидаемый меш шире по Y, чем по X,
+	 *  а прямоугольная решётка такого дать не может, - а не заводится отдельным
+	 *  булем: реализация скошенного отображения снимет ограничение сама, не
+	 *  требуя не забыть снять флаг. Отдельной функцией, потому что спрашивают
+	 *  об этом два места (применение формы и обратный поиск формы по полям), и
+	 *  разъехавшиеся копии условия означали бы, что одно из них применяет
+	 *  форму, которую другое считает неподдержанной. */
+	CELLULARAUTOMATA_API bool RequiresShearedLattice(const FCellShapePreset& Preset);
 }

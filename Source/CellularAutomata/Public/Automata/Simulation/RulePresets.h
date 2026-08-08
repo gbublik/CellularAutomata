@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Automata/Grid/CellShape.h"
 #include "RulePresets.generated.h"
 
 /** Один готовый пресет правила для выпадашки в HUD (см.
@@ -40,6 +41,24 @@ struct FRulePreset
 	 *  AAutomataOrchestrator::Amount. */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rules")
 	int32 Amount = 0;
+
+	/** Правда, если правило имеет смысл только на одной определённой решётке, и
+	 *  ApplyRulePreset() обязан её включить (см. RequiredCellShape).
+	 *
+	 *  ПОЧЕМУ ФЛАГ, А НЕ ПРОСТО ПОЛЕ ФОРМЫ С ДЕФОЛТОМ "КУБ". Гонять одно правило
+	 *  на разных решётках - это ровно то, ради чего форма клетки вообще
+	 *  появилась, и пресет, который молча возвращает куб, отнимал бы эту
+	 *  возможность у всех тринадцати правил каталога сразу. По умолчанию пресет
+	 *  правила решётку НЕ трогает; флаг поднят лишь там, где иначе применилось
+	 *  бы не то правило, которое написано в строке. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rules")
+	bool bRequiresCellShape = false;
+
+	/** Решётка, которую правило требует, - значима только при
+	 *  bRequiresCellShape. Устойчивое имя, а не индекс в таблице форм: строки
+	 *  той таблицы вправе переставляться. */
+	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rules")
+	ECellShape RequiredCellShape = ECellShape::Cube;
 };
 
 /** Таблица готовых правил - плайн-namespace, как CellAging/CellSelection/

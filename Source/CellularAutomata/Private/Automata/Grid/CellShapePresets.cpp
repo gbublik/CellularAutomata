@@ -36,6 +36,7 @@ namespace
 
 			{
 				FCellShapePreset& Preset = Result.AddDefaulted_GetRef();
+				Preset.Shape = ECellShape::Cube;
 				Preset.Name = TEXT("Куб (простая кубическая)");
 				Preset.Description = TEXT(
 					"6 квадратных граней. Заселён каждый узел решётки, соседи - шесть по осям. "
@@ -51,6 +52,7 @@ namespace
 
 			{
 				FCellShapePreset& Preset = Result.AddDefaulted_GetRef();
+				Preset.Shape = ECellShape::HexagonalPrism;
 				Preset.Name = TEXT("Гексагональная призма");
 				Preset.Description = TEXT(
 					"8 граней: 6 боковых прямоугольных + 2 шестиугольные крышки. Требует "
@@ -63,11 +65,11 @@ namespace
 				Preset.LatticeZScale = 1.0f;
 				Preset.CellMeshScaleMultiplier = 1.0f;
 				Preset.ExpectedMeshAabb = FVector(1.0, 1.154701, 1.0);
-				Preset.bRequiresCustomMesh = true;
 			}
 
 			{
 				FCellShapePreset& Preset = Result.AddDefaulted_GetRef();
+				Preset.Shape = ECellShape::RhombicDodecahedron;
 				Preset.Name = TEXT("Ромбододекаэдр (ГЦК)");
 				Preset.Description = TEXT(
 					"12 ромбических граней. Заселены узлы с чётной суммой координат - это в "
@@ -84,6 +86,7 @@ namespace
 
 			{
 				FCellShapePreset& Preset = Result.AddDefaulted_GetRef();
+				Preset.Shape = ECellShape::ElongatedDodecahedron;
 				Preset.Name = TEXT("Удлинённый додекаэдр (ОЦТ)");
 				Preset.Description = TEXT(
 					"12 граней: 8 ромбов + 4 шестиугольника. Та же ОЦК-подрешётка, что у "
@@ -104,11 +107,11 @@ namespace
 				Preset.LatticeZScale = 2.0f;
 				Preset.CellMeshScaleMultiplier = 2.0f;
 				Preset.ExpectedMeshAabb = FVector(2.0, 2.0, 3.0);
-				Preset.bRequiresCustomMesh = true;
 			}
 
 			{
 				FCellShapePreset& Preset = Result.AddDefaulted_GetRef();
+				Preset.Shape = ECellShape::TruncatedOctahedron;
 				Preset.Name = TEXT("Усечённый октаэдр (ОЦК)");
 				Preset.Description = TEXT(
 					"14 граней: 8 шестиугольных по диагоналям + 6 квадратных по осям. Заселены "
@@ -133,4 +136,31 @@ namespace
 const TArray<FCellShapePreset>& CellShapePresets::GetAll()
 {
 	return BuildPresets();
+}
+
+int32 CellShapePresets::IndexOf(ECellShape Shape)
+{
+	// Линейный поиск по полю, а не приведение enum'а к индексу: сейчас порядок
+	// таблицы совпадает с порядком перечисления, но таблица отсортирована по
+	// числу граней и вправе поменяться, а перечисление - нет. Пять элементов,
+	// вызывается на нажатие кнопки.
+	const TArray<FCellShapePreset>& Presets = GetAll();
+	for (int32 Index = 0; Index < Presets.Num(); ++Index)
+	{
+		if (Presets[Index].Shape == Shape)
+		{
+			return Index;
+		}
+	}
+
+	return INDEX_NONE;
+}
+
+bool CellShapePresets::RequiresShearedLattice(const FCellShapePreset& Preset)
+{
+	// Прямоугольная решётка не может дать ячейку шире по Y, чем по X, при
+	// равном шаге по обеим осям - гексагональная призма ровно такая
+	// (2/sqrt(3) = 1.1547). Проверка по геометрии, а не по отдельному флагу:
+	// когда во FLatticeTransform появится сдвиг, признак исчезнет сам.
+	return Preset.ExpectedMeshAabb.Y > Preset.ExpectedMeshAabb.X + UE_KINDA_SMALL_NUMBER;
 }
