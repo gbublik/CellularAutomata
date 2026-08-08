@@ -48,7 +48,7 @@ Actor/controller composition, not a monolithic GameMode:
 
 - **`Automata/Simulation/ComputeStrategy/`** — `FCellularAutomatonComputeStrategy` declares one synchronous contract (`Step()`, plus `StepBatch()` for several generations per invocation); `FCpuComputeStrategy` and `FGpuComputeStrategy` implement it, both grid-storage-agnostic and both reachable from a background thread. This is where the project's performance work lives, and where the measured history matters most — including two documented dead ends. → **`docs/compute-strategies.md`**
 
-- **`Automata/Rendering/`** — one renderer over one instanced component, with per-instance colour from an age/decay ramp. Three *independent* mechanisms decide what reaches the screen, and the terminology is worth keeping straight: **culling** hides instances after they are built (distance-based), while the **cull volume** and the **view slice** remove cells inside `BuildCellRenderData()` before anything is built at all. Also here: render profiles on F1–F4, Ghost Shape, and the F10 photograph. → **`docs/rendering.md`** (renderer, cuts, profiles, photo) and **`docs/cell-color-and-filters.md`** (colour ramps, age filter, per-instance data, measured chunking cost)
+- **`Automata/Rendering/`** — one renderer over one instanced component, with per-instance colour from an age/decay ramp. Three *independent* mechanisms decide what reaches the screen, and the terminology is worth keeping straight: **culling** hides instances after they are built (distance-based), while the **cull volume** and the **view slice** remove cells inside `BuildCellRenderData()` before anything is built at all. Also here: render profiles on F1–F4, Ghost Shape, the F10 photograph and the Shift+F10 spherical panorama (six 90° scene captures stitched to one equirectangular PNG — the face basis comes from the same rotation the face was shot with, so the stitch cannot disagree with the capture). → **`docs/rendering.md`** (renderer, cuts, profiles, photo) and **`docs/cell-color-and-filters.md`** (colour ramps, age filter, per-instance data, measured chunking cost)
 
 - **`Automata/Selection/`** + **`Automata/Meshing/`** — screen-rect marquee and ray-pick (voxel DDA — engine line traces cannot work here, all cell components have collision disabled) cell selection, the `InitialStateCells` return point behind **R**, and the face-culled mesh builder shared by baking and Ghost Shape. → **`docs/selection-and-baking.md`**
 
@@ -112,7 +112,7 @@ A class whose implementation outgrows one file is split by **responsibility into
 | `docs/grid-and-simulation.md` | chunked storage, the four neighbourhood shells, rule strings, Generations decay |
 | `docs/lattice-and-cell-shapes.md` | `FLatticeTransform`, the five tiling polyhedra, cell-mesh generation, the border UV |
 | `docs/compute-strategies.md` | CPU/GPU strategies, batched dispatch, the optimisation history and its dead ends |
-| `docs/rendering.md` | the renderer, the three cuts, render profiles, Ghost Shape, the F10 photograph |
+| `docs/rendering.md` | the renderer, the three cuts, render profiles, Ghost Shape, the F10 photograph and the Shift+F10 panorama |
 | `docs/cell-color-and-filters.md` | colour ramps and spaces, the age filter, per-instance data, chunking cost |
 | `docs/selection-and-baking.md` | marquee and ray-pick selection, `InitialStateCells`, baking to one mesh |
 | `docs/generation.md` | geometric generators, FCC/BCC parity, neighbour-count analysis, the overload guard |

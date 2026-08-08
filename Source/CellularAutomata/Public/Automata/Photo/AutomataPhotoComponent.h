@@ -49,6 +49,16 @@ public:
 	 *  что-либо остановлено или переключено. */
 	void TakePhotoShot();
 
+	/** Снять сферическую панораму 360x180 из точки камеры - см. doc-comment
+	 *  AAutomataOrchestrator::TakePanoramaShot().
+	 *
+	 *  В отличие от TakePhotoShot() выполняется ЦЕЛИКОМ за один вызов и тик
+	 *  компонента не включает: захват сцены рисуется по требованию
+	 *  (CaptureScene()), а чтение пикселей и так дожидается видеокарты, так что
+	 *  ждать появления файла между кадрами нечего - файл уже записан к моменту
+	 *  возврата. Из-за этого же вызов блокирующий: на 8192 это единицы секунд. */
+	void TakePanoramaShot();
+
 	/** Идёт ли съёмка прямо сейчас - для HUD и на случай повторного нажатия. */
 	bool IsPhotoShotInProgress() const { return PhotoShotIssuedSeconds > 0.0; }
 
@@ -75,8 +85,46 @@ private:
 	 *  превышает предел RHI. Чистая проверка, без побочных эффектов. */
 	bool ValidateResolution(AAutomataOrchestrator& Orchestrator, int32& OutWidth, int32& OutHeight) const;
 
+	// --- Панорама (см. TakePanoramaShot()) ---
+
+	/** Шесть граней куба: направление взгляда и подпись для лога. Базис для
+	 *  сшивки НЕ хранится - он вычисляется из этого же поворота, см.
+	 *  CapturePanoramaFace(). */
+	struct FPanoramaFace
+	{
+		FRotator Rotation;
+		const TCHAR* Name;
+	};
+
+	/** Раскладка шести граней вокруг заданного рыскания. Отдельной функцией,
+	 *  потому что список граней нужен и съёмке, и сшивке, а два списка
+	 *  разъехались бы. */
+	static void BuildPanoramaFaces(float Yaw, TArray<FPanoramaFace>& OutFaces);
+
+	/** Снимает одну грань в OutPixels (FaceSize x FaceSize) и отдаёт базис,
+	 *  которым эта грань снята: OutForward/OutRight/OutUp взяты из матрицы
+	 *  ТОГО ЖЕ поворота, что ушёл в захват. Именно поэтому сшивка не зависит от
+	 *  того, как движок нумерует грани куба, - она вообще не знает про кубы. */
+	bool CapturePanoramaFace(const FPanoramaFace& Face, const FVector& Origin, int32 FaceSize,
+		float ExposureBias, TArray<FColor>& OutPixels,
+		FVector& OutForward, FVector& OutRight, FVector& OutUp);
+
+	/** Создаёт (лениво) захват сцены и его рендер-таргет под сторону FaceSize.
+	 *  Оба транзиентные и живут между снимками - пересоздаются, только если
+	 *  сменился размер. */
+	bool EnsurePanoramaCapture(AAutomataOrchestrator& Orchestrator, int32 FaceSize);
+
 	UPROPERTY(Transient)
 	TObjectPtr<AAutomataOrchestrator> Orchestrator;
+
+	/** Захват сцены под панораму и его цель. Transient и UPROPERTY по общему
+	 *  правилу проекта: нетегированный UObject*-член после реинстансинга Live
+	 *  Coding держит мусор, а не nullptr. */
+	UPROPERTY(Transient)
+	TObjectPtr<class USceneCaptureComponent2D> PanoramaCapture;
+
+	UPROPERTY(Transient)
+	TObjectPtr<class UTextureRenderTarget2D> PanoramaTarget;
 
 	/** Момент выдачи HighResShot. Ноль означает "съёмки нет" - он же признак
 	 *  для IsPhotoShotInProgress() и условие в TickComponent(). Ставится ПЕРЕД

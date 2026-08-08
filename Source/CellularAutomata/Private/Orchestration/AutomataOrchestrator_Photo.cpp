@@ -36,3 +36,16 @@ void AAutomataOrchestrator::TakePhotoShot()
 		Component->TakePhotoShot();
 	}
 }
+
+void AAutomataOrchestrator::TakePanoramaShot()
+{
+	// Тот же компонент, что и обычный снимок, и по той же причине: панорама -
+	// это фотография, у неё тот же обряд подготовки (остановить прогон,
+	// применить профиль съёмки, убрать из кадра инструменты и вернуть их
+	// обратно). Заводить под неё второй компонент значило бы завести второй
+	// friend к оркестратору ради того же самого набора приватных членов.
+	if (UAutomataPhotoComponent* Component = EnsurePhotoComponent())
+	{
+		Component->TakePanoramaShot();
+	}
+}

@@ -689,6 +689,14 @@ void AGamePlayerController::OnTakePhotoShot()
 		return;
 	}
 
+	// Shift - сферическая панорама вместо обычного кадра. Проверка модификатора
+	// здесь, а не в маппинге, - общий для проекта приём (см. doc-comment).
+	if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
+	{
+		Orchestrator->TakePanoramaShot();
+		return;
+	}
+
 	Orchestrator->TakePhotoShot();
 }
 

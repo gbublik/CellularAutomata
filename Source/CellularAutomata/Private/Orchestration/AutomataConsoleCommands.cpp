@@ -237,6 +237,56 @@ namespace AutomataConsole
 
 		Ar.Logf(TEXT("CA.Rule: применено %s"), *Orchestrator->GetActiveRuleString());
 	}
+
+	/** CA.Panorama [ширина] [поправка экспозиции] - снять сферическую панораму.
+	 *
+	 *  Единственная в семействе команда, которая ДЕЙСТВУЕТ при пустом списке
+	 *  аргументов, а не печатает таблицу. Расхождение с соседями осознанное: у
+	 *  тех аргумент - индекс в таблице, которую иначе негде посмотреть, а здесь
+	 *  аргументов нет вовсе - есть настройки, и они видны в Details-панели. Зато
+	 *  "снять с текущими" - ровно то, ради чего команду и набирают.
+	 *
+	 *  Аргументы, если заданы, ЗАПИСЫВАЮТСЯ в настройки, а не действуют разово:
+	 *  панораму снимают подряд, подбирая размер и экспозицию, и значение,
+	 *  откатывающееся после каждого снимка, пришлось бы набирать заново каждый
+	 *  раз. */
+	void PanoramaCommand(const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
+	{
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator(Ar);
+		if (!Orchestrator)
+		{
+			return;
+		}
+
+		if (Args.Num() > 0)
+		{
+			if (!Args[0].IsNumeric())
+			{
+				Ar.Logf(ELogVerbosity::Warning, TEXT("CA.Panorama: '%s' - не число (ожидается ширина в пикселях)"), *Args[0]);
+				return;
+			}
+			Orchestrator->PanoramaWidth = FMath::Clamp(FCString::Atoi(*Args[0]), 512, 16384);
+		}
+
+		if (Args.Num() > 1)
+		{
+			if (!Args[1].IsNumeric())
+			{
+				Ar.Logf(ELogVerbosity::Warning, TEXT("CA.Panorama: '%s' - не число (ожидается поправка экспозиции, EV)"), *Args[1]);
+				return;
+			}
+			Orchestrator->PanoramaExposureBias = FCString::Atof(*Args[1]);
+		}
+
+		// Что снимаем - в консоль ДО съёмки: сама она пишет итог в лог, а человек
+		// смотрит сюда, и без этой строки непонятно, какие настройки поехали в
+		// дело (особенно после команды с аргументами, которая их поменяла).
+		Ar.Logf(TEXT("CA.Panorama: %dx%d, суперсэмпл x%d, экспозиция %+.1f EV - снимаю"),
+			Orchestrator->PanoramaWidth, Orchestrator->PanoramaWidth / 2,
+			Orchestrator->PanoramaSupersample, Orchestrator->PanoramaExposureBias);
+
+		Orchestrator->TakePanoramaShot();
+	}
 }
 
 static FAutoConsoleCommand CA_RulePresetCommand(
@@ -263,3 +313,8 @@ static FAutoConsoleCommand CA_RuleCommand(
 	TEXT("CA.Rule"),
 	TEXT("Задать правило строкой: CA.Rule 3,4/3/2/PM. Без аргумента - показать действующее."),
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::RuleCommand));
+
+static FAutoConsoleCommand CA_PanoramaCommand(
+	TEXT("CA.Panorama"),
+	TEXT("Снять сферическую панораму (то же, что Shift+F10): CA.Panorama [ширина] [поправка экспозиции, EV]. Без аргументов - с текущими настройками."),
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::PanoramaCommand));
