@@ -37,7 +37,7 @@ struct FGenerationSample
 
 /** Скользящее окно последних Capacity ЗАМЕРОВ для графика поколений на HUD -
  *  первое в проекте хранилище истории (всё остальное - FRenderTimings,
- *  FCellRenderStats, FHudStats - снимки последнего момента).
+ *  FCellRenderStats, сводки из Ui/HudStats.h - снимки последнего момента).
  *
  *  Свободные функции над чужим массивом, без UObject и без актора - тот же
  *  идиом, что CellAging/CellSelection/CellMeshBuilder, и по той же причине:

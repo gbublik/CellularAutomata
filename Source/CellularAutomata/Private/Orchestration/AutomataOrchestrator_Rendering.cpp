@@ -20,7 +20,7 @@
 // Сглаженный FPS движка - определён в UnrealEngine.cpp, без публичного
 // заголовка, объявляется локально там, где используется (тот же паттерн,
 // что и в самом движке, см. напр. EngineAnalyticsSessionSummary.cpp) - см.
-// FHudStats::CurrentFPS в Tick().
+// FHudPerformanceStats::CurrentFPS в Tick().
 extern ENGINE_API float GAverageFPS;
 
 namespace

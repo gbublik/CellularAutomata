@@ -17,134 +17,221 @@
 // Сглаженный FPS движка - определён в UnrealEngine.cpp, без публичного
 // заголовка, объявляется локально там, где используется (тот же паттерн,
 // что и в самом движке, см. напр. EngineAnalyticsSessionSummary.cpp) - см.
-// FHudStats::CurrentFPS в Tick().
+// FHudPerformanceStats::CurrentFPS в Tick().
 extern ENGINE_API float GAverageFPS;
 
 void AAutomataOrchestrator::UpdateHudStats()
 {
-	LastHudStats.bIsComputing = bStepInProgress;
-	LastHudStats.bIsRendering = bChunkedRenderInProgress;
-	LastHudStats.CurrentFPS = GAverageFPS;
-	LastHudStats.GenerationCount = GenerationCount;
-	LastHudStats.EstimatedGpuComputeUploadMB = LastGpuComputeUploadBytes / (1024.0 * 1024.0);
-	// Grid->Num() - готовый счётчик в чанках, не скан сетки (см. FDenseCellGrid),
-	// так что читать его дёшево даже на миллионах клеток.
-	LastHudStats.AliveCellCount = Grid.IsValid() ? Grid->Num() : 0;
-	LastHudStats.SelectedCellCount = SelectedCells.Num();
+	// Не чаще раза на кадр: HUD-геттеров семь, и виджет, читающий каждый из
+	// своей панели, оплачивал бы семь полных пересборок за кадр. См.
+	// doc-comment функции за тем, почему на корректность это не влияет.
+	const int64 ThisFrame = int64(GFrameCounter);
+	if (LastHudStatsFrame == ThisFrame)
+	{
+		return;
+	}
+	LastHudStatsFrame = ThisFrame;
+
+	// --- Симуляция ---
+
+	LastSimulationStats.bSimulationRunning = bSimulationRunning;
+	LastSimulationStats.bFastStepActive = bFastStepActive;
+	LastSimulationStats.bIsComputing = bStepInProgress;
+	LastSimulationStats.GenerationCount = GenerationCount;
 
 	// Заданные настройки - просто зеркалим, чтобы HUD читал ровно то же, что
 	// крутят хоткеи (+/- и T/G) и Details panel, а не хранил свою копию.
-	LastHudStats.SimulationSpeed = Speed;
-	LastHudStats.StepsPerRender = StepsPerRender;
-	LastHudStats.GenerationsPerDispatch = LastDispatchGenerations;
-	LastHudStats.CellBorderWidth = CellBorderWidth;
+	LastSimulationStats.SimulationSpeed = Speed;
+	LastSimulationStats.StepsPerRender = StepsPerRender;
+	LastSimulationStats.GenerationsPerDispatch = LastDispatchGenerations;
+
+	// Grid->Num() - готовый счётчик в чанках, не скан сетки (см. FDenseCellGrid),
+	// так что читать его дёшево даже на миллионах клеток.
+	LastSimulationStats.AliveCellCount = Grid.IsValid() ? Grid->Num() : 0;
+
+	// Действующее правило текстом. Через GetActiveRuleString(), т.е. из живых
+	// массивов, а не из UPROPERTY RuleString - см. doc-comment поля. Собирается
+	// каждый кадр, а не кэшируется на применении правила: правило меняют не
+	// только ApplyRuleString()/пресеты, но и правка массивов прямо в Details
+	// panel, а её ловить нечем - это тот же принцип "читать заново, не
+	// кэшировать", по которому живёт BuildRule(). Цена - Printf по двум
+	// массивам не длиннее 27 элементов, на фоне остального в этой сводке
+	// (оценка генератора, обход камеры) она не видна.
+	LastSimulationStats.RuleString = GetActiveRuleString();
+
+	LastSimulationStats.bAutoReseedOnExtinction = bAutoReseedOnExtinction;
+	LastSimulationStats.AutoReseedCount = AutoReseedCount;
+
+	UpdateGenerationsPerSecond();
+
+	// --- Рендер ---
+	// Зеркала живых переключателей: голые чтения полей, никаких сканов сетки.
+
+	LastHudRenderStats.bIsRendering = bChunkedRenderInProgress;
+	LastHudRenderStats.bChunkedRenderEnabled = bEnableChunkedRender;
+	LastHudRenderStats.ChunkedRenderOrder = ChunkedRenderOrder;
+	LastHudRenderStats.bWaitForChunkedRenderToFinish = bWaitForChunkedRenderToFinish;
+
+	// Профиль рендера: индекс, имя и признак "после применения что-то крутили
+	// руками" - см. FRenderPreset/ApplyRenderPreset().
+	LastHudRenderStats.RenderPresetIndex = ActiveRenderPresetIndex;
+	LastHudRenderStats.RenderPresetName = GetActiveRenderPresetName();
+	LastHudRenderStats.bRenderPresetModified = bRenderPresetModified;
+
+	LastHudRenderStats.bCellsCastShadows = bCellsCastShadows;
+	LastHudRenderStats.bBackgroundVisible = bShowBackground;
+	LastHudRenderStats.CellBorderWidth = CellBorderWidth;
+	LastHudRenderStats.bGhostShapeEnabled = bEnableGhostShape;
+	LastHudRenderStats.bGhostShapeReplacesDetailedRender = ShouldGhostShapeReplaceDetailedRender();
+
+	// --- Отсечения ---
+	// Каждая пара "включено"/"режет" считается тем же выражением, что стоит на
+	// боевом пути, а не его копией: у отсечения по расстоянию -
+	// ApplyCellCullDistances() (нулевая дистанция это движковое "выключено"),
+	// у куба - GetActiveCullVolume(), у среза - BuildCellRenderData()
+	// (плоскость задаётся камерой, без неё резать нечем).
+
+	LastCutStats.bCellCullingEnabled = bEnableCellCulling;
+	LastCutStats.bCellCullingActive = bEnableCellCulling && CellCullEndDistance > 0.0f;
+
+	// Куб: "включено" и "работает" - разные вещи (актёра может не быть на
+	// уровне вовсе). Видимость куба - третье, независимое поле: на отсечение
+	// она не влияет.
+	const ARenderCullVolume* AnyCullVolume = EnsureRenderCullVolume();
+	LastCutStats.bRenderCullVolumeEnabled = bEnableRenderCullVolume;
+	LastCutStats.bRenderCullVolumeVisible = AnyCullVolume && AnyCullVolume->IsVolumeVisible();
+	LastCutStats.bCullVolumeActive = GetActiveCullVolume() != nullptr;
+
+	FVector SliceOrigin;
+	FVector SliceForward;
+	LastCutStats.bViewSliceEnabled = bEnableViewSlice;
+	LastCutStats.bViewSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
+
+	// Через тот же аксессор, которым фильтр проверяет сам рендер, - "пустой
+	// список значит выключен" записано ровно в одном месте.
+	LastCutStats.bAgeFilterActive = IsAgeFilterActive();
+
+	// --- Производительность и память ---
+
+	LastPerformanceStats.CurrentFPS = GAverageFPS;
+	LastPerformanceStats.ComputeMethod = ComputeMethod;
+	// Только при выбранном Gpu: на Cpu откатываться не с чего, и флаг,
+	// оставшийся истинным с прошлого прогона, врал бы после переключения.
+	LastPerformanceStats.bComputeFellBackToCpu =
+		(ComputeMethod == EComputeMethod::Gpu) && bLastComputeFellBackToCpu;
+	LastPerformanceStats.EstimatedGpuComputeUploadMB = LastGpuComputeUploadBytes / (1024.0 * 1024.0);
+
+	// Память - раз в секунду, а не каждый кадр: опрос ходит к драйверу и в
+	// систему (см. RefreshMemoryStats()).
+	RefreshMemoryStats();
+
+	// --- Камера и выделение ---
 
 	// Скорость камеры - фактическая, с учётом удержания Shift (см. doc-comment
-	// FHudStats::CameraSpeed).
-	LastHudStats.CameraSpeed = 0.0f;
+	// FHudCameraStats::CameraSpeed).
+	LastCameraStats.CameraSpeed = 0.0f;
 	if (GamePC)
 	{
 		if (const APawn* FlyingPawn = GamePC->GetPawn())
 		{
 			if (const UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(FlyingPawn->GetMovementComponent()))
 			{
-				LastHudStats.CameraSpeed = Movement->MaxSpeed;
+				LastCameraStats.CameraSpeed = Movement->MaxSpeed;
 			}
 		}
 	}
 
-	// Режимы работы - зеркала живых переключателей (см. блок режимов в
-	// FHudStats). Все дёшевы: голые чтения полей, никаких сканов сетки.
-	LastHudStats.bSimulationRunning = bSimulationRunning;
-	LastHudStats.bFastStepActive = bFastStepActive;
-	LastHudStats.bSelectionModeActive = GamePC ? GamePC->IsSelectionModeActive() : false;
-	LastHudStats.bOrthographicCamera = GamePC ? GamePC->IsOrthographicCamera() : false;
-	LastHudStats.bHeadlightEnabled = GamePC ? GamePC->IsHeadlightEnabled() : false;
-	LastHudStats.bAutoReseedOnExtinction = bAutoReseedOnExtinction;
-	LastHudStats.AutoReseedCount = AutoReseedCount;
-	LastHudStats.ComputeMethod = ComputeMethod;
-	// Только при выбранном Gpu: на Cpu откатываться не с чего, и флаг,
-	// оставшийся истинным с прошлого прогона, врал бы после переключения.
-	LastHudStats.bComputeFellBackToCpu = (ComputeMethod == EComputeMethod::Gpu) && bLastComputeFellBackToCpu;
-	LastHudStats.bChunkedRenderEnabled = bEnableChunkedRender;
-	LastHudStats.ChunkedRenderOrder = ChunkedRenderOrder;
-	LastHudStats.bWaitForChunkedRenderToFinish = bWaitForChunkedRenderToFinish;
-	LastHudStats.bCellCullingEnabled = bEnableCellCulling;
-	LastHudStats.bRenderCullVolumeEnabled = bEnableRenderCullVolume;
-	LastHudStats.bViewSliceEnabled = bEnableViewSlice;
-	LastHudStats.bGhostShapeEnabled = bEnableGhostShape;
-	LastHudStats.bCellsCastShadows = bCellsCastShadows;
-	LastHudStats.bBackgroundVisible = bShowBackground;
+	LastCameraStats.bOrthographicCamera = GamePC ? GamePC->IsOrthographicCamera() : false;
+	LastCameraStats.bHeadlightEnabled = GamePC ? GamePC->IsHeadlightEnabled() : false;
+	LastCameraStats.bSelectionModeActive = GamePC ? GamePC->IsSelectionModeActive() : false;
+	LastCameraStats.SelectedCellCount = SelectedCells.Num();
 
-	// Профиль рендера: индекс, имя и признак "после применения что-то крутили
-	// руками" - см. FRenderPreset/ApplyRenderPreset().
-	LastHudStats.RenderPresetIndex = ActiveRenderPresetIndex;
-	LastHudStats.RenderPresetName = GetActiveRenderPresetName();
-	LastHudStats.bRenderPresetModified = bRenderPresetModified;
+	// --- Генератор начального состояния ---
+	// Зеркало GenerationParams плюс оценка объёма. Имя дёшево (switch по
+	// перечислению), а вот оценка у шаров считает решёточные точки точно, за
+	// O(R^2) - при радиусе в сотни клеток это миллионы операций, которым нечего
+	// делать в каждом кадре. Пересчёт раз в четверть секунды: тот же приём, что
+	// у GenerationsPerSecond и у троттлинга диагностики отсечения.
 
-	// Действующее правило текстом. Через GetActiveRuleString(), т.е. из живых
-	// массивов, а не из UPROPERTY RuleString - см. doc-comment поля. Собирается
-	// каждый тик, а не кэшируется на применении правила: правило меняют не
-	// только ApplyRuleString()/пресеты, но и правка массивов прямо в Details
-	// panel, а её ловить нечем - это тот же принцип "читать заново, не
-	// кэшировать", по которому живёт BuildRule(). Цена - Printf по двум
-	// массивам не длиннее 27 элементов, на фоне остального в этой сводке
-	// (оценка генератора, обход камеры) она не видна.
-	LastHudStats.RuleString = GetActiveRuleString();
-
-	// Генератор начального состояния - зеркало GenerationParams плюс оценка
-	// объёма. Имя дёшево (switch по перечислению), а вот оценка у шаров
-	// считает решёточные точки точно, за O(R^2) - при радиусе в сотни клеток
-	// это миллионы операций, которым нечего делать в каждом кадре. Пересчёт
-	// раз в четверть секунды: тот же приём, что у GenerationsPerSecond и у
-	// троттлинга диагностики отсечения.
-	LastHudStats.StateGeneratorName = StateGenerators::GetDisplayName(GenerationParams.Type);
+	LastGeneratorStats.StateGeneratorName = StateGenerators::GetDisplayName(GenerationParams.Type);
 
 	const double NowSeconds = FPlatformTime::Seconds();
 	if (NowSeconds - LastGeneratorEstimateSeconds >= 0.25)
 	{
 		LastGeneratorEstimateSeconds = NowSeconds;
-		LastHudStats.EstimatedGeneratorCells = StateGenerators::EstimateCellCount(GenerationParams);
+		LastGeneratorStats.EstimatedGeneratorCells = StateGenerators::EstimateCellCount(GenerationParams);
 	}
 
-	// Куб: "включено" и "работает" - разные вещи (актёра может не быть на
-	// уровне вовсе), поэтому итоговое берётся из того же GetActiveCullVolume(),
-	// что и весь рендер - HUD не повторяет условие своей копией, иначе они
-	// могли бы разойтись. Видимость куба - третье, независимое поле: на
-	// отсечение она не влияет.
-	const ARenderCullVolume* AnyCullVolume = EnsureRenderCullVolume();
-	LastHudStats.bRenderCullVolumeVisible = AnyCullVolume && AnyCullVolume->IsVolumeVisible();
-	LastHudStats.bCullVolumeActive = GetActiveCullVolume() != nullptr;
-	LastHudStats.bGhostShapeReplacesDetailedRender = ShouldGhostShapeReplaceDetailedRender();
+	// --- Звук ---
+	// Форма кривой берётся из ПОСЛЕДНЕГО измерения компонента, а не считается
+	// тут заново: мерить одно и то же дважды за кадр незачем, а главное - HUD
+	// обязан показывать ровно то, чем сейчас ведётся звук, иначе глаза и уши
+	// разошлись бы и сверять их стало бы нечем.
 
-	// Два других "режет ли на самом деле" из той же тройки индикаторов - см.
-	// bCellCullingActive/bViewSliceActive. Условия повторяют те, что стоят на
-	// боевых путях: у отсечения по расстоянию - ApplyCellCullDistances()
-	// (нулевая дистанция это движковое "выключено"), у среза -
-	// BuildCellRenderData() (плоскость задаётся камерой, без неё резать нечем).
-	LastHudStats.bCellCullingActive = bEnableCellCulling && CellCullEndDistance > 0.0f;
+	LastSonificationStats.bSonificationEnabled = bEnableSonification;
+	LastSonificationStats.SonificationPresetName = GetActiveSonificationPresetName();
+	LastSonificationStats.SonificationShapeName =
+		bEnableSonification ? GetSonificationShapeName() : FString();
 
-	FVector SliceOrigin;
-	FVector SliceForward;
-	LastHudStats.bViewSliceActive = bEnableViewSlice && GetCameraView(SliceOrigin, SliceForward);
+	FillLegacyHudStats();
+}
 
-	// Через тот же аксессор, которым фильтр проверяет сам рендер, - "пустой
-	// список значит выключен" записано ровно в одном месте.
-	LastHudStats.bAgeFilterActive = IsAgeFilterActive();
-
-	// Звук. Форма кривой берётся из ПОСЛЕДНЕГО измерения компонента, а не
-	// считается тут заново: мерить одно и то же дважды за кадр незачем, а
-	// главное - HUD обязан показывать ровно то, чем сейчас ведётся звук, иначе
-	// глаза и уши разошлись бы и сверять их стало бы нечем.
-	LastHudStats.bSonificationEnabled = bEnableSonification;
-	LastHudStats.SonificationPresetName = GetActiveSonificationPresetName();
-	LastHudStats.SonificationShapeName = bEnableSonification ? GetSonificationShapeName() : FString();
-
-	// Память - раз в секунду, а не каждый тик: опрос ходит к драйверу и в
-	// систему (см. RefreshMemoryStats()).
-	RefreshMemoryStats();
-
-	UpdateGenerationsPerSecond();
+void AAutomataOrchestrator::FillLegacyHudStats()
+{
+	// Временная копия для старой ноды GetHudStats() - удаляется целиком вместе
+	// с ней и с FHudStats, как только графы переложены на семь новых. Порядок
+	// полей повторяет порядок в FHudStats, чтобы удалять было видно построчно.
+	LastHudStats.bIsComputing = LastSimulationStats.bIsComputing;
+	LastHudStats.bIsRendering = LastHudRenderStats.bIsRendering;
+	LastHudStats.CurrentFPS = LastPerformanceStats.CurrentFPS;
+	LastHudStats.GenerationCount = LastSimulationStats.GenerationCount;
+	LastHudStats.GenerationsPerSecond = LastSimulationStats.GenerationsPerSecond;
+	LastHudStats.EstimatedGpuComputeUploadMB = LastPerformanceStats.EstimatedGpuComputeUploadMB;
+	LastHudStats.AliveCellCount = LastSimulationStats.AliveCellCount;
+	LastHudStats.SelectedCellCount = LastCameraStats.SelectedCellCount;
+	LastHudStats.SimulationSpeed = LastSimulationStats.SimulationSpeed;
+	LastHudStats.StepsPerRender = LastSimulationStats.StepsPerRender;
+	LastHudStats.GenerationsPerDispatch = LastSimulationStats.GenerationsPerDispatch;
+	LastHudStats.CameraSpeed = LastCameraStats.CameraSpeed;
+	LastHudStats.CellBorderWidth = LastHudRenderStats.CellBorderWidth;
+	LastHudStats.bSimulationRunning = LastSimulationStats.bSimulationRunning;
+	LastHudStats.bFastStepActive = LastSimulationStats.bFastStepActive;
+	LastHudStats.bSelectionModeActive = LastCameraStats.bSelectionModeActive;
+	LastHudStats.ComputeMethod = LastPerformanceStats.ComputeMethod;
+	LastHudStats.VideoMemoryUsedMB = LastPerformanceStats.VideoMemoryUsedMB;
+	LastHudStats.VideoMemoryTotalMB = LastPerformanceStats.VideoMemoryTotalMB;
+	LastHudStats.VideoMemoryLargestFreeBlockMB = LastPerformanceStats.VideoMemoryLargestFreeBlockMB;
+	LastHudStats.SystemMemoryAvailableMB = LastPerformanceStats.SystemMemoryAvailableMB;
+	LastHudStats.SystemMemoryTotalMB = LastPerformanceStats.SystemMemoryTotalMB;
+	LastHudStats.bComputeFellBackToCpu = LastPerformanceStats.bComputeFellBackToCpu;
+	LastHudStats.bChunkedRenderEnabled = LastHudRenderStats.bChunkedRenderEnabled;
+	LastHudStats.ChunkedRenderOrder = LastHudRenderStats.ChunkedRenderOrder;
+	LastHudStats.bWaitForChunkedRenderToFinish = LastHudRenderStats.bWaitForChunkedRenderToFinish;
+	LastHudStats.bCellCullingEnabled = LastCutStats.bCellCullingEnabled;
+	LastHudStats.bCellCullingActive = LastCutStats.bCellCullingActive;
+	LastHudStats.bRenderCullVolumeEnabled = LastCutStats.bRenderCullVolumeEnabled;
+	LastHudStats.bRenderCullVolumeVisible = LastCutStats.bRenderCullVolumeVisible;
+	LastHudStats.bCullVolumeActive = LastCutStats.bCullVolumeActive;
+	LastHudStats.bViewSliceEnabled = LastCutStats.bViewSliceEnabled;
+	LastHudStats.bViewSliceActive = LastCutStats.bViewSliceActive;
+	LastHudStats.bAgeFilterActive = LastCutStats.bAgeFilterActive;
+	LastHudStats.bGhostShapeEnabled = LastHudRenderStats.bGhostShapeEnabled;
+	LastHudStats.bGhostShapeReplacesDetailedRender = LastHudRenderStats.bGhostShapeReplacesDetailedRender;
+	LastHudStats.RenderPresetName = LastHudRenderStats.RenderPresetName;
+	LastHudStats.RenderPresetIndex = LastHudRenderStats.RenderPresetIndex;
+	LastHudStats.bRenderPresetModified = LastHudRenderStats.bRenderPresetModified;
+	LastHudStats.RuleString = LastSimulationStats.RuleString;
+	LastHudStats.StateGeneratorName = LastGeneratorStats.StateGeneratorName;
+	LastHudStats.EstimatedGeneratorCells = LastGeneratorStats.EstimatedGeneratorCells;
+	LastHudStats.bCellsCastShadows = LastHudRenderStats.bCellsCastShadows;
+	LastHudStats.bBackgroundVisible = LastHudRenderStats.bBackgroundVisible;
+	LastHudStats.bOrthographicCamera = LastCameraStats.bOrthographicCamera;
+	LastHudStats.bHeadlightEnabled = LastCameraStats.bHeadlightEnabled;
+	LastHudStats.bAutoReseedOnExtinction = LastSimulationStats.bAutoReseedOnExtinction;
+	LastHudStats.AutoReseedCount = LastSimulationStats.AutoReseedCount;
+	LastHudStats.bSonificationEnabled = LastSonificationStats.bSonificationEnabled;
+	LastHudStats.SonificationPresetName = LastSonificationStats.SonificationPresetName;
+	LastHudStats.SonificationShapeName = LastSonificationStats.SonificationShapeName;
 }
 
 void AAutomataOrchestrator::UpdateGenerationsPerSecond()
@@ -162,7 +249,7 @@ void AAutomataOrchestrator::UpdateGenerationsPerSecond()
 		return;
 	}
 
-	LastHudStats.GenerationsPerSecond = float((GenerationCount - LastGenerationCountSample) / Elapsed);
+	LastSimulationStats.GenerationsPerSecond = float((GenerationCount - LastGenerationCountSample) / Elapsed);
 	LastGenerationCountSample = GenerationCount;
 	LastGenerationCountSampleSeconds = Now;
 }
@@ -172,10 +259,16 @@ void AAutomataOrchestrator::ResetGenerationCounter()
 	GenerationCount = 0;
 	LastGenerationCountSample = 0;
 	LastGenerationCountSampleSeconds = FPlatformTime::Seconds();
-	LastHudStats.GenerationCount = 0;
-	LastHudStats.GenerationsPerSecond = 0.0f;
+	LastSimulationStats.GenerationCount = 0;
+	LastSimulationStats.GenerationsPerSecond = 0.0f;
 	LastGpuComputeUploadBytes = 0;
-	LastHudStats.EstimatedGpuComputeUploadMB = 0.0;
+	LastPerformanceStats.EstimatedGpuComputeUploadMB = 0.0;
+
+	// И пересборка снимка на этом кадре разрешается заново: "начать прогон
+	// заново" случается и на паузе, когда актор не тикает, а обнулённые прямо
+	// здесь поля иначе доехали бы до HUD только следующим кадром (см. отсечку
+	// по номеру кадра в UpdateHudStats()).
+	LastHudStatsFrame = INDEX_NONE;
 
 	// Новый прогон - новый график. Единственная воронка всех пяти путей
 	// "начать заново", см. doc-comment функции.
@@ -355,22 +448,22 @@ void AAutomataOrchestrator::RefreshMemoryStats()
 	FTextureMemoryStats TextureStats;
 	RHIGetTextureMemoryStats(TextureStats);
 
-	LastHudStats.VideoMemoryUsedMB =
+	LastPerformanceStats.VideoMemoryUsedMB =
 		double(TextureStats.StreamingMemorySize + TextureStats.NonStreamingMemorySize) / BytesPerMB;
 
 	// -1 означает "драйвер не сказал", и превращать это в отрицательные
 	// мегабайты нельзя: ноль читается виджетом как "неизвестно".
-	LastHudStats.VideoMemoryTotalMB = TextureStats.TotalGraphicsMemory > 0
+	LastPerformanceStats.VideoMemoryTotalMB = TextureStats.TotalGraphicsMemory > 0
 		? double(TextureStats.TotalGraphicsMemory) / BytesPerMB
 		: 0.0;
 
-	LastHudStats.VideoMemoryLargestFreeBlockMB = TextureStats.LargestContiguousAllocation > 0
+	LastPerformanceStats.VideoMemoryLargestFreeBlockMB = TextureStats.LargestContiguousAllocation > 0
 		? double(TextureStats.LargestContiguousAllocation) / BytesPerMB
 		: 0.0;
 
 	// Оперативная память - по системе целиком, а не по процессу: массив
 	// кандидатов CPU-пути упирается именно в физическую память машины.
 	const FPlatformMemoryStats MemoryStats = FPlatformMemory::GetStats();
-	LastHudStats.SystemMemoryAvailableMB = double(MemoryStats.AvailablePhysical) / BytesPerMB;
-	LastHudStats.SystemMemoryTotalMB = double(MemoryStats.TotalPhysical) / BytesPerMB;
+	LastPerformanceStats.SystemMemoryAvailableMB = double(MemoryStats.AvailablePhysical) / BytesPerMB;
+	LastPerformanceStats.SystemMemoryTotalMB = double(MemoryStats.TotalPhysical) / BytesPerMB;
 }

@@ -430,7 +430,7 @@ void AAutomataOrchestrator::SetCellCullingEnabled(bool bEnabled)
 {
 	bEnableCellCulling = bEnabled;
 	// Настройка принадлежит профилю рендера - раз её тронули руками, профиль в
-	// HUD больше не описывает то, что на экране (см. FHudStats::bRenderPresetModified).
+	// HUD больше не описывает то, что на экране (см. FHudRenderStats::bRenderPresetModified).
 	bRenderPresetModified = true;
 	UE_LOG(LogTemp, Log, TEXT("SetCellCullingEnabled: отсечение клеток по расстоянию %s"), bEnabled ? TEXT("включено") : TEXT("выключено"));
 

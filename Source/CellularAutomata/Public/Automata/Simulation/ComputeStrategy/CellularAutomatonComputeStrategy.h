@@ -80,7 +80,7 @@ public:
 	virtual bool SupportsStepBatching(const FCellularAutomatonRule& Rule) const { return false; }
 
 	/** Простая оценка объёма данных, загруженных в GPU-буфер на последнем
-	 *  Step() (см. AAutomataOrchestrator::FHudStats::EstimatedGpuComputeUploadMB) -
+	 *  Step() (см. FHudPerformanceStats::EstimatedGpuComputeUploadMB) -
 	 *  0 по умолчанию (честный ответ "нет такой загрузки", а не то же
 	 *  число, посчитанное иначе) - CPU-стратегия ничего не грузит в GPU для
 	 *  расчёта, так что не переопределяет. FGpuComputeStrategy переопределяет

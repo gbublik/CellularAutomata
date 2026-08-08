@@ -62,7 +62,7 @@ Actor/controller composition, not a monolithic GameMode:
 
 - **`Automata/Sonification/`** — the simulation is **sonified**, not scored: sound is another instrument alongside the generation graph, and the ear catches periodicity and collapse before the eye does. Everything is measured in `y = ln(1 + AliveCount)` against the **generation number** — that one change of coordinates makes the slope a *relative* growth rate (identical for 100 cells and 7M), keeps a dead grid inside the domain, and survives the holes that `StepsPerRender` and GPU batching punch into the sample series. Curvature is dimensionless on purpose: it scales as the *square* of the slope, so any absolute threshold either always fires or never does. C++ ships parameters and triggers; **the MetaSound graph is built by hand in the editor and is not mine to write** — the same split as the UMG HUD. Events are detected by **edges, with no hooks in the orchestrator at all**. → **`docs/sonification.md`**
 
-- **`Ui/`** — the HUD. C++ supplies data (`FHudStats`, `FCellRenderStats`) and actions as Blueprint API; **the layout is built by hand in UMG and is not mine to write**. A UMG widget never sees a keypress, so anything the HUD must react to needs a `BlueprintImplementableEvent` bridge. → **`docs/hud.md`**
+- **`Ui/`** — the HUD. C++ supplies data (seven per-subsystem summaries in `Ui/HudStats.h` — simulation, render, cuts, performance, camera, generator, sonification — plus `FCellRenderStats`) and actions as Blueprint API; **the layout is built by hand in UMG and is not mine to write**. A UMG widget never sees a keypress, so anything the HUD must react to needs a `BlueprintImplementableEvent` bridge. → **`docs/hud.md`**
 
 ### Conventions that apply everywhere
 
@@ -118,7 +118,7 @@ A class whose implementation outgrows one file is split by **responsibility into
 | `docs/generation.md` | geometric generators, FCC/BCC parity, neighbour-count analysis, the overload guard |
 | `docs/capture.md` | PNG slice rasterisation, series capture, tiling, capture presets |
 | `docs/persistence.md` | the `.casave` format and what it deliberately does not store |
-| `docs/hud.md` | `FHudStats`, the Blueprint API surface, the generation-graph Slate widget |
+| `docs/hud.md` | the seven HUD summaries, the Blueprint API surface, the generation-graph Slate widget |
 | `docs/sonification.md` | the audio bridge, the log-space curve measurement, the MetaSound contract |
 | `docs/testing.md` | what each automation test guards |
 | `docs/tooling.md` | the MCP bridge, the hot-patch loop, Live Coding crash modes |

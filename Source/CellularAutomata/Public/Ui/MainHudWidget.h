@@ -13,7 +13,7 @@ class AAutomataOrchestrator;
  * визуал (статус-бар, кнопки, панели) собирается Blueprint-наследником в
  * UMG Designer, этот класс даёт только резолв оркестратора и
  * Blueprint-доступные данные (GetOrchestrator()/GetOrchestrator()->
- * GetHudStats()).
+ * GetSimulationStats() и соседние сводки, см. Ui/HudStats.h).
  *
  * Резолвит AAutomataOrchestrator сам через GetActorOfClass() (тот же
  * идиом, что весь проект - ARenderCullVolume, AGamePlayerController и

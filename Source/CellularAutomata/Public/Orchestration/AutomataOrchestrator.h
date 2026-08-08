@@ -1702,7 +1702,7 @@ public:
 	 *  означает клик - выбрать клетку или переставить куб на чанк (клеток на
 	 *  экране в этом режиме нет вовсе, см. MoveCullVolumeToChunkUnderCursor()).
 	 *  Наружу это состояние и так уже отдаётся в
-	 *  FHudStats::bGhostShapeReplacesDetailedRender. */
+	 *  FHudRenderStats::bGhostShapeReplacesDetailedRender. */
 	bool ShouldGhostShapeReplaceDetailedRender();
 
 	/** Срез вдоль взгляда - показывать только клетки, лежащие в слое,
@@ -2098,8 +2098,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
 	bool IsChunkedRenderInProgress() const { return bChunkedRenderInProgress; }
 
-	/** Сводка для HUD (см. doc-comment FHudStats). Пересобирает снимок ПЕРЕД
-	 *  выдачей, а не только отдаёт посчитанное в Tick() - и поэтому НЕ const.
+	/** Семь сводок для HUD, по одной на подсистему - см. общий doc-comment в
+	 *  Ui/HudStats.h за раскладкой полей и за тем, почему одна структура на
+	 *  полсотни полей была разобрана на эти семь.
+	 *
+	 *  Все семь геттеров устроены одинаково и НЕ const: каждый пересобирает
+	 *  снимок ПЕРЕД выдачей, а не только отдаёт посчитанное в Tick().
 	 *
 	 *  Иначе HUD врёт всякий раз, когда состояние меняется, а актор не тикает:
 	 *  тик включается только Start()/StartFastStep() и выключается Stop()
@@ -2110,11 +2114,50 @@ public:
 	 *  здесь закрывает все такие пути разом, вместо того чтобы дописывать
 	 *  вызов в каждый из них и забыть в следующем.
 	 *
-	 *  Дёшево даже при нескольких биндингах виджета на кадр: все поля - это
-	 *  либо чтение уже готовых значений, либо Grid->Num() (счётчик в чанках,
-	 *  O(1)); единственный нетривиальный кусок, UpdateGenerationsPerSecond(),
-	 *  сам себя ограничивает окном в секунду. */
+	 *  Пересборка при этом одна на кадр, а не одна на вызов: UpdateHudStats()
+	 *  сама отсекает повторные заходы по номеру кадра. До разбиения нода была
+	 *  одна и пересобирала снимок на каждый вызов; теперь их семь, и виджет,
+	 *  дёргающий каждую из своей панели, обошёлся бы в семь полных пересборок
+	 *  за кадр вместо одной - см. UpdateHudStats(). */
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudSimulationStats& GetSimulationStats() { UpdateHudStats(); return LastSimulationStats; }
+
+	/** Рендер: разлив по кадрам, профиль, тени, фон, силуэт. Имя с "Hud", чтобы
+	 *  не путалось с GetLastRenderStats() - та отдаёт FCellRenderStats, замер
+	 *  последней сборки инстансов (сколько нарисовано из скольких), а это
+	 *  зеркало настроек рендера. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudRenderStats& GetHudRenderStats() { UpdateHudStats(); return LastHudRenderStats; }
+
+	/** Четыре отсечения и их индикаторы "режет прямо сейчас". */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudCutStats& GetCutStats() { UpdateHudStats(); return LastCutStats; }
+
+	/** Кадры, метод расчёта и память. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudPerformanceStats& GetPerformanceStats() { UpdateHudStats(); return LastPerformanceStats; }
+
+	/** Камера, ортопроекция, фара, режим мыши и выделение. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudCameraStats& GetCameraStats() { UpdateHudStats(); return LastCameraStats; }
+
+	/** Что построит Y и во сколько клеток это обойдётся. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudGeneratorStats& GetGeneratorStats() { UpdateHudStats(); return LastGeneratorStats; }
+
+	/** Озвучивание: включено ли, какой пресет, какая форма кривой. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
+	const FHudSonificationStats& GetSonificationStats() { UpdateHudStats(); return LastSonificationStats; }
+
+	/** УСТАРЕЛА - разобрана на семь геттеров выше (см. doc-comment FHudStats).
+	 *
+	 *  Оставлена рабочей только затем, чтобы графы в WBP_MainHud не сломались в
+	 *  тот же коммит, в котором появились новые ноды: значения она берёт из тех
+	 *  же семи структур через FillLegacyHudStats(), своего источника данных у
+	 *  неё нет. Удаляется вместе с FHudStats/LastHudStats/FillLegacyHudStats(),
+	 *  как только последний провод переложен. */
+	UFUNCTION(BlueprintPure, Category = "Automata|HUD",
+		meta = (DeprecatedFunction, DeprecationMessage = "Разобрана по подсистемам: GetSimulationStats(), GetHudRenderStats(), GetCutStats(), GetPerformanceStats(), GetCameraStats(), GetGeneratorStats(), GetSonificationStats()."))
 	const FHudStats& GetHudStats() { UpdateHudStats(); return LastHudStats; }
 
 	/** Скользящее окно замеров для графика поколений (UGenerationGraphWidget) -
@@ -3132,11 +3175,11 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAutomataSonifierComponent> Sonifier;
 	/** После применения профиля что-то из его настроек поменяли вручную - см.
-	 *  FHudStats::bRenderPresetModified. Ставится в самих сеттерах настроек,
+	 *  FHudRenderStats::bRenderPresetModified. Ставится в самих сеттерах настроек,
 	 *  которыми профиль владеет, и сбрасывается в конце ApplyRenderPreset(). */
 	UPROPERTY(Transient)
 	bool bRenderPresetModified = false;
-	/** Когда последний раз пересчитывали FHudStats::EstimatedGeneratorCells.
+	/** Когда последний раз пересчитывали FHudGeneratorStats::EstimatedGeneratorCells.
 	 *  Оценка для шаров считает решёточные точки точно, за O(R^2), поэтому
 	 *  обновляется по таймеру, а не каждый тик. */
 	UPROPERTY(Transient)
@@ -3468,31 +3511,66 @@ private:
 	 *  следующем рендере). */
 	FCellRenderStats LastRenderStats;
 
-	/** См. GetHudStats()/FHudStats. UPROPERTY (не плайн член, в отличие от
-	 *  LastRenderStats выше) - FHudStats это USTRUCT, а её GenerationCount/
-	 *  GenerationsPerSecond должны переживать реинстансинг Live Coding
-	 *  между кадрами (иначе, в отличие от LastRenderStats, они не
-	 *  пересчитываются каждый рендер - только раз в секунду и на шаге). */
+	/** Семь сводок для HUD - см. геттеры GetSimulationStats() и соседние.
+	 *
+	 *  Все UPROPERTY (не плайн-члены, в отличие от LastRenderStats выше): это
+	 *  USTRUCT'ы, а GenerationCount/GenerationsPerSecond и накопленные счётчики
+	 *  должны переживать реинстансинг Live Coding между кадрами - они, в отличие
+	 *  от LastRenderStats, пересчитываются не каждый рендер, а раз в секунду и
+	 *  на шаге. */
+	UPROPERTY(Transient)
+	FHudSimulationStats LastSimulationStats;
+
+	UPROPERTY(Transient)
+	FHudRenderStats LastHudRenderStats;
+
+	UPROPERTY(Transient)
+	FHudCutStats LastCutStats;
+
+	UPROPERTY(Transient)
+	FHudPerformanceStats LastPerformanceStats;
+
+	UPROPERTY(Transient)
+	FHudCameraStats LastCameraStats;
+
+	UPROPERTY(Transient)
+	FHudGeneratorStats LastGeneratorStats;
+
+	UPROPERTY(Transient)
+	FHudSonificationStats LastSonificationStats;
+
+	/** УСТАРЕЛА - см. GetHudStats()/FHudStats. Заполняется из семи структур
+	 *  выше в FillLegacyHudStats(), собственных данных не имеет. */
 	UPROPERTY(Transient)
 	FHudStats LastHudStats;
 
+	/** Копирует семь новых сводок в LastHudStats - вся совместимость со старой
+	 *  нодой собрана в одну функцию именно затем, чтобы удаление свелось к
+	 *  удалению этой функции, её вызова и самой структуры.
+	 *
+	 *  Направление копирования принципиально: источник правды - новые
+	 *  структуры, старая только зеркалит. Наоборот (заполнять старую, а из неё
+	 *  раздавать) было бы двумя копиями с возможностью разъехаться на любом
+	 *  поле, которое забудут переложить. */
+	void FillLegacyHudStats();
+
 	/** Байты последнего GPU-compute входного буфера (см.
-	 *  FHudStats::EstimatedGpuComputeUploadMB) - обновляется в
+	 *  FHudPerformanceStats::EstimatedGpuComputeUploadMB) - обновляется в
 	 *  ApplyStepResult() (Play/автошаг) и в завершении Next() (ручной шаг),
-	 *  читается в Tick() в LastHudStats. 0, если последний шаг считался на
-	 *  CPU или сетка ещё не запускалась. */
+	 *  читается в Tick() в LastPerformanceStats. 0, если последний шаг считался
+	 *  на CPU или сетка ещё не запускалась. */
 	int64 LastGpuComputeUploadBytes = 0;
 
 	/** Последний шаг посчитан на CPU, хотя выбран Gpu - см.
 	 *  FCellularAutomatonComputeStrategy::DidLastStepFallBackToCpu(). Снимается
 	 *  там же и тем же путём, что LastGpuComputeUploadBytes выше, и уходит в
-	 *  FHudStats::bComputeFellBackToCpu. */
+	 *  FHudPerformanceStats::bComputeFellBackToCpu. */
 	bool bLastComputeFellBackToCpu = false;
 
 	/** Момент последнего опроса памяти для HUD (см. RefreshMemoryStats()). */
 	double LastMemoryStatsSeconds = 0.0;
 
-	/** Обновляет поля памяти в LastHudStats - но не чаще раза в
+	/** Обновляет поля памяти в LastPerformanceStats - но не чаще раза в
 	 *  MemoryStatsIntervalSeconds.
 	 *
 	 *  Прореживание не преждевременная оптимизация: и RHIGetTextureMemoryStats(),
@@ -3525,7 +3603,7 @@ private:
 	 *  правилами работы с этим массивом и GetGenerationSamples() за чтением.
 	 *
 	 *  UPROPERTY(Transient), а не плайн-член как LastRenderStats, по той же
-	 *  причине, что и LastHudStats: историю невозможно пересчитать на следующем
+	 *  причине, что и сводки HUD: историю невозможно пересчитать на следующем
 	 *  рендере, она копится, и реинстансинг Live Coding посреди прогона стёр бы
 	 *  её насовсем.
 	 *
@@ -3553,14 +3631,39 @@ private:
 	 *  ровно та диагностика, ради которой график и делается. */
 	void NoteRenderedCells(int32 RenderedCount);
 
-	/** Раз в секунду (не каждый кадр) пересчитывает LastHudStats.
-	 *  GenerationsPerSecond из GenerationCount - вызывается из UpdateHudStats(). */
+	/** Раз в секунду (не каждый кадр) пересчитывает
+	 *  FHudSimulationStats::GenerationsPerSecond из GenerationCount -
+	 *  вызывается из UpdateHudStats(). */
 	void UpdateGenerationsPerSecond();
 
-	/** Пересобирает LastHudStats из текущего состояния. Зовётся и из Tick()
-	 *  (пока симуляция идёт), и из самого GetHudStats() - см. его doc-comment
-	 *  за тем, почему одного Tick() недостаточно. */
+	/** Пересобирает все сводки для HUD из текущего состояния. Зовётся и из
+	 *  Tick() (пока симуляция идёт), и из каждого HUD-геттера - см. их
+	 *  doc-comment за тем, почему одного Tick() недостаточно.
+	 *
+	 *  Не чаще раза на кадр: первый заход запоминает номер кадра, остальные
+	 *  выходят сразу. Пока нода была одна, пересборка на каждый вызов ничего не
+	 *  стоила; с семью нодами виджет, читающий каждую из своей панели, оплачивал
+	 *  бы семь полных пересборок за кадр - включая Printf правила и обход пешки
+	 *  за скоростью камеры.
+	 *
+	 *  Что отсечка стоит, стоит знать точно. Пока актор тикает, снимок делает
+	 *  Tick() в начале кадра, а завершение шага может лечь в тот же кадр уже
+	 *  после него - тогда счётчик поколений на экране отстанет ровно на один
+	 *  кадр. Это и есть вся цена, и она не видна: числа и так меняются с частотой
+	 *  кадров. Случай же, ради которого геттеры вообще пересобирают снимок,
+	 *  отсечкой не затронут - когда актор НЕ тикает (Play остановлен), первый
+	 *  геттер кадра как раз и оказывается тем самым первым заходом. */
 	void UpdateHudStats();
+
+	/** Номер кадра последней пересборки сводок (см. UpdateHudStats()).
+	 *
+	 *  int64, а не uint64 GFrameCounter: UPROPERTY беззнаковых 64-битных не
+	 *  поддерживает, а UPROPERTY тут нужен по той же причине, что и у самих
+	 *  сводок - иначе реинстансинг Live Coding оставит мусор, который случайно
+	 *  совпадёт с текущим кадром, и один кадр HUD покажет чужой снимок.
+	 *  INDEX_NONE - "ещё ни разу", такого номера кадра не бывает. */
+	UPROPERTY(Transient)
+	int64 LastHudStatsFrame = INDEX_NONE;
 
 	/** Сбрасывает GenerationCount, точку отсчёта GenerationsPerSecond и историю
 	 *  графика (GenerationSamples) в 0 - общий код для всех мест, начинающих

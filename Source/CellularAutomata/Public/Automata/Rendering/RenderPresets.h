@@ -7,7 +7,7 @@
  *  AAutomataOrchestrator::GetRenderPresets()/ApplyRenderPreset(), хоткеи F1-F4).
  *
  *  USTRUCT(BlueprintType) с BlueprintReadOnly-полями - тот же идиом, что
- *  FRulePreset/FHudStats: таблицу читает UMG-виджет, а не только нативный код,
+ *  FRulePreset/сводок HUD: таблицу читает UMG-виджет, а не только нативный код,
  *  и менять её из Blueprint нельзя (пресеты - константы кода, не состояние
  *  актора).
  *
@@ -25,7 +25,7 @@ struct FRenderPreset
 {
 	GENERATED_BODY()
 
-	/** Отображаемое имя - оно же уходит в HUD (FHudStats::RenderPresetName). */
+	/** Отображаемое имя - оно же уходит в HUD (FHudRenderStats::RenderPresetName). */
 	UPROPERTY(BlueprintReadOnly, Category = "Automata|Rendering")
 	FString Name;
 

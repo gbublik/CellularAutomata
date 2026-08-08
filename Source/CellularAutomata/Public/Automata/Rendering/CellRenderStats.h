@@ -19,7 +19,7 @@
  *  (UMainHudWidget) через GetLastRenderStats(), без дублирования подсчёта
  *  и риска разъехаться в цифрах между логом и экраном - тот же идиом, что
  *  FRenderTimings у FInstancedMeshCellGridRenderer. USTRUCT(BlueprintType) -
- *  т.к. читает Blueprint-виджет, не только нативный код (см. FHudStats
+ *  т.к. читает Blueprint-виджет, не только нативный код (см. сводки
  *  в Ui/HudStats.h за тем же решением). */
 USTRUCT(BlueprintType)
 struct FCellRenderStats

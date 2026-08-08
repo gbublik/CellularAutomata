@@ -97,7 +97,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// HUD-сводка (см. FHudStats) обновляется каждый тик, ДО веток
+	// HUD-сводки (см. Ui/HudStats.h) обновляются каждый тик, ДО веток
 	// bFastStepActive/!bSimulationRunning ниже (у обеих есть ранний return) -
 	// HUD должен показывать FPS/занятость даже когда симуляция на паузе, не
 	// только пока Play/автошаг активны.

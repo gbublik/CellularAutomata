@@ -166,7 +166,7 @@ private:
 	void DetectAndFireEvents(int32 AliveCount, int64 Generation, int32 AutoReseedCount,
 		bool bRunning, double NowSeconds);
 
-	void PushBedParameters(const FHudStats& Stats, float DeltaSeconds, double NowSeconds);
+	void PushBedParameters(const FHudSimulationStats& Stats, float DeltaSeconds, double NowSeconds);
 
 	/** Триггер с проверкой, что компонент играет: движок глотает его молча, и
 	 *  без этой проверки "событие не слышно" было бы неотлаживаемо. */

@@ -8,7 +8,7 @@
  *  AAutomataOrchestrator::GetRulePresets()/ApplyRulePreset()).
  *
  *  USTRUCT(BlueprintType) с BlueprintReadOnly-полями - ровно тот же идиом,
- *  что FHudStats/FCellRenderStats: таблицу читает UMG-виджет, а не только
+ *  что у сводок HUD/FCellRenderStats: таблицу читает UMG-виджет, а не только
  *  нативный код, и менять её из Blueprint нельзя (пресеты - константы кода,
  *  не состояние актора).
  *

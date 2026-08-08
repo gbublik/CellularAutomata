@@ -236,7 +236,10 @@ void UAutomataSonifierComponent::TickComponent(float DeltaTime, ELevelTick TickT
 		return;
 	}
 
-	const FHudStats& Stats = Owner->GetHudStats();
+	// Из сводки симуляции: всё, чем ведётся звук, - это численность, номер
+	// поколения, частота и признаки "идёт/считает". Ни рендера, ни памяти, ни
+	// камеры звук не касается, поэтому и читается одна структура, а не все семь.
+	const FHudSimulationStats& Stats = Owner->GetSimulationStats();
 	const double Now = FPlatformTime::Seconds();
 
 	LastFeatures = SonificationCurve::ComputeFeatures(Owner->GetGenerationSamples(),
@@ -316,7 +319,7 @@ void UAutomataSonifierComponent::DetectAndFireEvents(int32 AliveCount, int64 Gen
 	bLastRunning = bRunning;
 }
 
-void UAutomataSonifierComponent::PushBedParameters(const FHudStats& Stats, float DeltaSeconds,
+void UAutomataSonifierComponent::PushBedParameters(const FHudSimulationStats& Stats, float DeltaSeconds,
 	double NowSeconds)
 {
 	AAutomataOrchestrator* Owner = ResolveOrchestrator();

@@ -440,7 +440,7 @@ void AAutomataOrchestrator::Next()
 
 			// Снимаем ещё здесь, в фоновом потоке, пока ComputeStrategy жива -
 			// она уничтожится вместе с этой лямбдой, дальше её не будет
-			// (см. FHudStats::EstimatedGpuComputeUploadMB). Отражает только
+			// (см. FHudPerformanceStats::EstimatedGpuComputeUploadMB). Отражает только
 			// ПОСЛЕДНИЙ из NumSteps шагов - для HUD-индикатора этого достаточно.
 			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
 			// Тут же и по той же причине: стратегия уничтожится вместе с лямбдой.
@@ -624,7 +624,7 @@ void AAutomataOrchestrator::StepAsync()
 			const double StepSeconds = FPlatformTime::Seconds() - StepStartSeconds;
 
 			// Снимаем ещё здесь, пока ComputeStrategy жива (уничтожится вместе
-			// с этой лямбдой) - см. FHudStats::EstimatedGpuComputeUploadMB.
+			// с этой лямбдой) - см. FHudPerformanceStats::EstimatedGpuComputeUploadMB.
 			const int64 ComputeUploadBytes = ComputeStrategy->GetLastComputeUploadBytes();
 			// Тут же и по той же причине: стратегия уничтожится вместе с лямбдой.
 			const bool bFellBackToCpu = ComputeStrategy->DidLastStepFallBackToCpu();
@@ -666,7 +666,7 @@ bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewG
 	// замедлить симуляцию ровно в StepsPerRender раз. Так интервал сам сходится
 	// к реальности за один заход - в обе стороны.
 	//
-	// И это же уходит в FHudStats::GenerationsPerDispatch - "сколько сложилось"
+	// И это же уходит в FHudSimulationStats::GenerationsPerDispatch - "сколько сложилось"
 	// рядом со "сколько попросили". Раньше присвоение стояло в ApplyStepResult(),
 	// то есть только на пути Play, и после ручного шага показывало бы несвежее;
 	// здесь его выполняют оба пути.
@@ -745,7 +745,7 @@ bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewG
 	}
 
 	// Реально посчитанные поколения - считаем для HUD независимо от того,
-	// пропустит ли вызывающий фактический рендер (см. GenerationCount/FHudStats).
+	// пропустит ли вызывающий фактический рендер (см. GenerationCount/сводки HUD).
 	GenerationCount += Generations;
 
 	// Шаг симуляции - тоже новое действие: правка, снятая с поколения, которое

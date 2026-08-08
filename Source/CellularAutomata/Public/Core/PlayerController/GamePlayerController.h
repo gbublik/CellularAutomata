@@ -31,7 +31,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Input")
 	void SetCameraControlEnabled(bool bEnable);
 
-	/** Включена ли сейчас ортогональная проекция (NumPad 5) - для FHudStats,
+	/** Включена ли сейчас ортогональная проекция (NumPad 5) - для FHudCameraStats,
 	 *  который зеркалит живые переключатели, а не хранит их копию. false, если
 	 *  камеры-менеджера ещё нет (до BeginPlay/вне PIE). */
 	UFUNCTION(BlueprintPure, Category = "Camera")

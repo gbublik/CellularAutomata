@@ -51,7 +51,7 @@ void AAutomataOrchestrator::RebuildGridFromCells(TArray<FIntVector>&& Cells)
 	Grid = CreateGrid();
 	StepsSinceLastRender = 0;
 	// Новый прогон - новый отсчёт поколений для HUD (см. GenerationCount/
-	// FHudStats/ResetGenerationCounter()).
+	// FHudSimulationStats/ResetGenerationCounter()).
 	ResetGenerationCounter();
 	// Новая сетка делает старое выделение бессмысленным (координаты уже не
 	// про эту сетку) - см. doc-comment SelectedCells в заголовке.
