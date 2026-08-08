@@ -911,7 +911,7 @@ bool AGamePlayerController::EnsureStudioLights()
 		return true;
 	}
 
-	auto MakeLight = [ControlledPawn](const TCHAR* Name, bool bCastShadows) -> UDirectionalLightComponent*
+	auto MakeLight = [ControlledPawn](const TCHAR* Name, bool bCastShadows, int32 ForwardPriority) -> UDirectionalLightComponent*
 	{
 		UDirectionalLightComponent* Light = NewObject<UDirectionalLightComponent>(ControlledPawn, Name);
 		if (!Light)
@@ -933,14 +933,29 @@ bool AGamePlayerController::EnsureStudioLights()
 		// (а при выключенном солнце - погасил бы его вовсе).
 		Light->bAtmosphereSunLight = false;
 
+		// Единственный направленный источник, которым движок считает туман,
+		// прозрачность, воду и forward-затенение, - тоже один на сцену, и трое
+		// наших за него дерутся. При равных приоритетах движок выбирает по
+		// яркости, и на экране появляется предупреждение "соревнуются несколько
+		// таких источников" - ровно оно и вылезало на всех студийных пресетах.
+		//
+		// Приоритеты РАЗНЫЕ и по убыванию ключевой -> заполняющий -> контровой:
+		// раз выбирать всё равно одного, пусть это будет тот, который
+		// отбрасывает тени, а не случайный победитель по яркости (у "Контрового"
+		// им оказался бы контровой - и туман поехал бы от него).
+		Light->SetForwardShadingPriority(ForwardPriority);
+
 		Light->SetUseTemperature(true);
 		Light->SetVisibility(false);
 		return Light;
 	};
 
-	KeyLightComponent = MakeLight(TEXT("StudioKeyLight"), /*bCastShadows=*/true);
-	FillLightComponent = MakeLight(TEXT("StudioFillLight"), /*bCastShadows=*/false);
-	RimLightComponent = MakeLight(TEXT("StudioRimLight"), /*bCastShadows=*/false);
+	// Приоритеты с запасом от нуля: у солнца уровня он дефолтный (0), и наши
+	// три обязаны стоять выше него - когда риг включён, солнце погашено, и
+	// отдавать ему туман было бы странно.
+	KeyLightComponent = MakeLight(TEXT("StudioKeyLight"), /*bCastShadows=*/true, /*ForwardPriority=*/30);
+	FillLightComponent = MakeLight(TEXT("StudioFillLight"), /*bCastShadows=*/false, /*ForwardPriority=*/20);
+	RimLightComponent = MakeLight(TEXT("StudioRimLight"), /*bCastShadows=*/false, /*ForwardPriority=*/10);
 
 	return KeyLightComponent && FillLightComponent && RimLightComponent;
 }

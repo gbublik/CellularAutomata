@@ -211,6 +211,76 @@ void AAutomataOrchestrator::ClearAllCellInstances()
 	}
 }
 
+void AAutomataOrchestrator::BuildFaceNeighborOffsets(TArray<FIntVector>& OutOffsets) const
+{
+	OutOffsets.Reset();
+
+	// ЭТО НЕ ОКРЕСТНОСТЬ ПРАВИЛА, и путать их нельзя, хотя для куба они
+	// совпадают. Правилу важно, КТО НА КОГО ВЛИЯЕТ; здесь важно, КТО КОГО
+	// ЗАСЛОНЯЕТ. Клетка не видна, когда все её грани закрыты соседями, а какие
+	// позиции граничат по грани - свойство укладки, а не автомата.
+	//
+	// Ошибка тут безопасна ровно в одну сторону: список ШИРЕ настоящих граней
+	// делает условие строже, скрывается меньше клеток, картинка остаётся
+	// верной. Список УЖЕ настоящих граней прорезал бы дыры. Поэтому неизвестная
+	// решётка - это пустой список, то есть "не скрываем ничего".
+	if (NeighborhoodShape != ELatticeNeighborhood::Shells)
+	{
+		// Форма клетки задаёт свой список смещений, и для тел, замощающих
+		// пространство, это и есть соседи по граням (у ромбододекаэдра их 12, у
+		// усечённого октаэдра 14). Осевые +-1 там соседями НЕ являются - они
+		// лежат на другой подрешётке, где всегда пусто, и проверять их значило
+		// бы не скрыть ни одной клетки.
+		OutOffsets = BuildLatticeNeighborOffsets(NeighborhoodShape);
+		return;
+	}
+
+	// Простая кубическая: шесть граней куба.
+	OutOffsets.Add(FIntVector(1, 0, 0));
+	OutOffsets.Add(FIntVector(-1, 0, 0));
+	OutOffsets.Add(FIntVector(0, 1, 0));
+	OutOffsets.Add(FIntVector(0, -1, 0));
+	OutOffsets.Add(FIntVector(0, 0, 1));
+	OutOffsets.Add(FIntVector(0, 0, -1));
+}
+
+bool AAutomataOrchestrator::IsCellEnclosed(const FIntVector& Cell, const TArray<FIntVector>& FaceOffsets,
+										   const CellVisibility::FFilter& Filter, const FBox* CullBoundsPtr) const
+{
+	if (FaceOffsets.Num() == 0)
+	{
+		return false;
+	}
+
+	for (const FIntVector& Offset : FaceOffsets)
+	{
+		const FIntVector Neighbor = Cell + Offset;
+		if (!Grid->IsAlive(Neighbor))
+		{
+			return false;
+		}
+
+		// Сосед обязан быть не просто живым, а НАРИСОВАННЫМ - иначе на
+		// плоскости среза, на грани куба отсечения и на границе фильтра по
+		// возрасту открылась бы полая внутренность. Отсечения вскрывают
+		// структуру, и это ровно то, ради чего их включают; значит и условие
+		// "меня закрывают" обязано спрашивать про видимость соседа, а не про
+		// его существование.
+		const FVector NeighborWorld = Grid->GridToWorld(Neighbor);
+		if (!Filter.PassesAge(Grid->GetAge(Neighbor)) || !Filter.PassesSlice(NeighborWorld))
+		{
+			return false;
+		}
+
+		if (CullBoundsPtr && !CullBoundsPtr->IsInsideOrOn(NeighborWorld))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
 void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& OutInstances)
 {
 	OutInstances.Reset();
@@ -234,6 +304,16 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 
 	const CellVisibility::FFilter Filter = BuildVisibilityFilter(/*bUpdateSliceCameraState=*/true);
 
+	// Оболочка: клетку, закрытую соседями со всех сторон, рисовать незачем -
+	// её не видно ни одним пикселем. Смещения соседей "по грани" считаются
+	// один раз на весь рендер (см. BuildFaceNeighborOffsets()); пустой список
+	// означает "решётка неизвестна, режем ничего" - картинка тогда прежняя.
+	TArray<FIntVector> FaceOffsets;
+	if (bRenderSurfaceOnly)
+	{
+		BuildFaceNeighborOffsets(FaceOffsets);
+	}
+
 	OutInstances.Reserve(AliveCells.Num());
 	for (const FIntVector& Cell : AliveCells)
 	{
@@ -245,6 +325,11 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 
 		const FVector World = Grid->GridToWorld(Cell);
 		if (!Filter.PassesSlice(World))
+		{
+			continue;
+		}
+
+		if (IsCellEnclosed(Cell, FaceOffsets, Filter, CullBoundsPtr))
 		{
 			continue;
 		}
