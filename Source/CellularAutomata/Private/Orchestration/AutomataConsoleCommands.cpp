@@ -22,11 +22,17 @@
  *  РЕГИСТРАЦИЯ СТАТИЧЕСКАЯ, не в BeginPlay() оркестратора: команда должна
  *  существовать и тогда, когда актора в мире нет, - иначе на пустой сцене её
  *  просто "не существует", и отличить это от опечатки в имени невозможно.
- *  Оркестратор ищется в момент вызова; не нашёлся - честная строка в лог.
+ *  Оркестратор ищется в момент вызова; не нашёлся - честная строка в ответ.
  *
  *  ВЫЗОВ БЕЗ АРГУМЕНТОВ ПЕЧАТАЕТ ТАБЛИЦУ. Это не украшение: индексы пресетов
  *  нигде больше не видны, а команда, требующая индекс и не умеющая его
- *  показать, бесполезна ровно до первого похода в исходники. */
+ *  показать, бесполезна ровно до первого похода в исходники.
+ *
+ *  Печать идёт в FOutputDevice команды, а НЕ в UE_LOG - и список, и отказы.
+ *  Вывод UE_LOG попадает в Output Log редактора, то есть не туда, куда смотрит
+ *  человек, только что набравший команду в консоли под тильдой: первый же
+ *  вопрос "а где список?" был именно об этом. В лог написанное всё равно
+ *  попадёт - консоль пишет туда сама, - но сначала оно окажется на экране. */
 namespace AutomataConsole
 {
 	/** Мир, в котором идёт игра. GetWorldContexts(), а не GWorld: в редакторе с
@@ -53,12 +59,12 @@ namespace AutomataConsole
 		return nullptr;
 	}
 
-	AAutomataOrchestrator* FindOrchestrator()
+	AAutomataOrchestrator* FindOrchestrator(FOutputDevice& Ar)
 	{
 		UWorld* World = FindGameWorld();
 		if (!World)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("CA.*: игровой мир не найден - команда работает в PIE или в игре"));
+			Ar.Logf(ELogVerbosity::Warning, TEXT("CA.*: игровой мир не найден - команда работает в PIE или в игре"));
 			return nullptr;
 		}
 
@@ -66,14 +72,14 @@ namespace AutomataConsole
 			UGameplayStatics::GetActorOfClass(World, AAutomataOrchestrator::StaticClass()));
 		if (!Orchestrator)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("CA.*: AAutomataOrchestrator не найден в мире"));
+			Ar.Logf(ELogVerbosity::Warning, TEXT("CA.*: AAutomataOrchestrator не найден в мире"));
 		}
 		return Orchestrator;
 	}
 
 	/** Разбирает индекс из первого аргумента. false - аргумента нет (вызывающий
 	 *  печатает таблицу) либо он не число. */
-	bool ParseIndex(const TArray<FString>& Args, int32 MaxIndex, int32& OutIndex)
+	bool ParseIndex(const TArray<FString>& Args, int32 MaxIndex, int32& OutIndex, FOutputDevice& Ar)
 	{
 		if (Args.Num() == 0)
 		{
@@ -82,22 +88,22 @@ namespace AutomataConsole
 
 		if (!Args[0].IsNumeric())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("CA.*: '%s' - не число"), *Args[0]);
+			Ar.Logf(ELogVerbosity::Warning, TEXT("CA.*: '%s' - не число"), *Args[0]);
 			return false;
 		}
 
 		OutIndex = FCString::Atoi(*Args[0]);
 		if (OutIndex < 0 || OutIndex >= MaxIndex)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("CA.*: индекс %d вне диапазона 0..%d"), OutIndex, MaxIndex - 1);
+			Ar.Logf(ELogVerbosity::Warning, TEXT("CA.*: индекс %d вне диапазона 0..%d"), OutIndex, MaxIndex - 1);
 			return false;
 		}
 		return true;
 	}
 
-	void RulePresetCommand(const TArray<FString>& Args)
+	void RulePresetCommand(const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 	{
-		AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator(Ar);
 		if (!Orchestrator)
 		{
 			return;
@@ -105,12 +111,12 @@ namespace AutomataConsole
 
 		const TArray<FRulePreset> Presets = Orchestrator->GetRulePresets();
 		int32 Index = 0;
-		if (!ParseIndex(Args, Presets.Num(), Index))
+		if (!ParseIndex(Args, Presets.Num(), Index, Ar))
 		{
-			UE_LOG(LogTemp, Log, TEXT("CA.RulePreset: пресеты правил (%d):"), Presets.Num());
+			Ar.Logf(TEXT("CA.RulePreset: пресеты правил (%d):"), Presets.Num());
 			for (int32 It = 0; It < Presets.Num(); ++It)
 			{
-				UE_LOG(LogTemp, Log, TEXT("  %2d  %-28s %s"), It, *Presets[It].Name, *Presets[It].RuleString);
+				Ar.Logf(TEXT("  %2d  %-28s %s"), It, *Presets[It].Name, *Presets[It].RuleString);
 			}
 			return;
 		}
@@ -118,9 +124,9 @@ namespace AutomataConsole
 		Orchestrator->ApplyRulePreset(Index);
 	}
 
-	void CellShapeCommand(const TArray<FString>& Args)
+	void CellShapeCommand(const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 	{
-		AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator(Ar);
 		if (!Orchestrator)
 		{
 			return;
@@ -128,12 +134,12 @@ namespace AutomataConsole
 
 		const TArray<FCellShapePreset> Presets = Orchestrator->GetCellShapePresets();
 		int32 Index = 0;
-		if (!ParseIndex(Args, Presets.Num(), Index))
+		if (!ParseIndex(Args, Presets.Num(), Index, Ar))
 		{
-			UE_LOG(LogTemp, Log, TEXT("CA.CellShape: формы клетки (%d):"), Presets.Num());
+			Ar.Logf(TEXT("CA.CellShape: формы клетки (%d):"), Presets.Num());
 			for (int32 It = 0; It < Presets.Num(); ++It)
 			{
-				UE_LOG(LogTemp, Log, TEXT("  %2d  %-32s граней: %d"), It, *Presets[It].Name, Presets[It].FaceCount);
+				Ar.Logf(TEXT("  %2d  %-32s граней: %d"), It, *Presets[It].Name, Presets[It].FaceCount);
 			}
 			return;
 		}
@@ -141,9 +147,9 @@ namespace AutomataConsole
 		Orchestrator->ApplyCellShapePreset(Index);
 	}
 
-	void GeneratorCommand(const TArray<FString>& Args)
+	void GeneratorCommand(const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 	{
-		AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator(Ar);
 		if (!Orchestrator)
 		{
 			return;
@@ -151,12 +157,12 @@ namespace AutomataConsole
 
 		const TArray<FStateGeneratorPreset> Presets = Orchestrator->GetStateGeneratorPresets();
 		int32 Index = 0;
-		if (!ParseIndex(Args, Presets.Num(), Index))
+		if (!ParseIndex(Args, Presets.Num(), Index, Ar))
 		{
-			UE_LOG(LogTemp, Log, TEXT("CA.Generator: пресеты генераторов (%d); второй аргумент 1 - сразу построить:"), Presets.Num());
+			Ar.Logf(TEXT("CA.Generator: пресеты генераторов (%d); второй аргумент 1 - сразу построить:"), Presets.Num());
 			for (int32 It = 0; It < Presets.Num(); ++It)
 			{
-				UE_LOG(LogTemp, Log, TEXT("  %2d  %-28s [%s]"), It, *Presets[It].Name, *Presets[It].FamilyName);
+				Ar.Logf(TEXT("  %2d  %-28s [%s]"), It, *Presets[It].Name, *Presets[It].FamilyName);
 			}
 			return;
 		}
@@ -168,9 +174,9 @@ namespace AutomataConsole
 		Orchestrator->ApplyStateGeneratorPreset(Index, bGenerateNow);
 	}
 
-	void RenderPresetCommand(const TArray<FString>& Args)
+	void RenderPresetCommand(const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 	{
-		AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator(Ar);
 		if (!Orchestrator)
 		{
 			return;
@@ -178,12 +184,12 @@ namespace AutomataConsole
 
 		const TArray<FRenderPreset> Presets = Orchestrator->GetRenderPresets();
 		int32 Index = 0;
-		if (!ParseIndex(Args, Presets.Num(), Index))
+		if (!ParseIndex(Args, Presets.Num(), Index, Ar))
 		{
-			UE_LOG(LogTemp, Log, TEXT("CA.RenderPreset: профили рендера (%d), они же F1-F4:"), Presets.Num());
+			Ar.Logf(TEXT("CA.RenderPreset: профили рендера (%d), они же F1-F4:"), Presets.Num());
 			for (int32 It = 0; It < Presets.Num(); ++It)
 			{
-				UE_LOG(LogTemp, Log, TEXT("  %2d  %s"), It, *Presets[It].Name);
+				Ar.Logf(TEXT("  %2d  %s"), It, *Presets[It].Name);
 			}
 			return;
 		}
@@ -191,9 +197,9 @@ namespace AutomataConsole
 		Orchestrator->ApplyRenderPreset(Index);
 	}
 
-	void RuleCommand(const TArray<FString>& Args)
+	void RuleCommand(const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
 	{
-		AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator(Ar);
 		if (!Orchestrator)
 		{
 			return;
@@ -204,8 +210,8 @@ namespace AutomataConsole
 			// Печатается ДЕЙСТВУЮЩЕЕ правило (GetActiveRuleString()), а не поле
 			// RuleString: то - поле ввода и хранит последнее напечатанное, что
 			// после пресета или правки массивов описывает уже другой автомат.
-			UE_LOG(LogTemp, Log, TEXT("CA.Rule: текущее правило %s"), *Orchestrator->GetActiveRuleString());
-			UE_LOG(LogTemp, Log, TEXT("CA.Rule: формат Survival/Birth/States/Neighborhood, например 3,4/3/2/PM"));
+			Ar.Logf(TEXT("CA.Rule: текущее правило %s"), *Orchestrator->GetActiveRuleString());
+			Ar.Logf(TEXT("CA.Rule: формат Survival/Birth/States/Neighborhood, например 3,4/3/2/PM"));
 			return;
 		}
 
@@ -216,35 +222,35 @@ namespace AutomataConsole
 		FString Error;
 		if (!Orchestrator->TryApplyRuleString(RuleText, Error))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("CA.Rule: %s"), *Error);
+			Ar.Logf(ELogVerbosity::Warning, TEXT("CA.Rule: %s"), *Error);
 			return;
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("CA.Rule: применено %s"), *Orchestrator->GetActiveRuleString());
+		Ar.Logf(TEXT("CA.Rule: применено %s"), *Orchestrator->GetActiveRuleString());
 	}
 }
 
 static FAutoConsoleCommand CA_RulePresetCommand(
 	TEXT("CA.RulePreset"),
 	TEXT("Применить пресет правила по индексу. Без аргумента - список пресетов."),
-	FConsoleCommandWithArgsDelegate::CreateStatic(&AutomataConsole::RulePresetCommand));
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::RulePresetCommand));
 
 static FAutoConsoleCommand CA_CellShapeCommand(
 	TEXT("CA.CellShape"),
 	TEXT("Применить форму клетки по индексу (решётка, соседство, масштаб меша). Без аргумента - список."),
-	FConsoleCommandWithArgsDelegate::CreateStatic(&AutomataConsole::CellShapeCommand));
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::CellShapeCommand));
 
 static FAutoConsoleCommand CA_GeneratorCommand(
 	TEXT("CA.Generator"),
 	TEXT("Применить пресет генератора: CA.Generator <индекс> [1 - сразу построить]. Без аргумента - список."),
-	FConsoleCommandWithArgsDelegate::CreateStatic(&AutomataConsole::GeneratorCommand));
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::GeneratorCommand));
 
 static FAutoConsoleCommand CA_RenderPresetCommand(
 	TEXT("CA.RenderPreset"),
 	TEXT("Применить профиль рендера по индексу (то же, что F1-F4). Без аргумента - список."),
-	FConsoleCommandWithArgsDelegate::CreateStatic(&AutomataConsole::RenderPresetCommand));
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::RenderPresetCommand));
 
 static FAutoConsoleCommand CA_RuleCommand(
 	TEXT("CA.Rule"),
 	TEXT("Задать правило строкой: CA.Rule 3,4/3/2/PM. Без аргумента - показать действующее."),
-	FConsoleCommandWithArgsDelegate::CreateStatic(&AutomataConsole::RuleCommand));
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::RuleCommand));
