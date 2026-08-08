@@ -39,7 +39,7 @@ namespace StateGenerators
 
 	/** Распределение числа живых соседей - см.
 	 *  FStateGeneratorParams::bAnalyzeNeighborCounts. Длина обеих таблиц -
-	 *  "число соседей + 1" для запрошенной пары (соседство, радиус), то есть
+	 *  "число соседей + 1" для запрошенной пары (окрестность, радиус), то есть
 	 *  27 для привычного Moore-26; индекс - число живых соседей. */
 	struct FNeighborHistogram
 	{
@@ -97,7 +97,7 @@ namespace StateGenerators
 	 *  сотни мегабайт). Соседство берётся то же, по которому считает
 	 *  симуляция, - это геометрия набора, а не правило: ни BirthCounts, ни
 	 *  SurvivalCounts здесь не участвуют. */
-	/** То же, но соседство задано СПИСКОМ смещений - для наборов, не
+	/** То же, но окрестность задана СПИСКОМ смещений - для наборов, не
 	 *  выражаемых оболочками (см. ELatticeNeighborhood). Версия от
 	 *  ENeighborhood делегирует сюда, так что обе меряют одним кодом. */
 	CELLULARAUTOMATA_API void AnalyzeNeighborCounts(const TArray<FIntVector>& Cells, const TArray<FIntVector>& Offsets,

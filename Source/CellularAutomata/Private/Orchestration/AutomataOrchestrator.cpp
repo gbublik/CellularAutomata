@@ -356,7 +356,7 @@ FCellularAutomatonRule AAutomataOrchestrator::BuildRule() const
 	// ЕДИНСТВЕННОЕ место, где решается, каким набором соседей считать. Это
 	// не стилистика: правило строится в трёх местах (Next(), StepAsync() и
 	// гистограмма Ctrl+Y), и если ветвление размножить, Ctrl+Y начнёт мерить
-	// одно соседство, пока симуляция идёт по другому. Расхождение без всяких
+	// одну окрестность, пока симуляция идёт по другой. Расхождение без всяких
 	// симптомов, кроме "числа выглядят неправильно без причины".
 	const TArray<FIntVector> LatticeOffsets = BuildLatticeNeighborOffsets(NeighborhoodShape);
 	if (LatticeOffsets.Num() > 0)

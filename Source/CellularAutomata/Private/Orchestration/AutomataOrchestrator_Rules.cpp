@@ -50,7 +50,7 @@ bool AAutomataOrchestrator::TryApplyRuleString(const FString& InRuleString, FStr
 
 	// Ловушка, которая иначе не даёт вообще никакого симптома, кроме "правило
 	// ведёт себя не как написано": BuildRule() предпочитает список смещений
-	// формы, когда та его задаёт, поэтому на такой решётке токен соседства из
+	// формы, когда та его задаёт, поэтому на такой решётке токен окрестности из
 	// строки разобран, записан в поле и не применён - работают только
 	// Birth/Survival/States.
 	if (NeighborhoodShape != ELatticeNeighborhood::Shells)
@@ -100,7 +100,7 @@ void AAutomataOrchestrator::ApplyRulePreset(int32 PresetIndex, bool bApplySpawnS
 		return;
 	}
 
-	// Решётка - ПЕРЕД правилом. Пресет формы выставляет в том числе соседство,
+	// Решётка - ПЕРЕД правилом. Пресет формы выставляет в том числе окрестность,
 	// так что в обратном порядке он затёр бы токен, только что разобранный из
 	// строки правила (у "Плоской жизни" это /PM - ровно то, ради чего привязка
 	// и заведена). Трогаем только если она уже не та: смена решётки
@@ -115,7 +115,7 @@ void AAutomataOrchestrator::ApplyRulePreset(int32 PresetIndex, bool bApplySpawnS
 			// Форма не применилась (её нет в таблице или она требует ещё не
 			// реализованной решётки). Правило всё равно применим - оно само по
 			// себе законно, - но сказать об этом надо: считаться оно будет не по
-			// тому соседству, которое записано в его строке.
+			// той окрестности, которая записана в его строке.
 			UE_LOG(LogTemp, Warning, TEXT("ApplyRulePreset: пресет '%s' требует форму %d, применить её не удалось - правило пойдёт на текущей решётке"),
 				*Preset.Name, static_cast<int32>(Preset.RequiredCellShape));
 		}
@@ -452,7 +452,7 @@ void AAutomataOrchestrator::SpawnRuleVerificationPattern()
 TArray<FIntVector> AAutomataOrchestrator::BuildNeighborOffsetsForAnalysis() const
 {
 	// Ровно тот же выбор, что в BuildRule(), - гистограмма обязана мерить то
-	// же соседство, по которому идёт симуляция.
+	// же окрестность, по которой идёт симуляция.
 	const TArray<FIntVector> LatticeOffsets = BuildLatticeNeighborOffsets(NeighborhoodShape);
 	return LatticeOffsets.Num() > 0 ? LatticeOffsets : FCellularAutomatonRule::BuildNeighborOffsets(Neighborhood);
 }

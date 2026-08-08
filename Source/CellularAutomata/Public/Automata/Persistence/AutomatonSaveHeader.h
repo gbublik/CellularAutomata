@@ -42,7 +42,7 @@ struct FAutomatonSaveHeader
 	ENeighborhood Neighborhood = ENeighborhood::Moore;
 
 	/** УСТАРЕВШЕЕ, только для чтения старых файлов. Недолго существовал
-	 *  отдельный радиус соседства, и нынешний ENeighborhood::VonNeumann2
+	 *  отдельный радиус окрестности, и нынешний ENeighborhood::VonNeumann2
 	 *  записывался как VonNeumann с радиусом 2. ApplySaveHeader() отображает
 	 *  эту пару обратно в VonNeumann2; без миграции такой файл загрузился бы
 	 *  как обычный VonNeumann - молча, с 6 соседями вместо 24.
