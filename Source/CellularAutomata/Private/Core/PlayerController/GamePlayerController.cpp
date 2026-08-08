@@ -2542,7 +2542,8 @@ void AGamePlayerController::OnSaveOrSaveAs()
 	// голый S должен молча уйти камере (DefaultPawn), а не сработать как
 	// сохранение.
 	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
-	if (!bCtrl)
+	const bool bAlt = IsInputKeyDown(EKeys::LeftAlt) || IsInputKeyDown(EKeys::RightAlt);
+	if (!bCtrl && !bAlt)
 	{
 		return;
 	}
@@ -2551,6 +2552,18 @@ void AGamePlayerController::OnSaveOrSaveAs()
 	if (!Orchestrator)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("OnSaveOrSaveAs: AAutomataOrchestrator не найден в мире"));
+		return;
+	}
+
+	// Alt+S - быстрое сохранение находки: новый файл, без диалога, цель Ctrl+S
+	// не перебивается. Проверяется ПЕРВЫМ и без оглядки на Ctrl: Alt тут не
+	// уточняет сохранение, а выбирает другое действие, и Ctrl+Alt+S должен
+	// делать то, что просит более специфичный модификатор, а не молча
+	// перезаписывать файл. Единственный Alt в проекте - остальные сорок
+	// хоткеев обходятся Ctrl и Shift.
+	if (bAlt)
+	{
+		Orchestrator->QuickSaveFind();
 		return;
 	}
 

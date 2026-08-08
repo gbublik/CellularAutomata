@@ -289,6 +289,47 @@ void AAutomataOrchestrator::SaveState()
 	WriteStateToFile(LastSaveFilePath);
 }
 
+void AAutomataOrchestrator::QuickSaveFind()
+{
+	// Проверка своя, хотя WriteStateToFile() откажет и сама: у неё отказ уходит
+	// в лог, а быстрое сохранение нажимают не глядя в Output Log - ответ обязан
+	// появиться на экране. Пустым InitialStateCells бывает после загрузки файла
+	// старого формата (контейнер v1 не знал этого раздела) и после бейка,
+	// который освобождает сетку.
+	if (InitialStateCells.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("QuickSaveFind: нет изначального узора - сохранять нечего"));
+		ShowStatusMessage(StatusKey_QuickSave,
+			TEXT("[Alt+S] Сохранять нечего: выделите клетки и нажмите Enter"));
+		return;
+	}
+
+	// Правило в имя файла - косые на дефисы: '/' в имени незаконна, а запись
+	// "5,6-4-2-M" читается так же и уже применялась в именах находок вручную.
+	FString RuleTag = GetActiveRuleString().Replace(TEXT("/"), TEXT("-"));
+	// Остальное - на всякий случай: правило приходит из парсера и ничего
+	// подобного содержать не должно, но имя файла не то место, где стоит
+	// полагаться на "не должно".
+	RuleTag = FPaths::MakeValidFileName(RuleTag);
+
+	const FString FileName = FString::Printf(TEXT("Find_%s_gen%lld_%s.casave"),
+		*RuleTag, GenerationCount, *FDateTime::Now().ToString(TEXT("%Y.%m.%d-%H.%M.%S")));
+	const FString FilePath = FPaths::Combine(EnsureSaveDirectory(), FileName);
+
+	// bUpdateLastSavePath = false - см. doc-comment: цель тихого Ctrl+S
+	// быстрым сохранением не перебивается.
+	if (!WriteStateToFile(FilePath, false))
+	{
+		ShowStatusMessage(StatusKey_QuickSave, TEXT("[Alt+S] Находка НЕ сохранена - смотрите лог"));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("QuickSaveFind: находка сохранена (%d клеток узора, поколение %lld) -> %s"),
+		InitialStateCells.Num(), GenerationCount, *FilePath);
+	ShowStatusMessage(StatusKey_QuickSave,
+		FString::Printf(TEXT("[Alt+S] Находка сохранена: %s (поколение %lld)"), *FileName, GenerationCount));
+}
+
 void AAutomataOrchestrator::SaveStateAs()
 {
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
