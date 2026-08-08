@@ -118,6 +118,141 @@ bool AAutomataOrchestrator::ComputePlacementTarget(const FVector& RayOrigin, con
 	return true;
 }
 
+bool AAutomataOrchestrator::NudgeCellPreview(int32 ScreenRight, int32 ScreenUp)
+{
+	if (!Grid || !GamePC || !GamePC->PlayerCameraManager)
+	{
+		return false;
+	}
+
+	// Отсчёт: уже сдвинутая клетка, либо последняя, которую посчитал луч.
+	// Третьего не дано - если призрака на экране нет, двигать нечего.
+	FIntVector BaseCell;
+	FIntVector Normal;
+	if (bPreviewNudgeActive)
+	{
+		BaseCell = PreviewNudgeCell;
+		Normal = PreviewNudgeNormal;
+	}
+	else if (bHasLastPreview)
+	{
+		BaseCell = LastPreviewCell;
+		Normal = LastPreviewNormal;
+	}
+	else
+	{
+		return false;
+	}
+
+	// Экранное направление в мировое. Берём базис камеры целиком: forward нам не
+	// нужен, а right/up - это ровно те две оси экрана, вдоль которых просят
+	// шагнуть.
+	const FRotationMatrix CameraBasis(GamePC->PlayerCameraManager->GetCameraRotation());
+	const FVector Target =
+		CameraBasis.GetUnitAxis(EAxis::Y) * double(ScreenRight) +
+		CameraBasis.GetUnitAxis(EAxis::Z) * double(ScreenUp);
+	if (Target.IsNearlyZero())
+	{
+		return false;
+	}
+
+	// Кандидаты - шаги по осям решётки, кроме оси нормали: шаг вдоль неё оторвал
+	// бы призрак от грани, к которой он прилип. Нормаль нулевая (ставим в
+	// пустоту) - доступны все три оси, плоскости-то нет.
+	const FIntVector AxisSteps[6] = {
+		FIntVector(1, 0, 0), FIntVector(-1, 0, 0),
+		FIntVector(0, 1, 0), FIntVector(0, -1, 0),
+		FIntVector(0, 0, 1), FIntVector(0, 0, -1) };
+
+	const FVector BaseWorld = Grid->GetLattice().GridToWorld(BaseCell);
+
+	FIntVector BestStep = FIntVector::ZeroValue;
+	double BestDot = 0.0;
+	for (const FIntVector& Step : AxisSteps)
+	{
+		// Ось нормали вон - сравниваем по модулю, чтобы отсечь оба её знака.
+		if ((Normal.X != 0 && Step.X != 0) ||
+			(Normal.Y != 0 && Step.Y != 0) ||
+			(Normal.Z != 0 && Step.Z != 0))
+		{
+			continue;
+		}
+
+		// Направление шага считается ЧЕРЕЗ решётку, а не берётся как есть:
+		// у скошенных решёток мировое направление оси Y не совпадает с осью Y
+		// мира, и сравнивать целочисленный шаг с экраном напрямую было бы
+		// сравнением разных вещей.
+		const FVector StepWorld = Grid->GetLattice().GridToWorld(BaseCell + Step) - BaseWorld;
+		const double Dot = FVector::DotProduct(StepWorld.GetSafeNormal(), Target.GetSafeNormal());
+		if (Dot > BestDot)
+		{
+			BestDot = Dot;
+			BestStep = Step;
+		}
+	}
+
+	if (BestStep == FIntVector::ZeroValue)
+	{
+		// Все оси плоскости смотрят от экранного направления в другую сторону -
+		// бывает при взгляде почти вдоль грани. Молча ничего не делаем: сдвиг на
+		// заведомо не ту ось хуже, чем несработавшая клавиша.
+		return false;
+	}
+
+	bPreviewNudgeActive = true;
+	PreviewNudgeCell = BaseCell + BestStep;
+	PreviewNudgeNormal = Normal;
+	return true;
+}
+
+void AAutomataOrchestrator::ClearCellPreviewNudge()
+{
+	bPreviewNudgeActive = false;
+}
+
+bool AAutomataOrchestrator::ResolvePaintTarget(const FVector& RayOrigin, const FVector& RayDirection,
+											   bool bErase, FIntVector& OutCell)
+{
+	if (bPreviewNudgeActive)
+	{
+		if (!bErase)
+		{
+			OutCell = PreviewNudgeCell;
+			return true;
+		}
+
+		// Стирание при сдвинутом призраке бьёт по клетке, НА КОТОРУЮ ПРИЗРАК
+		// ОПИРАЕТСЯ, - то есть по соседу вдоль нормали. Курсор к этому моменту
+		// показывает уже в другое место, и стереть по лучу значило бы убрать
+		// клетку не там, где смотришь. Без нормали (ставили в пустоту)
+		// опираться не на что, и стирать нечего.
+		if (PreviewNudgeNormal == FIntVector::ZeroValue)
+		{
+			return false;
+		}
+		OutCell = PreviewNudgeCell - PreviewNudgeNormal;
+		return true;
+	}
+
+	if (bErase)
+	{
+		// Прежний путь: стирается та клетка, в которую попал луч.
+		FVector BoundsCenter = FVector::ZeroVector;
+		float BoundsRadius = 0.0f;
+		if (!ComputeAliveCellsBounds(BoundsCenter, BoundsRadius))
+		{
+			return false;
+		}
+
+		const FVector Direction = RayDirection.GetSafeNormal();
+		const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius
+			+ Grid->GetLattice().GetMaxCellWorldExtent();
+		return CellSelection::PickCellAlongRay(*Grid, RayOrigin, Direction, MaxDistance, OutCell);
+	}
+
+	return ComputePlacementCell(RayOrigin, RayDirection, OutCell);
+}
+
 void AAutomataOrchestrator::UpdateCellPreview(const FVector& RayOrigin, const FVector& RayDirection)
 {
 	EnsureCellPreviewComponent();
@@ -126,12 +261,35 @@ void AAutomataOrchestrator::UpdateCellPreview(const FVector& RayOrigin, const FV
 		return;
 	}
 
-	FIntVector TargetCell;
-	if (!Grid || !CellMesh || !ComputePlacementCell(RayOrigin, RayDirection, TargetCell))
+	// Сдвинутый стрелками призрак стоит там, куда его поставили, и луч больше не
+	// спрашивается вовсе - иначе он немедленно утащил бы его обратно под курсор.
+	if (bPreviewNudgeActive && Grid && CellMesh)
 	{
+		if (CellPreviewComponent->GetStaticMesh() != CellMesh)
+		{
+			CellPreviewComponent->SetStaticMesh(CellMesh);
+			CellPreviewComponent->SetMaterial(0, EnsureCellMaterialInstance());
+		}
+		CellPreviewComponent->SetWorldLocation(Grid->GetLattice().GridToWorld(PreviewNudgeCell));
+		CellPreviewComponent->SetWorldScale3D(ComputeCellMeshScale(CellPreviewScaleMultiplier));
+		CellPreviewComponent->SetVisibility(true);
+		return;
+	}
+
+	FIntVector TargetCell;
+	FIntVector FaceNormal;
+	if (!Grid || !CellMesh || !ComputePlacementTarget(RayOrigin, RayDirection, TargetCell, FaceNormal))
+	{
+		bHasLastPreview = false;
 		HideCellPreview();
 		return;
 	}
+
+	// Запоминаем показанное - от него оттолкнётся первая стрелка (см.
+	// NudgeCellPreview()).
+	LastPreviewCell = TargetCell;
+	LastPreviewNormal = FaceNormal;
+	bHasLastPreview = true;
 
 	// Меш и материал переставляем только при смене - SetStaticMesh() пересоздаёт
 	// render state, а зовётся это каждый кадр.
@@ -173,28 +331,14 @@ void AAutomataOrchestrator::PaintCellUnderCursor(const FVector& RayOrigin, const
 		return;
 	}
 
+	// Куда именно бить, решает ResolvePaintTarget() - одна воронка на призрак и
+	// на правку. Там же и разница между постановкой и стиранием: постановка
+	// липнет к грани снаружи, стирание снимает ту клетку, на которую показывают
+	// (при сдвиге стрелками - ту, на которую призрак опирается). Одна и та же
+	// грань, разные клетки, и это ровно то, чего ждёшь от пары
+	// "поставить/убрать" в воксельном редакторе.
 	FIntVector TargetCell;
-	if (bErase)
-	{
-		// Стирание бьёт по САМОЙ клетке под курсором, а не по соседней с ней:
-		// постановка липнет к грани снаружи, удаление снимает то, на что
-		// показывают. Одна и та же грань, разные клетки - и это ровно то, чего
-		// ждёшь от пары "поставить/убрать" в воксельном редакторе.
-		FVector BoundsCenter = FVector::ZeroVector;
-		float BoundsRadius = 0.0f;
-		if (!ComputeAliveCellsBounds(BoundsCenter, BoundsRadius))
-		{
-			return;
-		}
-
-		const FVector Direction = RayDirection.GetSafeNormal();
-		const double MaxDistance = FVector::Distance(RayOrigin, BoundsCenter) + BoundsRadius + Grid->GetLattice().GetMaxCellWorldExtent();
-		if (!CellSelection::PickCellAlongRay(*Grid, RayOrigin, Direction, MaxDistance, TargetCell))
-		{
-			return; // мимо всего живого - стирать нечего
-		}
-	}
-	else if (!ComputePlacementCell(RayOrigin, RayDirection, TargetCell))
+	if (!ResolvePaintTarget(RayOrigin, RayDirection, bErase, TargetCell))
 	{
 		return;
 	}

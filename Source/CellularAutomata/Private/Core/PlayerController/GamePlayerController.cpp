@@ -1724,6 +1724,8 @@ void AGamePlayerController::SetDrawModeActive(bool bActive)
 	{
 		Orchestrator->HideCellPreview();
 		Orchestrator->HideClipboardGhost();
+		// И сдвиг стрелками: он привязан к призраку, которого больше нет.
+		Orchestrator->ClearCellPreviewNudge();
 	}
 
 	// Тот же единый "режим мыши", что и у выделения: камера стоит, курсор
@@ -1801,6 +1803,24 @@ void AGamePlayerController::TickCellPainting()
 		Orchestrator->HideCellPreview();
 		Orchestrator->HideClipboardGhost();
 		return;
+	}
+
+	// Мышь главнее стрелок: стоит ей шевельнуться - призрак возвращается под
+	// курсор (см. AAutomataOrchestrator::NudgeCellPreview()). Порог в пару
+	// пикселей, а не точное сравнение: рука на мыши дрожит всегда, и без него
+	// сдвиг стрелками сбрасывался бы через кадр после нажатия, ни разу не
+	// доехав до экрана.
+	float MouseX = 0.0f;
+	float MouseY = 0.0f;
+	if (GetMousePosition(MouseX, MouseY))
+	{
+		constexpr float MoveThresholdPixels = 2.0f;
+		if (FMath::Abs(MouseX - LastDrawMouseX) + FMath::Abs(MouseY - LastDrawMouseY) > MoveThresholdPixels)
+		{
+			Orchestrator->ClearCellPreviewNudge();
+		}
+		LastDrawMouseX = MouseX;
+		LastDrawMouseY = MouseY;
 	}
 
 	// Единственное, что делает тик режима: ведёт призрак за курсором. Сами
@@ -1891,24 +1911,52 @@ void AGamePlayerController::RotateClipboard(int32 Axis, bool bClockwise)
 	}
 }
 
+void AGamePlayerController::HandleDrawArrow(int32 ScreenRight, int32 ScreenUp, int32 RotateAxis, bool bClockwise)
+{
+	if (!bDrawModeActive)
+	{
+		return;
+	}
+
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator)
+	{
+		return;
+	}
+
+	// Стрелка действует на ТОТ призрак, который сейчас на экране, - а какой из
+	// двух показан, уже решает зажатый Ctrl (см. TickDrawMode()). Правило то же
+	// самое, просто применённое к клавишам: держишь Ctrl с непустым буфером -
+	// видишь буфер и крутишь буфер; отпустил - видишь одиночную клетку и двигаешь
+	// её. Разводить это по разным клавишам не понадобилось вовсе.
+	const bool bCtrl = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+	if (bCtrl && Orchestrator->GetClipboardCellCount() > 0)
+	{
+		Orchestrator->RotateClipboard(RotateAxis, bClockwise);
+		return;
+	}
+
+	Orchestrator->NudgeCellPreview(ScreenRight, ScreenUp);
+}
+
 void AGamePlayerController::OnRotateClipboardYawLeft()
 {
-	RotateClipboard(/*Axis=*/2, /*bClockwise=*/false);
+	HandleDrawArrow(/*ScreenRight=*/-1, /*ScreenUp=*/0, /*RotateAxis=*/2, /*bClockwise=*/false);
 }
 
 void AGamePlayerController::OnRotateClipboardYawRight()
 {
-	RotateClipboard(/*Axis=*/2, /*bClockwise=*/true);
+	HandleDrawArrow(/*ScreenRight=*/1, /*ScreenUp=*/0, /*RotateAxis=*/2, /*bClockwise=*/true);
 }
 
 void AGamePlayerController::OnRotateClipboardPitchUp()
 {
-	RotateClipboard(/*Axis=*/0, /*bClockwise=*/true);
+	HandleDrawArrow(/*ScreenRight=*/0, /*ScreenUp=*/1, /*RotateAxis=*/0, /*bClockwise=*/true);
 }
 
 void AGamePlayerController::OnRotateClipboardPitchDown()
 {
-	RotateClipboard(/*Axis=*/0, /*bClockwise=*/false);
+	HandleDrawArrow(/*ScreenRight=*/0, /*ScreenUp=*/-1, /*RotateAxis=*/0, /*bClockwise=*/false);
 }
 
 void AGamePlayerController::OnRotateClipboardRollLeft()

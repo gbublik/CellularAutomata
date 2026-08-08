@@ -637,9 +637,29 @@ protected:
 	void OnRotateClipboardRollLeft();
 	void OnRotateClipboardRollRight();
 
-	/** Общее тело шести обработчиков выше: гейт по режиму рисования плюс вызов
-	 *  AAutomataOrchestrator::RotateClipboard(). Axis: 0 = X, 1 = Y, 2 = Z. */
+	/** Общее тело обработчиков поворота: гейт по режиму рисования плюс вызов
+	 *  AAutomataOrchestrator::RotateClipboard(). Axis: 0 = X, 1 = Y, 2 = Z.
+	 *  Остался за PageUp/PageDown - у крена нет экранного направления, двигать
+	 *  призрак им нечем. */
 	void RotateClipboard(int32 Axis, bool bClockwise);
+
+	/** Общее тело ЧЕТЫРЁХ стрелок в режиме рисования. Одна клавиша - два
+	 *  действия, и выбирает между ними то же условие, что решает, какой призрак
+	 *  показывать: зажатый Ctrl при непустом буфере. Держишь Ctrl - видишь буфер
+	 *  и крутишь буфер; отпустил - видишь одиночную клетку и двигаешь её по
+	 *  экранному направлению (AAutomataOrchestrator::NudgeCellPreview()).
+	 *
+	 *  Отдельной клавиши под сдвиг не понадобилось именно поэтому: правило
+	 *  "клавиша действует на то, что видно" уже было, его хватило. */
+	void HandleDrawArrow(int32 ScreenRight, int32 ScreenUp, int32 RotateAxis, bool bClockwise);
+
+	/** Положение курсора на прошлом тике режима рисования - по нему видно, что
+	 *  мышь шевельнулась и сдвиг стрелками пора отменять (см. TickDrawMode()). */
+	UPROPERTY(Transient)
+	float LastDrawMouseX = 0.0f;
+
+	UPROPERTY(Transient)
+	float LastDrawMouseY = 0.0f;
 
 	/** ПКМ (только Started) - убрать клетку под курсором в режиме рисования,
 	 *  зеркало ЛКМ, которая там же её ставит. Вне режима выходит сразу: правая
