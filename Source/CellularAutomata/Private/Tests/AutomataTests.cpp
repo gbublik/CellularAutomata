@@ -389,7 +389,7 @@ bool FNeighborhoodShellsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("размах Moore"), MooreRule.GetNeighborExtent(), 1);
 		TestEqual(TEXT("размах дальних осей"), FarRule.GetNeighborExtent(), 2);
 		TestEqual(TEXT("размах VonNeumann2"), Vn2Rule.GetNeighborExtent(), 2);
-		TestEqual(TEXT("правило построило офсеты по соседству"), Vn2Rule.GetNeighborOffsets().Num(), 24);
+		TestEqual(TEXT("правило построило офсеты по окрестности"), Vn2Rule.GetNeighborOffsets().Num(), 24);
 	}
 
 	return true;

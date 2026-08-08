@@ -201,7 +201,7 @@ bool FCpuComputeStrategy::CanStep(int32 AliveCount, int32 NeighborOffsetCount, F
 	{
 		const int64 MaxAlive = int64(MAX_int32) / SlotsPerCell;
 		OutReason = FString::Printf(
-			TEXT("кандидатов %lld (живых %d x %lld слотов) - больше, чем вмещает TArray (%d). Предел при таком соседстве: %lld живых клеток"),
+			TEXT("кандидатов %lld (живых %d x %lld слотов) - больше, чем вмещает TArray (%d). Предел при такой окрестности: %lld живых клеток"),
 			RawCandidates, AliveCount, SlotsPerCell, MAX_int32, MaxAlive);
 		return false;
 	}

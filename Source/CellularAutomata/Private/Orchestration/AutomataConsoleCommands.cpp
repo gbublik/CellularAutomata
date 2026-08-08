@@ -296,7 +296,7 @@ static FAutoConsoleCommand CA_RulePresetCommand(
 
 static FAutoConsoleCommand CA_CellShapeCommand(
 	TEXT("CA.CellShape"),
-	TEXT("Применить форму клетки по индексу (решётка, соседство, масштаб меша). Без аргумента - список."),
+	TEXT("Применить форму клетки по индексу (решётка, окрестность, масштаб меша). Без аргумента - список."),
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::CellShapeCommand));
 
 static FAutoConsoleCommand CA_GeneratorCommand(

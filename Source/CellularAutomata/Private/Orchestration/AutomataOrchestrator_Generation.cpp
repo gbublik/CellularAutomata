@@ -174,7 +174,7 @@ void AAutomataOrchestrator::WarnIfLifePatternMismatch()
 
 	if (Neighborhood != ENeighborhood::PlanarMoore)
 	{
-		Problems.Add(FString::Printf(TEXT("соседство %s, нужно PlanarMoore (плоскость XY + ось Z)"),
+		Problems.Add(FString::Printf(TEXT("окрестность %s, нужна PlanarMoore (плоскость XY + ось Z)"),
 			GetNeighborhoodDisplayName(Neighborhood)));
 	}
 

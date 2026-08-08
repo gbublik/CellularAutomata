@@ -55,7 +55,7 @@ bool AAutomataOrchestrator::TryApplyRuleString(const FString& InRuleString, FStr
 	// Birth/Survival/States.
 	if (NeighborhoodShape != ELatticeNeighborhood::Shells)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("TryApplyRuleString: активна форма клетки со своим списком соседей (%s) - соседство '%s' из строки правила не применится"),
+		UE_LOG(LogTemp, Warning, TEXT("TryApplyRuleString: активна форма клетки со своим списком соседей (%s) - окрестность '%s' из строки правила не применится"),
 			*GetLatticeNeighborhoodDisplayName(NeighborhoodShape), GetNeighborhoodDisplayName(Neighborhood));
 	}
 
@@ -546,7 +546,7 @@ void AAutomataOrchestrator::AnalyzeLiveStructure()
 		DecayNote = TEXT(" (Generations: рождения завышены - часть 'пустых' на деле угасающие и рождению не подлежат)");
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: правило %s, соседство %s (%d соседей), поколение %d"),
+	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: правило %s, окрестность %s (%d соседей), поколение %d"),
 		*GetActiveRuleString(), GetNeighborhoodDisplayName(Neighborhood),
 		Rule.GetNeighborOffsets().Num(), GenerationCount);
 	UE_LOG(LogTemp, Log, TEXT("AnalyzeLiveStructure: живых всего %d, в выборке %lld (%.1f%%, подкуб +-%d), посчитано за %.2f мс"),
