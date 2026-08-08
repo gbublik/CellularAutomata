@@ -13,6 +13,8 @@
 #include "GameFramework/DefaultPawn.h"
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Components/PointLightComponent.h"
+// Три источника студийного рига - см. RefreshStudioLights().
+#include "Components/DirectionalLightComponent.h"
 #include "Engine/LocalPlayer.h"
 // Нужен OnSelectDragFinished() - ULocalPlayer::ViewportClient разыменовывается
 // ради Viewport. В unity-сборке заголовок приходил транзитивно из соседнего
@@ -882,6 +884,134 @@ void AGamePlayerController::UpdateHeadlight()
 	}
 
 	Headlight->SetVisibility(true);
+}
+
+bool AGamePlayerController::EnsureStudioLights()
+{
+	APawn* ControlledPawn = GetPawn();
+	if (!ControlledPawn)
+	{
+		return false;
+	}
+
+	// Пешка сменилась (респавн, смена вида) - старые компоненты уехали вместе с
+	// ней. Пересоздаём, а не переприкрепляем: тот же приём, что у фары.
+	if (KeyLightComponent && KeyLightComponent->GetOwner() != ControlledPawn)
+	{
+		KeyLightComponent->DestroyComponent();
+		FillLightComponent->DestroyComponent();
+		RimLightComponent->DestroyComponent();
+		KeyLightComponent = nullptr;
+		FillLightComponent = nullptr;
+		RimLightComponent = nullptr;
+	}
+
+	if (IsValid(KeyLightComponent))
+	{
+		return true;
+	}
+
+	auto MakeLight = [ControlledPawn](const TCHAR* Name, bool bCastShadows) -> UDirectionalLightComponent*
+	{
+		UDirectionalLightComponent* Light = NewObject<UDirectionalLightComponent>(ControlledPawn, Name);
+		if (!Light)
+		{
+			return nullptr;
+		}
+
+		Light->SetupAttachment(ControlledPawn->GetRootComponent());
+		Light->RegisterComponent();
+		Light->SetMobility(EComponentMobility::Movable);
+
+		// Тени - только у ключевого. Две лишние тени от заполняющего и
+		// контрового читаются как грязь, а в UE каждая ещё и стоит отдельного
+		// прохода по всему кадру.
+		Light->SetCastShadows(bCastShadows);
+
+		// Ни один из трёх НЕ должен притворяться солнцем атмосферы: эта роль
+		// уже занята светилом уровня, и второй претендент перекрасил бы небо
+		// (а при выключенном солнце - погасил бы его вовсе).
+		Light->bAtmosphereSunLight = false;
+
+		Light->SetUseTemperature(true);
+		Light->SetVisibility(false);
+		return Light;
+	};
+
+	KeyLightComponent = MakeLight(TEXT("StudioKeyLight"), /*bCastShadows=*/true);
+	FillLightComponent = MakeLight(TEXT("StudioFillLight"), /*bCastShadows=*/false);
+	RimLightComponent = MakeLight(TEXT("StudioRimLight"), /*bCastShadows=*/false);
+
+	return KeyLightComponent && FillLightComponent && RimLightComponent;
+}
+
+void AGamePlayerController::RefreshStudioLights()
+{
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator)
+	{
+		return;
+	}
+
+	// Риг выключен - гасим то, что успели создать, и ничего не создаём: в
+	// типичной сессии студией не пользуются вовсе.
+	if (!Orchestrator->bStudioLightsEnabled)
+	{
+		if (IsValid(KeyLightComponent))
+		{
+			KeyLightComponent->SetVisibility(false);
+			FillLightComponent->SetVisibility(false);
+			RimLightComponent->SetVisibility(false);
+		}
+		return;
+	}
+
+	if (!EnsureStudioLights())
+	{
+		return;
+	}
+
+	KeyLightComponent->SetIntensity(Orchestrator->KeyLightIntensity);
+	KeyLightComponent->SetTemperature(Orchestrator->KeyLightTemperature);
+	FillLightComponent->SetIntensity(Orchestrator->FillLightIntensity);
+	FillLightComponent->SetTemperature(Orchestrator->FillLightTemperature);
+	RimLightComponent->SetIntensity(Orchestrator->RimLightIntensity);
+	RimLightComponent->SetTemperature(Orchestrator->RimLightTemperature);
+
+	KeyLightComponent->SetVisibility(true);
+	FillLightComponent->SetVisibility(true);
+	RimLightComponent->SetVisibility(true);
+
+	// Разворот сразу же, а не со следующего кадра: включение рига должно
+	// осветить сцену немедленно, в том числе когда слежение выключено и
+	// TickStudioLights() ничего делать не станет.
+	TickStudioLights();
+}
+
+void AGamePlayerController::TickStudioLights()
+{
+	if (!IsValid(KeyLightComponent) || !KeyLightComponent->IsVisible())
+	{
+		return;
+	}
+
+	// Классическая трёхточечная схема, отсчитанная ОТ ВЗГЛЯДА: ключевой сверху
+	// слева, заполняющий пониже справа, контровой сзади-сверху. Углы -
+	// константы кода, а не настройки: пресеты владеют светом, а не расстановкой
+	// (см. doc-comment FLightPreset).
+	//
+	// Складываем с поворотом камеры, а не с поворотом пешки: пешка при
+	// свободном полёте и камера - не одно и то же, а светит нам туда, куда
+	// СМОТРЯТ.
+	const FRotator ViewRotation = PlayerCameraManager
+		? PlayerCameraManager->GetCameraRotation()
+		: GetControlRotation();
+
+	// Направленному свету положение безразлично - только поворот, поэтому вся
+	// работа здесь ровно в трёх строчках.
+	KeyLightComponent->SetWorldRotation(ViewRotation + FRotator(-35.0f, -40.0f, 0.0f));
+	FillLightComponent->SetWorldRotation(ViewRotation + FRotator(-10.0f, 55.0f, 0.0f));
+	RimLightComponent->SetWorldRotation(ViewRotation + FRotator(35.0f, 165.0f, 0.0f));
 }
 
 void AGamePlayerController::OnSpeedBoostStarted()
@@ -2234,6 +2364,23 @@ void AGamePlayerController::Tick(float DeltaTime)
 	if (bHeadlightEnabled)
 	{
 		UpdateHeadlight();
+	}
+
+	// Студийный риг - до раннего выхода по той же причине, и вдобавок по своей
+	// собственной: свет обязан ехать за камерой именно когда всё стоит и
+	// структуру разглядывают, а тик ОРКЕСТРАТОРА в этот момент выключен. Ради
+	// этого риг здесь и живёт (см. RefreshStudioLights()).
+	//
+	// Слежение можно выключить - тогда риг остаётся там, куда смотрел в момент
+	// выключения: при выстраивании кадра тени обязаны стоять на месте, иначе
+	// каждое движение камеры перекладывает светотень и сравнить два ракурса
+	// нельзя.
+	if (AAutomataOrchestrator* LightOwner = FindOrchestrator())
+	{
+		if (LightOwner->bStudioLightsEnabled && LightOwner->bStudioLightsFollowCamera)
+		{
+			TickStudioLights();
+		}
 	}
 
 	// Рисование - тоже до раннего выхода: призрак под курсором обязан жить и

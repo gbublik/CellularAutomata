@@ -90,6 +90,12 @@ void AAutomataOrchestrator::BeginPlay()
 	// OnConstruction(). Компонент тикает сам и на выключенный тик актора не
 	// смотрит - см. doc-comment UAutomataSonifierComponent.
 	EnsureSonifier();
+
+	// И свет: настройки лежат на акторе (запечены в .umap), а до самих
+	// источников их надо донести - иначе солнце светит как в уровне, а поля в
+	// Details-панели описывают что-то другое. Здесь, а не в конструкторе:
+	// актёров уровня в тот момент ещё нет.
+	ApplyLightSettings();
 }
 
 // Called every frame

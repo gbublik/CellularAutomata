@@ -12,6 +12,7 @@ class AAutomataOrchestrator;
 class ARenderCullVolume;
 class AGameCameraManager;
 class UPointLightComponent;
+class UDirectionalLightComponent;
 
 /**
  *
@@ -839,6 +840,42 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPointLightComponent> HeadlightComponent;
+
+public:
+	/** Перечитать настройки студийного рига с оркестратора и применить.
+	 *  Публичная, потому что зовётся оттуда же - из
+	 *  AAutomataOrchestrator::ApplyLightSettings(), единственной воронки света.
+	 *
+	 *  ПОЧЕМУ РИГ ЖИВЁТ ЗДЕСЬ, а настройки - на оркестраторе. Свет обязан ехать
+	 *  за камерой ровно тогда, когда всё стоит и структуру разглядывают, а тик
+	 *  оркестратора в этот момент выключен (он включён только на время
+	 *  симуляции, быстрого шага и живого среза). Тик контроллера идёт всегда -
+	 *  это та же причина, по которой здесь оказалась фара. Настройки при этом
+	 *  остались там: конфигурационное свойство, переехавшее из актора уровня,
+	 *  молча теряет запечённое в .umap значение. */
+	void RefreshStudioLights();
+
+private:
+	/** Создаёт три направленных источника рига (или переносит на сменившуюся
+	 *  пешку) - лениво, при первом включении: по умолчанию риг выключен.
+	 *  Возвращает false, если пешки ещё нет; тогда попробуем на следующем
+	 *  кадре, как и RebindPawnVerticalMovement(). */
+	bool EnsureStudioLights();
+
+	/** Доворачивает риг за камерой - каждый кадр из Tick(), пока риг включён и
+	 *  включено слежение. Направленному свету положение безразлично, поэтому
+	 *  вся работа здесь - три SetWorldRotation(). */
+	void TickStudioLights();
+
+	/** Ключевой (единственный с тенями), заполняющий и контровой. */
+	UPROPERTY(Transient)
+	TObjectPtr<UDirectionalLightComponent> KeyLightComponent;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UDirectionalLightComponent> FillLightComponent;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UDirectionalLightComponent> RimLightComponent;
 
 	/** Горит ли лампочка. По умолчанию ВЫКЛЮЧЕНА: включённой она была ровно
 	 *  один заход и не прижилась - сцена со своим светом читается лучше, а

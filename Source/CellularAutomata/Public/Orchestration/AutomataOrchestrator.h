@@ -17,6 +17,7 @@
 #include "Automata/Rendering/CellVisibilityFilter.h"
 #include "Automata/Rendering/ColorRamp.h"
 #include "Automata/Rendering/RenderPresets.h"
+#include "Automata/Rendering/LightPresets.h"
 #include "Automata/Persistence/AutomatonSaveHeader.h"
 #include "Automata/Capture/SliceCaptureParams.h"
 #include "Automata/Capture/CapturePresets.h"
@@ -229,6 +230,7 @@ public:
 		StatusKey_Clipboard = 1012,
 		StatusKey_Panorama = 1013,
 		StatusKey_QuickSave = 1014,
+		StatusKey_Lighting = 1015,
 	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
@@ -2121,6 +2123,127 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Photo")
 	bool bPhotoLeanMemory = false;
 
+	// ===================== Свет =====================
+	//
+	// Две независимые схемы, которые можно смешивать: СОЛНЦЕ уровня
+	// (ADirectionalLight + ASkyLight, они уже стоят в .umap) и СТУДИЙНЫЙ РИГ из
+	// трёх направленных источников, которого в уровне нет и который заводится в
+	// рантайме.
+	//
+	// Риг направленный, а не точечный, и это не вкус: структура тут бывает и в
+	// сотню клеток, и в семь миллионов, а у направленного света нет ни
+	// расстояния, ни затухания - он одинаково верен на любом габарите. Точечный
+	// пришлось бы масштабировать под фигуру, то есть пересчитывать при каждом
+	// шаге симуляции.
+	//
+	// Сами компоненты живут на КОНТРОЛЛЕРЕ (см. AGamePlayerController), а не
+	// здесь, по той же причине, что и фара: тик оркестратора включён только
+	// пока идёт симуляция, быстрый шаг или живой срез, а свет обязан ехать за
+	// камерой именно тогда, когда всё стоит и структуру разглядывают. Настройки
+	// же остаются здесь - конфигурационное свойство, переехавшее в компонент,
+	// молча теряет запечённое в .umap значение (тот же урок, что у
+	// UAutomataSonifierComponent и UAutomataPhotoComponent).
+
+	/** Применить световой пресет по индексу (см. LightPresets::GetAll()).
+	 *  Задаёт ВСЕ поля света разом - и солнце, и риг, - потому что таблица
+	 *  обязана не оставлять хвостов от предыдущего пресета. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Lighting")
+	void ApplyLightPreset(int32 PresetIndex);
+
+	/** Таблица световых пресетов - для выпадающего списка в HUD. */
+	UFUNCTION(BlueprintPure, Category = "Automata|Lighting")
+	TArray<FLightPreset> GetLightPresets() const;
+
+	/** Индекс применённого пресета, либо INDEX_NONE (после ручной правки любого
+	 *  поля не сбрасывается - см. bLightPresetModified). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Automata|Lighting")
+	int32 ActiveLightPresetIndex = INDEX_NONE;
+
+	/** После применения пресета что-то крутили руками - та же звёздочка, что у
+	 *  профиля рендера (см. FHudRenderStats::bRenderPresetModified). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Automata|Lighting")
+	bool bLightPresetModified = false;
+
+	/** Разослать текущие настройки по свету: солнце и небо - прямо здесь,
+	 *  студийный риг - через контроллер. Зовётся из сеттеров и из
+	 *  PostEditChangeProperty(), так что правка в Details-панели видна сразу. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Automata|Lighting")
+	void ApplyLightSettings();
+
+	/** Светит ли солнце уровня. Гасится в студийных пресетах: смешивать
+	 *  направленный свет улицы с трёхточечной схемой значит получить четвёртый
+	 *  источник, которого никто не ставил. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting")
+	bool bSunEnabled = true;
+
+	/** Яркость солнца, люксы. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "0.0", UIMax = "50.0"))
+	float SunIntensity = 10.0f;
+
+	/** Цветовая температура солнца, кельвины (5500 - полдень, 3000 - закат). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "1700.0", ClampMax = "12000.0"))
+	float SunTemperature = 5500.0f;
+
+	/** Угол солнца. Меняет заодно и НЕБО: у солнца включён Atmosphere Sun
+	 *  Light, поэтому тангаж - это ещё и время суток, а закатный свет получается
+	 *  сам, без подкрашивания вручную. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (UIMin = "-90.0", UIMax = "0.0"))
+	float SunPitch = -45.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (UIMin = "-180.0", UIMax = "180.0"))
+	float SunYaw = -30.0f;
+
+	/** Множитель небесного (рассеянного) света. В ноль не ставится даже в
+	 *  студии: тени станут угольными, и вся теневая сторона структуры пропадёт
+	 *  из кадра. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "0.0", UIMax = "4.0"))
+	float SkyIntensity = 1.0f;
+
+	/** Студийный риг включён. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting")
+	bool bStudioLightsEnabled = false;
+
+	/** Риг едет за камерой (по умолчанию) или прибит к миру.
+	 *
+	 *  За камерой - как в вьюпорте Blender или Maya: куда ни повернись, форма
+	 *  освещена и читается. Это то, что нужно, пока структуру разглядывают.
+	 *
+	 *  Прибитый к миру нужен для СЪЁМКИ: пока выстраиваешь кадр, тени обязаны
+	 *  стоять на месте, иначе каждое движение камеры перекладывает светотень и
+	 *  сравнить два ракурса невозможно. Момент фиксации - тот, когда тумблер
+	 *  выключили: риг остаётся там, куда смотрел в этот миг.
+	 *
+	 *  В таблицу пресетов НЕ входит намеренно: это способ работы, а не внешний
+	 *  вид кадра, и переключение пресета не должно его сбрасывать. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting")
+	bool bStudioLightsFollowCamera = true;
+
+	/** Ключевой источник - главный и единственный, отбрасывающий тени.
+	 *  Заполняющий и контровой теней не дают намеренно: две лишние тени
+	 *  читаются как грязь, а в UE каждая ещё и стоит отдельного прохода. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "0.0", UIMax = "30.0"))
+	float KeyLightIntensity = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "1700.0", ClampMax = "12000.0"))
+	float KeyLightTemperature = 6000.0f;
+
+	/** Заполняющий - слабее ключевого примерно втрое. Сравняешь - получишь
+	 *  плоскую картинку без объёма, ради которого схема и ставится. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "0.0", UIMax = "30.0"))
+	float FillLightIntensity = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "1700.0", ClampMax = "12000.0"))
+	float FillLightTemperature = 4500.0f;
+
+	/** Контровой - сзади-сверху, обводит силуэт кантом и отделяет фигуру от
+	 *  фона. На пористой структуре он же показывает глубину: свет проходит
+	 *  насквозь там, где есть полости. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "0.0", UIMax = "30.0"))
+	float RimLightIntensity = 6.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Lighting", meta = (ClampMin = "1700.0", ClampMax = "12000.0"))
+	float RimLightTemperature = 7500.0f;
+
 	/** Сферическая панорама 360x180 из точки, где стоит камера (Shift+F10) -
 	 *  один PNG в равнопромежуточной проекции 2:1, тот формат, который крутят
 	 *  просмотрщики панорам и принимают соцсети и VR.
@@ -2948,6 +3071,12 @@ private:
 	 *  и у SelectionMeshComponent (переживает реинстансинг Live Coding). */
 	UPROPERTY(Transient)
 	UStaticMeshComponent* CellPreviewComponent = nullptr;
+
+	/** Про неподвижное солнце предупреждено один раз за сессию - см.
+	 *  ApplyLightSettings(). Настройка правится в уровне, а не отсюда, и
+	 *  повторять это каждый кадр незачем. */
+	UPROPERTY(Transient)
+	bool bSunMobilityWarned = false;
 
 	/** Призрак сдвинут стрелками и больше не следует за курсором - см.
 	 *  NudgeCellPreview(). Все три поля Transient по общему правилу: после

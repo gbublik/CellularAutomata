@@ -238,6 +238,33 @@ namespace AutomataConsole
 		Ar.Logf(TEXT("CA.Rule: применено %s"), *Orchestrator->GetActiveRuleString());
 	}
 
+	void LightPresetCommand(const TArray<FString>& Args, UWorld*, FOutputDevice& Ar)
+	{
+		AAutomataOrchestrator* Orchestrator = FindOrchestrator(Ar);
+		if (!Orchestrator)
+		{
+			return;
+		}
+
+		const TArray<FLightPreset> Presets = Orchestrator->GetLightPresets();
+		int32 Index = 0;
+		if (!ParseIndex(Args, Presets.Num(), Index, Ar))
+		{
+			Ar.Logf(TEXT("CA.Light: световые пресеты (%d):"), Presets.Num());
+			for (int32 It = 0; It < Presets.Num(); ++It)
+			{
+				Ar.Logf(TEXT("  %2d  %-12s солнце: %-4s студия: %s"),
+					It, *Presets[It].Name,
+					Presets[It].bSunEnabled ? TEXT("вкл") : TEXT("выкл"),
+					Presets[It].bStudioEnabled ? TEXT("вкл") : TEXT("выкл"));
+			}
+			return;
+		}
+
+		Orchestrator->ApplyLightPreset(Index);
+		Ar.Logf(TEXT("CA.Light: применён '%s'"), *Presets[Index].Name);
+	}
+
 	/** CA.Panorama [ширина] [поправка экспозиции] - снять сферическую панораму.
 	 *
 	 *  Единственная в семействе команда, которая ДЕЙСТВУЕТ при пустом списке
@@ -313,6 +340,11 @@ static FAutoConsoleCommand CA_RuleCommand(
 	TEXT("CA.Rule"),
 	TEXT("Задать правило строкой: CA.Rule 3,4/3/2/PM. Без аргумента - показать действующее."),
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::RuleCommand));
+
+static FAutoConsoleCommand CA_LightCommand(
+	TEXT("CA.Light"),
+	TEXT("Применить световой пресет по индексу (солнце/студия). Без аргумента - список."),
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&AutomataConsole::LightPresetCommand));
 
 static FAutoConsoleCommand CA_PanoramaCommand(
 	TEXT("CA.Panorama"),
