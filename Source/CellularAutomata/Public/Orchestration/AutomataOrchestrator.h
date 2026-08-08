@@ -1519,6 +1519,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata|Cells")
 	float GetCellBorderWidth() const { return CellBorderWidth; }
 
+	/** Поправка ширины канта на текущую форму клетки - см.
+	 *  FCellShapePreset::BorderWidthScale. Читается только
+	 *  EnsureCellMaterialInstance()'ом, при записи в материал; CellBorderWidth
+	 *  и слайдер в HUD остаются в общих для всех форм единицах, поэтому
+	 *  переключение решётки не меняет число под ползунком.
+	 *
+	 *  Берётся по тумблеру CellShape, а не по мешу: поправка компенсирует то,
+	 *  как скрипт нормировал расстояние до ребра в UV, а меш подставляется
+	 *  тем же тумблером. Геометрия, собранная руками мимо тумблера, получит
+	 *  1.0 - как и всё остальное в этом случае, тумблер там просто неактуален. */
+	float GetCellBorderWidthScale() const;
+
 	/** Задаёт ширину контура клетки. Абсолютный сеттер под слайдер HUD, как
 	 *  SetSpeed()/SetStepsPerRender(), с тем же зажимом, что и у самого
 	 *  свойства - иначе слайдер, пишущий BlueprintReadWrite-поле напрямую, мог

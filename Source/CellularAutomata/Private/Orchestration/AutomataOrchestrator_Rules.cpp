@@ -244,6 +244,12 @@ void AAutomataOrchestrator::SyncCellShapeFromLatticeFields()
 			CellMesh = ShapeMesh;
 		}
 
+		// Кант нормирован в каждом меше по-своему, поэтому его поправка меняется
+		// вместе с формой (см. FCellShapePreset::BorderWidthScale). Значение
+		// живёт в uniform-буфере материала, а не в per-instance данных, так что
+		// перерисовывать ради него ничего не нужно.
+		EnsureCellMaterialInstance();
+
 		UE_LOG(LogTemp, Log, TEXT("SyncCellShapeFromLatticeFields: поля решётки опознаны как '%s'"), *Preset.Name);
 		return;
 	}
@@ -361,6 +367,11 @@ bool AAutomataOrchestrator::ApplyCellShapeFields(int32 PresetIndex)
 		UE_LOG(LogTemp, Warning, TEXT("ApplyCellShapePreset: у формы '%s' %d граней, а соседей %d - рост не совпадёт с видимыми контактами"),
 			*Preset.Name, Preset.FaceCount, ActualNeighborCount);
 	}
+
+	// Поправка ширины канта - тоже свойство формы (см.
+	// FCellShapePreset::BorderWidthScale): без этой строки кант остался бы от
+	// прежней решётки до следующего движения ползунка.
+	EnsureCellMaterialInstance();
 
 	ShowStatusMessage(StatusKey_CellShape, FString::Printf(TEXT("Форма клетки: %s (%d граней)%s"),
 		*Preset.Name, Preset.FaceCount, *MeshWarning));

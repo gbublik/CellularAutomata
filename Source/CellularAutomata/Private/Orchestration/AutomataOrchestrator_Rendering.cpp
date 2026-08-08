@@ -579,8 +579,22 @@ UMaterialInterface* AAutomataOrchestrator::EnsureCellMaterialInstance()
 		bCellBorderParameterWarned = true;
 	}
 
-	CellMaterialInstance->SetScalarParameterValue(CellBorderWidthParameter, CellBorderWidth);
+	// Ширина уезжает в материал ПОПРАВЛЕННОЙ на форму клетки: расстояние до
+	// ребра нормировано в каждом меше по-своему, и без поправки одно и то же
+	// значение даёт на удлинённом додекаэдре кант вчетверо толще (см.
+	// FCellShapePreset::BorderWidthScale). Само поле CellBorderWidth при этом
+	// не трогается - оно остаётся общим для всех форм, иначе переключение
+	// решётки молча меняло бы число под ползунком.
+	CellMaterialInstance->SetScalarParameterValue(CellBorderWidthParameter, CellBorderWidth * GetCellBorderWidthScale());
 	return CellMaterialInstance;
+}
+
+float AAutomataOrchestrator::GetCellBorderWidthScale() const
+{
+	const int32 Index = CellShapePresets::IndexOf(CellShape);
+	return CellShapePresets::GetAll().IsValidIndex(Index)
+		? CellShapePresets::GetAll()[Index].BorderWidthScale
+		: 1.0f;
 }
 
 void AAutomataOrchestrator::SetBackgroundVisible(bool bVisible)

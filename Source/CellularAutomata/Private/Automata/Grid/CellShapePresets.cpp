@@ -107,6 +107,11 @@ namespace
 				Preset.LatticeZScale = 2.0f;
 				Preset.CellMeshScaleMultiplier = 2.0f;
 				Preset.ExpectedMeshAabb = FVector(2.0, 2.0, 3.0);
+				// Единственная форма, которой кант нужно поправлять: при общей
+				// для всех ширине 0.2 здесь он выглядит вчетверо толще, и
+				// одинаковым получается на 0.05. Замерено глазом - см.
+				// doc-comment поля.
+				Preset.BorderWidthScale = 0.25f;
 			}
 
 			{
