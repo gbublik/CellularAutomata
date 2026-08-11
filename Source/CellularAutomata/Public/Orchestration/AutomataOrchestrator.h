@@ -2429,17 +2429,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
 	const FHudSonificationStats& GetSonificationStats() { UpdateHudStats(); return LastSonificationStats; }
 
-	/** УСТАРЕЛА - разобрана на семь геттеров выше (см. doc-comment FHudStats).
-	 *
-	 *  Оставлена рабочей только затем, чтобы графы в WBP_MainHud не сломались в
-	 *  тот же коммит, в котором появились новые ноды: значения она берёт из тех
-	 *  же семи структур через FillLegacyHudStats(), своего источника данных у
-	 *  неё нет. Удаляется вместе с FHudStats/LastHudStats/FillLegacyHudStats(),
-	 *  как только последний провод переложен. */
-	UFUNCTION(BlueprintPure, Category = "Automata|HUD",
-		meta = (DeprecatedFunction, DeprecationMessage = "Разобрана по подсистемам: GetSimulationStats(), GetHudRenderStats(), GetCutStats(), GetPerformanceStats(), GetCameraStats(), GetGeneratorStats(), GetSonificationStats()."))
-	const FHudStats& GetHudStats() { UpdateHudStats(); return LastHudStats; }
-
 	/** Скользящее окно замеров для графика поколений (UGenerationGraphWidget) -
 	 *  см. doc-comment namespace GenerationHistory.
 	 *
@@ -2891,8 +2880,9 @@ public:
 	void SyncCellShapeFromLatticeFields();
 
 	/** Индекс последней применённой формы (-1, если пресет не применяли).
-	 *  Transient по той же причине, что LastHudStats - реинстансинг Live
-	 *  Coding не должен оставлять индекс, не соответствующий полям. */
+	 *  Transient по той же причине, что HUD-сводки (LastSimulationStats и
+	 *  соседи) - реинстансинг Live Coding не должен оставлять индекс, не
+	 *  соответствующий полям. */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Automata|Cells")
 	int32 ActiveCellShapePresetIndex = -1;
 
@@ -3443,7 +3433,7 @@ private:
 	 *  менять в рантайме: у обычного UMaterialInterface значения параметров
 	 *  зафиксированы в ассете, и слайдер в HUD не имел бы к ним доступа.
 	 *
-	 *  Transient по той же причине, что GamePC/LastHudStats: реинстансинг после
+	 *  Transient по той же причине, что GamePC/LastSimulationStats: реинстансинг после
 	 *  Live Coding копирует только UPROPERTY-поля, а пересоздать инстанс
 	 *  EnsureCellMaterialInstance() умеет сам - ему достаточно увидеть nullptr. */
 	UPROPERTY(Transient)
@@ -3477,7 +3467,7 @@ private:
 	 *  ещё не готов (до BeginPlay). */
 	void RunRenderConsoleCommand(const FString& Command);
 	/** Индекс последнего применённого профиля рендера (см.
-	 *  ApplyRenderPreset()). UPROPERTY по той же причине, что LastHudStats:
+	 *  ApplyRenderPreset()). UPROPERTY по той же причине, что LastSimulationStats:
 	 *  должен пережить реинстансинг Live Coding, иначе HUD после хот-патча
 	 *  показал бы "профиль не выбран" на неизменившейся картинке. */
 	UPROPERTY(Transient)
@@ -3876,21 +3866,6 @@ private:
 
 	UPROPERTY(Transient)
 	FHudSonificationStats LastSonificationStats;
-
-	/** УСТАРЕЛА - см. GetHudStats()/FHudStats. Заполняется из семи структур
-	 *  выше в FillLegacyHudStats(), собственных данных не имеет. */
-	UPROPERTY(Transient)
-	FHudStats LastHudStats;
-
-	/** Копирует семь новых сводок в LastHudStats - вся совместимость со старой
-	 *  нодой собрана в одну функцию именно затем, чтобы удаление свелось к
-	 *  удалению этой функции, её вызова и самой структуры.
-	 *
-	 *  Направление копирования принципиально: источник правды - новые
-	 *  структуры, старая только зеркалит. Наоборот (заполнять старую, а из неё
-	 *  раздавать) было бы двумя копиями с возможностью разъехаться на любом
-	 *  поле, которое забудут переложить. */
-	void FillLegacyHudStats();
 
 	/** Байты последнего GPU-compute входного буфера (см.
 	 *  FHudPerformanceStats::EstimatedGpuComputeUploadMB) - обновляется в

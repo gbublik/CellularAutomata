@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "CellularAutomata/Public/Orchestration/AutomataOrchestrator.h"
@@ -172,66 +172,6 @@ void AAutomataOrchestrator::UpdateHudStats()
 	LastSonificationStats.SonificationPresetName = GetActiveSonificationPresetName();
 	LastSonificationStats.SonificationShapeName =
 		bEnableSonification ? GetSonificationShapeName() : FString();
-
-	FillLegacyHudStats();
-}
-
-void AAutomataOrchestrator::FillLegacyHudStats()
-{
-	// Временная копия для старой ноды GetHudStats() - удаляется целиком вместе
-	// с ней и с FHudStats, как только графы переложены на семь новых. Порядок
-	// полей повторяет порядок в FHudStats, чтобы удалять было видно построчно.
-	LastHudStats.bIsComputing = LastSimulationStats.bIsComputing;
-	LastHudStats.bIsRendering = LastHudRenderStats.bIsRendering;
-	LastHudStats.CurrentFPS = LastPerformanceStats.CurrentFPS;
-	LastHudStats.GenerationCount = LastSimulationStats.GenerationCount;
-	LastHudStats.GenerationsPerSecond = LastSimulationStats.GenerationsPerSecond;
-	LastHudStats.EstimatedGpuComputeUploadMB = LastPerformanceStats.EstimatedGpuComputeUploadMB;
-	LastHudStats.AliveCellCount = LastSimulationStats.AliveCellCount;
-	LastHudStats.SelectedCellCount = LastCameraStats.SelectedCellCount;
-	LastHudStats.SimulationSpeed = LastSimulationStats.SimulationSpeed;
-	LastHudStats.StepsPerRender = LastSimulationStats.StepsPerRender;
-	LastHudStats.GenerationsPerDispatch = LastSimulationStats.GenerationsPerDispatch;
-	LastHudStats.CameraSpeed = LastCameraStats.CameraSpeed;
-	LastHudStats.CellBorderWidth = LastHudRenderStats.CellBorderWidth;
-	LastHudStats.bSimulationRunning = LastSimulationStats.bSimulationRunning;
-	LastHudStats.bFastStepActive = LastSimulationStats.bFastStepActive;
-	LastHudStats.bSelectionModeActive = LastCameraStats.bSelectionModeActive;
-	LastHudStats.ComputeMethod = LastPerformanceStats.ComputeMethod;
-	LastHudStats.VideoMemoryUsedMB = LastPerformanceStats.VideoMemoryUsedMB;
-	LastHudStats.VideoMemoryTotalMB = LastPerformanceStats.VideoMemoryTotalMB;
-	LastHudStats.VideoMemoryLargestFreeBlockMB = LastPerformanceStats.VideoMemoryLargestFreeBlockMB;
-	LastHudStats.SystemMemoryAvailableMB = LastPerformanceStats.SystemMemoryAvailableMB;
-	LastHudStats.SystemMemoryTotalMB = LastPerformanceStats.SystemMemoryTotalMB;
-	LastHudStats.bComputeFellBackToCpu = LastPerformanceStats.bComputeFellBackToCpu;
-	LastHudStats.bChunkedRenderEnabled = LastHudRenderStats.bChunkedRenderEnabled;
-	LastHudStats.ChunkedRenderOrder = LastHudRenderStats.ChunkedRenderOrder;
-	LastHudStats.bWaitForChunkedRenderToFinish = LastHudRenderStats.bWaitForChunkedRenderToFinish;
-	LastHudStats.bCellCullingEnabled = LastCutStats.bCellCullingEnabled;
-	LastHudStats.bCellCullingActive = LastCutStats.bCellCullingActive;
-	LastHudStats.bRenderCullVolumeEnabled = LastCutStats.bRenderCullVolumeEnabled;
-	LastHudStats.bRenderCullVolumeVisible = LastCutStats.bRenderCullVolumeVisible;
-	LastHudStats.bCullVolumeActive = LastCutStats.bCullVolumeActive;
-	LastHudStats.bViewSliceEnabled = LastCutStats.bViewSliceEnabled;
-	LastHudStats.bViewSliceActive = LastCutStats.bViewSliceActive;
-	LastHudStats.bAgeFilterActive = LastCutStats.bAgeFilterActive;
-	LastHudStats.bGhostShapeEnabled = LastHudRenderStats.bGhostShapeEnabled;
-	LastHudStats.bGhostShapeReplacesDetailedRender = LastHudRenderStats.bGhostShapeReplacesDetailedRender;
-	LastHudStats.RenderPresetName = LastHudRenderStats.RenderPresetName;
-	LastHudStats.RenderPresetIndex = LastHudRenderStats.RenderPresetIndex;
-	LastHudStats.bRenderPresetModified = LastHudRenderStats.bRenderPresetModified;
-	LastHudStats.RuleString = LastSimulationStats.RuleString;
-	LastHudStats.StateGeneratorName = LastGeneratorStats.StateGeneratorName;
-	LastHudStats.EstimatedGeneratorCells = LastGeneratorStats.EstimatedGeneratorCells;
-	LastHudStats.bCellsCastShadows = LastHudRenderStats.bCellsCastShadows;
-	LastHudStats.bBackgroundVisible = LastHudRenderStats.bBackgroundVisible;
-	LastHudStats.bOrthographicCamera = LastCameraStats.bOrthographicCamera;
-	LastHudStats.bHeadlightEnabled = LastCameraStats.bHeadlightEnabled;
-	LastHudStats.bAutoReseedOnExtinction = LastSimulationStats.bAutoReseedOnExtinction;
-	LastHudStats.AutoReseedCount = LastSimulationStats.AutoReseedCount;
-	LastHudStats.bSonificationEnabled = LastSonificationStats.bSonificationEnabled;
-	LastHudStats.SonificationPresetName = LastSonificationStats.SonificationPresetName;
-	LastHudStats.SonificationShapeName = LastSonificationStats.SonificationShapeName;
 }
 
 void AAutomataOrchestrator::UpdateGenerationsPerSecond()
