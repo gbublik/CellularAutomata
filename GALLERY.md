@@ -24,7 +24,9 @@
 [<img src="docs/gallery/thumbs/3d-18.jpg" width="24%">](docs/gallery/3d/18.jpg)
 [<img src="docs/gallery/thumbs/3d-19.jpg" width="24%">](docs/gallery/3d/19.jpg)
 [<img src="docs/gallery/thumbs/3d-20.jpg" width="24%">](docs/gallery/3d/20.jpg)
-[<img src="docs/gallery/thumbs/3d-21.jpg" width="24%">](docs/gallery/3d/21.jpg)
+[<img src="docs/gallery/thumbs/3d-21.jpg" width="24%" title="Правило 5-7/6/2/M / Rule 5-7/6/2/M">](docs/gallery/3d/21.jpg)
+
+*Кадр 21 — клетки крупным планом, цвет кодирует возраст; правило `5-7/6/2/M`. / Frame 21 — cells up close, color encodes age; rule `5-7/6/2/M`.*
 
 ## 2D-срезы / 2D slices
 
