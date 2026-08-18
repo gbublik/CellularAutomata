@@ -11,6 +11,13 @@
 | ![Внутри структуры](docs/images/tunnel.jpg) | ![Клетки крупным планом, цвет — возраст](docs/images/cells.jpg) |
 | *Полёт внутри выросшей структуры* | *Клетки крупным планом — цвет кодирует возраст* |
 
+[<img src="docs/gallery/thumbs/3d-05.jpg" width="24%">](GALLERY.md)
+[<img src="docs/gallery/thumbs/3d-12.jpg" width="24%">](GALLERY.md)
+[<img src="docs/gallery/thumbs/3d-04.jpg" width="24%">](GALLERY.md)
+[<img src="docs/gallery/thumbs/3d-15.jpg" width="24%">](GALLERY.md)
+
+Больше находок — в **[галерее](GALLERY.md)**: там миниатюры, полный размер в один клик.
+
 ## Возможности
 
 - **Симуляция** — чанковая битовая сетка (разреженная, с центром в начале координат — отрицательные координаты здесь норма); CPU- и GPU-стратегии (compute shader); шаг считается вне игрового потока; несколько поколений на один кадр рендера (`StepsPerRender`); шаг назад через детерминированный пересчёт (Ctrl+Z).

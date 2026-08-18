@@ -11,6 +11,13 @@ A real-time sandbox for exploring three-dimensional cellular automata: seed a pa
 | ![Inside a structure](docs/images/tunnel.jpg) | ![Cells up close, colored by age](docs/images/cells.jpg) |
 | *Flying inside a grown structure* | *Cells up close — color encodes age* |
 
+[<img src="docs/gallery/thumbs/3d-05.jpg" width="24%">](GALLERY.md)
+[<img src="docs/gallery/thumbs/3d-12.jpg" width="24%">](GALLERY.md)
+[<img src="docs/gallery/thumbs/3d-04.jpg" width="24%">](GALLERY.md)
+[<img src="docs/gallery/thumbs/3d-15.jpg" width="24%">](GALLERY.md)
+
+More finds in the **[gallery](GALLERY.md)** — thumbnails there, full-size images one click away.
+
 ## Features
 
 - **Simulation** — chunked bit-packed grid (sparse, origin-centred, negative coordinates are the norm); CPU and GPU (compute shader) strategies; stepping runs off the game thread; multiple generations per rendered frame (`StepsPerRender`); step-backward via deterministic recompute (Ctrl+Z).
