@@ -6,10 +6,10 @@
 
 A real-time sandbox for exploring three-dimensional cellular automata: seed a pattern, pick a rule, and watch structures grow, glide, decay and collapse — at up to **~7 million live cells in real time**. Everything is built for *examining* what emerges: DCC-style orthographic cameras, cutaway slices, age-based coloring, PNG capture straight from the grid, sonification that lets you *hear* periodicity and collapse before you see them, and a save format for keeping your finds.
 
-| | |
-|---|---|
-| ![Inside a structure](docs/images/tunnel.jpg) | ![Cells up close, colored by age](docs/images/cells.jpg) |
-| *Flying inside a grown structure* | *Cells up close — color encodes age* |
+| |
+|---|
+| ![Cells up close, colored by age](docs/images/cells.jpg) |
+| *Cells up close — color encodes age* |
 
 [<img src="docs/gallery/thumbs/3d-05.jpg" width="24%">](GALLERY.md)
 [<img src="docs/gallery/thumbs/3d-12.jpg" width="24%">](GALLERY.md)
