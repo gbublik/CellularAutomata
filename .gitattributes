@@ -1,0 +1,9 @@
+# UE binary assets — never diff/merge as text
+*.uasset binary
+*.umap binary
+*.casave binary
+
+# Images
+*.png binary
+*.jpg binary
+*.jpeg binary

@@ -37,16 +37,14 @@ __pycache__/
 *.target
 *.local
 
-# Content is deliberately NOT under version control. It is all binary .uasset/
-# .umap, so every editor save shows up as an opaque "Bin X -> Y bytes" change
-# that cannot be reviewed, merged, or reverted meaningfully - and much of the
-# churn isn't design work at all: the test level balloons because ISM
-# components serialize their runtime instances into the .umap on every save
-# after a GenerateRandom() stress run, and assets like Music_controller
-# rewrite themselves on save with no real diff. Those two were excluded
-# individually first; this replaces both with the whole folder.
+# Content IS under version control since the GitHub publication: without it a
+# fresh clone has no level, HUD, cell meshes or MetaSound and will not run.
+# The old caveat still applies to .uasset/.umap churn: binary diffs cannot be
+# reviewed or merged, and a level saved right after a GenerateRandom() stress
+# run balloons because ISM components serialize their runtime instances into
+# the .umap. Before committing Content, sanity-check `git status` sizes and
+# don't save levels mid-simulation.
 #
-# The cost, stated plainly: a fresh clone gives the C++ project without its
-# level, HUD widgets, blueprints, meshes or materials, i.e. it will not run
-# as-is. Content lives only on disk here - back it up separately.
-Content/
+# Personal per-developer sandbox folders stay out.
+Content/Developers/
+Content/Collections/
