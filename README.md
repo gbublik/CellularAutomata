@@ -2,21 +2,14 @@
 
 **English** | [Русский](README.ru.md)
 
-![Symmetric pattern grown from a seed](docs/images/pattern.jpg)
-
 A real-time sandbox for exploring three-dimensional cellular automata: seed a pattern, pick a rule, and watch structures grow, glide, decay and collapse — at up to **~7 million live cells in real time**. Everything is built for *examining* what emerges: DCC-style orthographic cameras, cutaway slices, age-based coloring, PNG capture straight from the grid, sonification that lets you *hear* periodicity and collapse before you see them, and a save format for keeping your finds.
 
-| |
-|---|
-| ![Cells up close, colored by age](docs/images/cells.jpg) |
-| *Cells up close — color encodes age* |
-
+[<img src="docs/gallery/thumbs/3d-20.jpg" width="24%">](GALLERY.md)
 [<img src="docs/gallery/thumbs/3d-05.jpg" width="24%">](GALLERY.md)
 [<img src="docs/gallery/thumbs/3d-12.jpg" width="24%">](GALLERY.md)
-[<img src="docs/gallery/thumbs/3d-04.jpg" width="24%">](GALLERY.md)
 [<img src="docs/gallery/thumbs/3d-15.jpg" width="24%">](GALLERY.md)
 
-More finds in the **[gallery](GALLERY.md)** — thumbnails there, full-size images one click away.
+All screenshots live in the **[gallery](GALLERY.md)** (`docs/gallery/`) — only small thumbnails are embedded here, full-size images are one click away.
 
 ## Features
 

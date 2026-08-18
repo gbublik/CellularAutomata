@@ -23,6 +23,8 @@
 [<img src="docs/gallery/thumbs/3d-17.jpg" width="24%">](docs/gallery/3d/17.jpg)
 [<img src="docs/gallery/thumbs/3d-18.jpg" width="24%">](docs/gallery/3d/18.jpg)
 [<img src="docs/gallery/thumbs/3d-19.jpg" width="24%">](docs/gallery/3d/19.jpg)
+[<img src="docs/gallery/thumbs/3d-20.jpg" width="24%">](docs/gallery/3d/20.jpg)
+[<img src="docs/gallery/thumbs/3d-21.jpg" width="24%">](docs/gallery/3d/21.jpg)
 
 ## 2D-срезы / 2D slices
 
