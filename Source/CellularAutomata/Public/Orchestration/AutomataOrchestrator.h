@@ -2933,9 +2933,14 @@ public:
 	 *  отсечения, но БЕЗ Lumen, distance fields и ray tracing - GPU-only
 	 *  экземпляры их не поддерживают. На паузе возвращается HISM с полным
 	 *  светом. Не включается при автопереборе сидов, серийной съёмке и Ghost
-	 *  Shape - им нужна CPU-сетка на каждом поколении. */
+	 *  Shape - им нужна CPU-сетка на каждом поколении.
+	 *
+	 *  Включено по умолчанию с 2026-10-18, когда закрылись все три шага: сессия,
+	 *  рисование из её буферов и пауза на GPU для структур, не влезающих в HISM
+	 *  (см. GpuPauseCpuAliveLimit). Маленькая структура на паузе ведёт себя как
+	 *  прежде. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU")
-	bool bGpuResidentRun = false;
+	bool bGpuResidentRun = true;
 
 	/** Сколько видеопамяти отдать плоскостям GPU-сессии, МБ; 0 - 40% объёма
 	 *  видеокарты. Второй потолок объёма сессии рядом с GpuVolumeCellLimit
