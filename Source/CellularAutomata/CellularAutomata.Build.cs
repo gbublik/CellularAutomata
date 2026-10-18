@@ -29,7 +29,7 @@ public class CellularAutomata : ModuleRules
 		// DesktopPlatform - системные диалоги выбора файла для
 		// SaveStateToFile()/LoadStateFromFile(); Developer-модуль, в Shipping
 		// недоступен (проект живёт в editor/PIE, этого достаточно).
-		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput", "RHI", "RenderCore", "ProceduralMeshComponent", "DesktopPlatform" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "EnhancedInput", "RHI", "RenderCore", "Renderer", "ProceduralMeshComponent", "DesktopPlatform" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

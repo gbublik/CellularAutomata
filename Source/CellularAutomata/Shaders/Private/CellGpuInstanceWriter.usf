@@ -1,0 +1,50 @@
+// ПРОТОТИП: пишет тестовый узор экземпляров прямо в GPU-Scene
+// (UCellGpuInstancesComponent). Повторяет PCGSceneWriter.usf движка, только
+// позиция берётся не из буфера, а из индекса: куб GridDim^3 с шагом Spacing.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ComputeShaderUtils.ush"
+#include "/Engine/Private/GPUScene/GPUSceneWriter.ush"
+
+uint InPrimitiveId;
+uint InNumInstances;
+uint InGridDim;
+float InSpacing;
+float InMeshScale;
+uint InCustomDataCount;
+uint InPayloadDataFlags;
+
+[numthreads(NUM_THREADS_PER_GROUP, 1, 1)]
+void MainCS(const uint3 GroupId : SV_GroupID, const uint GroupIndex : SV_GroupIndex)
+{
+	const uint LocalId = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, NUM_THREADS_PER_GROUP);
+	if (LocalId >= InNumInstances)
+	{
+		return;
+	}
+
+	const FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InPrimitiveId);
+	const uint InstanceId = PrimitiveData.InstanceSceneDataOffset + LocalId;
+
+	const uint D = max(InGridDim, 1u);
+	const uint3 Cell = uint3(LocalId % D, (LocalId / D) % D, LocalId / (D * D));
+	const float3 Position = (float3(Cell) - (float(D) - 1.0f) * 0.5f) * InSpacing;
+
+	// Строка 3 - перенос: матрицы движка умножаются как mul(float4(p, 1), M).
+	float4x4 LocalToPrimitive = (float4x4)0;
+	LocalToPrimitive[0][0] = InMeshScale;
+	LocalToPrimitive[1][1] = InMeshScale;
+	LocalToPrimitive[2][2] = InMeshScale;
+	LocalToPrimitive[3] = float4(Position, 1.0f);
+
+	InitializeInstanceSceneDataLS(InstanceId, InPrimitiveId, LocalId, InPayloadDataFlags, InCustomDataCount, 0.5f, LocalToPrimitive);
+
+	if (InCustomDataCount >= 3)
+	{
+		// Цвет - градиент по положению в кубе, чтобы было видно, что каждый
+		// экземпляр получил свои данные.
+		const float3 Color = float3(Cell) / float(max(D - 1u, 1u));
+		const FInstancePayloadDataOffsets PayloadOffsets = GetInstancePayloadDataOffsets(InPrimitiveId, InPayloadDataFlags, LocalId);
+		WriteInstanceCustomData(PayloadOffsets, 0, float4(Color, 1.0f));
+	}
+}

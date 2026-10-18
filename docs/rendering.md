@@ -122,3 +122,13 @@ Context: `docs/compute-strategies.md` → "Где уходит GpuRoundTrip" —
 - one frame of latency (written on the next `FGPUScene::Update`).
 
 Hence the intended split: **GPU-only Nanite instances while the simulation runs** (speed), **HISM rebuilt once on pause / photo** (full Lumen quality, and the CPU grid is needed then anyway for picking, editing and saving).
+
+**Second prototype — confirmed.** `UCellGpuInstancesComponent` (`Automata/Rendering/CellGpuInstancesComponent.*`, shader `Shaders/Private/CellGpuInstanceWriter.usf`) is the PCG pattern rebuilt on exported pieces: a `UStaticMeshComponent` whose `CreateStaticMeshSceneProxy` builds `FInstanceSceneDataBuffers(/*GPUOnly*/true)` and returns `Nanite::FSceneProxy`, and a compute pass queued with `UpdatePrimitiveInstancesFromCompute` that writes each instance with `InitializeInstanceSceneDataLS` + `WriteInstanceCustomData`. The same 5.1M-cube test pattern, same camera, same `Cube2` + `M_Cell`, **with shadows: ~90 FPS** — HISM level (96 at 4.7M), five times Niagara (18.5). Per-instance colour arrives (a gradient written on the GPU shows up through `M_Cell`'s custom data), so the material needs no changes.
+
+What the prototype taught about wiring it:
+- the write must wait until GPU-Scene has allocated the primitive's slots — the component waits three ticks after a new proxy appears (PCG does the same, "retrying next frame"), and rewrites whenever the proxy changes, since recreation loses GPU-only data;
+- PCG in 5.7 still writes through the deprecated `FGPUSceneWriterParameters` (`Params.GPUWriteParams`) with `USE_GPU_SCENE_DATA_RW` and `VF_SUPPORTS_PRIMITIVE_SCENE_DATA` defined — copied as is under `PRAGMA_DISABLE_DEPRECATION_WARNINGS`, rather than the new uniform buffer that has no engine example yet;
+- `UpdatePrimitiveInstancesFromCompute` is `UE_EXPERIMENTAL` — `PRAGMA_DISABLE_EXPERIMENTAL_WARNINGS` around the call;
+- a project-wide `CellCustomDataFloats` already exists, and unity builds merge translation units — a file-local constant of the same name is a compile error, not a shadow;
+- `ACellGpuInstancesTestActor` is spawned into PIE with the plugin's `control_actor spawn` (Python's `GameplayStatics` has no deferred spawn).
+
