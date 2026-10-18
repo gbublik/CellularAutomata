@@ -4,6 +4,183 @@
 
 #include "Orchestration/AutomataOrchestrator.h"
 #include "Async/Async.h"
+#include "Automata/Rendering/CellGpuInstancesComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "DynamicRHI.h"
+#include "Engine/StaticMesh.h"
+#include "RHIStats.h"
+
+int64 AAutomataOrchestrator::ComputeGpuLiveCellLimit(bool bWithDecay) const
+{
+	double BudgetBytes = 0.0;
+	if (GpuResidentMemoryBudgetMB > 0)
+	{
+		BudgetBytes = double(GpuResidentMemoryBudgetMB) * 1024.0 * 1024.0;
+	}
+	else
+	{
+		// 40% видеокарты: остальное - сцене, GPU-Scene с экземплярами клеток
+		// и HISM, который вернётся на паузе. Размер неизвестен - 2 ГБ.
+		FTextureMemoryStats MemoryStats;
+		RHIGetTextureMemoryStats(MemoryStats);
+		BudgetBytes = MemoryStats.DedicatedVideoMemory > 0
+			? double(MemoryStats.DedicatedVideoMemory) * 0.4
+			: 2.0 * 1024.0 * 1024.0 * 1024.0;
+	}
+	const int64 ByMemory = (int64)(BudgetBytes / FGpuResidentSimulation::BytesPerCell(bWithDecay));
+	return FMath::Min<int64>(GpuVolumeCellLimit, ByMemory);
+}
+
+UCellGpuInstancesComponent* AAutomataOrchestrator::EnsureGpuCellsComponent()
+{
+	UInstancedStaticMeshComponent* Cells = GetActiveCellsMeshComponent();
+	if (!Cells)
+	{
+		return nullptr;
+	}
+
+	// Под компонентом клеток и с единичным относительным трансформом: позиции
+	// GPU-пути - те же GridToWorld(), что HISM получает как локальные.
+	if (!GpuCellsComponent)
+	{
+		GpuCellsComponent = NewObject<UCellGpuInstancesComponent>(this, TEXT("GpuCells"), RF_Transient);
+		GpuCellsComponent->SetupAttachment(Cells);
+		GpuCellsComponent->RegisterComponent();
+	}
+	else if (GpuCellsComponent->GetAttachParent() != Cells)
+	{
+		GpuCellsComponent->AttachToComponent(Cells, FAttachmentTransformRules::KeepRelativeTransform);
+		GpuCellsComponent->SetRelativeTransform(FTransform::Identity);
+	}
+
+	// Тот же меш, материал и тени, что у HISM (см. RenderCurrentGrid()).
+	// Каждая смена пересоздаёт прокси, поэтому только при расхождении.
+	if (GpuCellsComponent->GetStaticMesh() != CellMesh)
+	{
+		GpuCellsComponent->SetStaticMesh(CellMesh);
+	}
+	UMaterialInterface* Material = EnsureCellMaterialInstance();
+	if (Material && GpuCellsComponent->GetMaterial(0) != Material)
+	{
+		GpuCellsComponent->SetMaterial(0, Material);
+	}
+	if (GpuCellsComponent->CastShadow != Cells->CastShadow)
+	{
+		GpuCellsComponent->SetCastShadow(Cells->CastShadow);
+	}
+	return GpuCellsComponent;
+}
+
+TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> AAutomataOrchestrator::BuildGpuDrawParams()
+{
+	TSharedRef<FCellGpuDrawParams, ESPMode::ThreadSafe> Params = MakeShared<FCellGpuDrawParams, ESPMode::ThreadSafe>();
+
+	if (Grid.IsValid())
+	{
+		const FLatticeTransform& Lattice = Grid->GetLattice();
+		Params->Step = FVector3f(Lattice.CellWorldStep);
+		Params->Origin = FVector3f(Lattice.Origin);
+
+		// Масштаб - как FInstancedMeshCellGridRenderer::BeginRender(): ширина
+		// меша по X подгоняется под шаг решётки, поверх - множитель.
+		double Scale = 1.0;
+		if (CellMesh)
+		{
+			const double MeshReferenceSize = CellMesh->GetBounds().BoxExtent.X * 2.0;
+			if (!FMath::IsNearlyZero(MeshReferenceSize))
+			{
+				Scale = Lattice.GetPlanarCellSize() / MeshReferenceSize;
+			}
+		}
+		Params->Scale = FVector3f((float)(Scale * CellMeshScaleMultiplier));
+	}
+
+	auto Pack = [](const TArray<FColor>& Lut, TArray<uint32>& Out)
+	{
+		Out.SetNumZeroed(256);
+		for (int32 Index = 0; Index < FMath::Min(Lut.Num(), 256); ++Index)
+		{
+			Out[Index] = uint32(Lut[Index].R) | (uint32(Lut[Index].G) << 8) | (uint32(Lut[Index].B) << 16);
+		}
+	};
+	TArray<FColor> Lut;
+	BuildAgeColorLut(Lut, /*bSRGB=*/false);
+	Pack(Lut, Params->AgeLut);
+	Lut.Reset();
+	if (States > 2)
+	{
+		BuildDecayColorLut(Lut, /*bSRGB=*/false);
+	}
+	Pack(Lut, Params->DecayLut);
+
+	if (bRenderSurfaceOnly)
+	{
+		TArray<FIntVector> FaceOffsets;
+		BuildFaceNeighborOffsets(FaceOffsets);
+		for (const FIntVector& Offset : FaceOffsets)
+		{
+			Params->FaceOffsets.Add(FIntVector4(Offset.X, Offset.Y, Offset.Z, 0));
+		}
+	}
+
+	// Тот же фильтр, что у BuildCellRenderData(), с запоминанием камеры среза.
+	const CellVisibility::FFilter Filter = BuildVisibilityFilter(/*bUpdateSliceCameraState=*/true);
+	Params->bAgeFilterActive = Filter.bAgeFilterActive;
+	if (Filter.bAgeFilterActive)
+	{
+		for (int32 Age = 0; Age < FMath::Min(Filter.AgeMask.Num(), 256); ++Age)
+		{
+			if (Filter.AgeMask[Age])
+			{
+				Params->AgeMask[Age >> 5] |= 1u << (Age & 31);
+			}
+		}
+	}
+	Params->bSliceActive = Filter.bSliceActive;
+	Params->SliceOrigin = FVector3f(Filter.SliceOrigin);
+	Params->SliceForward = FVector3f(Filter.SliceForward);
+	Params->SliceMinDepth = (float)Filter.SliceMinDepth;
+	Params->SliceMaxDepth = (float)Filter.SliceMaxDepth;
+
+	FBox CullBounds;
+	if (GetActiveCullBounds(CullBounds))
+	{
+		Params->bCullActive = true;
+		Params->CullMin = FVector3f(CullBounds.Min);
+		Params->CullMax = FVector3f(CullBounds.Max);
+	}
+
+	return Params;
+}
+
+void AAutomataOrchestrator::ShowGpuLiveCells(const FGpuLiveDispatchResult& Result)
+{
+	if (!GpuLive || !Result.DrawParams.IsValid())
+	{
+		return;
+	}
+	UCellGpuInstancesComponent* Comp = EnsureGpuCellsComponent();
+	if (!Comp)
+	{
+		return;
+	}
+
+	// Границы примитива - объём сессии с полями в клетку.
+	const FCellGpuDrawParams& Params = *Result.DrawParams;
+	const FVector Step(Params.Step);
+	const FVector Origin(Params.Origin);
+	const FVector A = FVector(Result.VolumeMin) * Step + Origin - Step;
+	const FVector B = FVector(Result.VolumeMin + Result.VolumeDim) * Step + Origin + Step;
+	const FBox Bounds(A.ComponentMin(B), A.ComponentMax(B));
+
+	Comp->ShowResidentCells(GpuLive->GetGpuPlanes(), Result.DrawParams.ToSharedRef(), Result.Stats.ExtraCount, Bounds,
+		GetActiveCellsMeshComponent());
+
+	// Те же числа, что HUD берёт у HISM-пути; выгрузки через CPU нет вовсе.
+	LastRenderStats.RenderedCellCount = (int32)FMath::Min<int64>(Result.Stats.ExtraCount, MAX_int32);
+	LastRenderStats.TotalCellCount = (int32)FMath::Min<int64>(Result.Stats.AliveCount, MAX_int32);
+	LastRenderStats.EstimatedUploadMB = 0.0;
+}
 
 bool AAutomataOrchestrator::CanUseGpuLive() const
 {
@@ -52,9 +229,11 @@ bool AAutomataOrchestrator::BeginGpuLive()
 	// один остаётся, чтобы раздвигание не случалось на каждом заходе.
 	const int32 MinHalo = FMath::Max(1, Rule.GetNeighborExtent()) * Steps * 2;
 
+	GpuLiveCellLimit = ComputeGpuLiveCellLimit(Rule.HasDecayStates());
+
 	TUniquePtr<FGpuResidentSimulation> Session = MakeUnique<FGpuResidentSimulation>();
 	FString Error;
-	if (!Session->Upload(*Grid, Rule, MinHalo, GpuVolumeCellLimit, Error))
+	if (!Session->Upload(*Grid, Rule, MinHalo, GpuLiveCellLimit, Error))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("GPU-сессия не открыта: %s. Прогон идёт прежним путём до следующего Start()."), *Error);
 		bGpuLiveRefused = true;
@@ -68,7 +247,9 @@ bool AAutomataOrchestrator::BeginGpuLive()
 	// Вся сессия для остального кода - один длинный шаг (см. doc-comment GpuLive).
 	bStepInProgress = true;
 
-	UE_LOG(LogTemp, Log, TEXT("GPU-сессия открыта: %lld живых, поколений за заход %d"), GpuLiveAliveCount, Steps);
+	UE_LOG(LogTemp, Log, TEXT("GPU-сессия открыта: %lld живых, поколений за заход %d, потолок объёма %lld клеток (%.0f МБ)"),
+		GpuLiveAliveCount, Steps, GpuLiveCellLimit,
+		double(GpuLiveCellLimit) * FGpuResidentSimulation::BytesPerCell(Rule.HasDecayStates()) / (1024.0 * 1024.0));
 	return true;
 }
 
@@ -82,10 +263,21 @@ void AAutomataOrchestrator::DispatchGpuLive()
 	// Правило и лимит - снимок UPROPERTY на игровом потоке, как в StepAsync().
 	FCellularAutomatonRule Rule = BuildRule();
 	const int32 Steps = FMath::Max(1, StepsPerRender);
-	const int64 VolumeLimit = GpuVolumeCellLimit;
+	const int64 VolumeLimit = GpuLiveCellLimit;
+
+	// Видимые считаются в том же заходе, по настройкам этого кадра, - число
+	// приезжает со сводкой и задаёт ёмкость экземпляров до записи.
+	TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> DrawParams = BuildGpuDrawParams();
+	FGpuResidentSimulation::FExtraPass CountVisible =
+		[DrawParams](FRDGBuilder& GraphBuilder, const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay, FRDGBufferUAV* StatsUAV)
+		{
+			CellGpuDrawing::AddCountVisiblePass(GraphBuilder, *DrawParams, Planes, Bits, Ages, Decay, StatsUAV,
+				(uint32)FGpuResidentSimulation::ExtraStatsWord);
+		};
 
 	bGpuLiveDispatchInFlight = true;
 	GpuLiveResult = MakeShared<FGpuLiveDispatchResult, ESPMode::ThreadSafe>();
+	GpuLiveResult->DrawParams = DrawParams;
 
 	FGpuResidentSimulation* Session = GpuLive.Get();
 	TSharedPtr<FGpuLiveDispatchResult, ESPMode::ThreadSafe> Result = GpuLiveResult;
@@ -94,14 +286,16 @@ void AAutomataOrchestrator::DispatchGpuLive()
 	// Session - сырой указатель: сессию разрушают только после
 	// PendingStepFuture.Wait() (EndGpuLive(), EndPlay()).
 	PendingStepFuture = Async(EAsyncExecution::ThreadPool,
-		[Session, Rule = MoveTemp(Rule), Steps, VolumeLimit, Result, WeakThis]()
+		[Session, Rule = MoveTemp(Rule), Steps, VolumeLimit, Result, WeakThis, CountVisible = MoveTemp(CountVisible)]()
 		{
 			const double StartSeconds = FPlatformTime::Seconds();
 			FString Error;
-			const int32 Done = Session->Advance(Rule, Steps, VolumeLimit, Error);
+			const int32 Done = Session->Advance(Rule, Steps, VolumeLimit, Error, CountVisible);
 
 			Result->Generations = Done;
 			Result->Stats = Session->GetStats();
+			Result->VolumeMin = Session->GetMinCell();
+			Result->VolumeDim = Session->GetVolumeDim();
 			Result->Seconds = FPlatformTime::Seconds() - StartSeconds;
 			Result->Error = MoveTemp(Error);
 
@@ -172,7 +366,10 @@ void AAutomataOrchestrator::ApplyGpuLiveResult()
 	if (bResetToInitialStatePending || bNewSeedPending || bStepBackwardPending)
 	{
 		EndGpuLive(true);
+		return;
 	}
+
+	ShowGpuLiveCells(*Result);
 }
 
 void AAutomataOrchestrator::EndGpuLive(bool bRenderAfter)
@@ -206,6 +403,14 @@ void AAutomataOrchestrator::EndGpuLive(bool bRenderAfter)
 	GpuLiveResult.Reset();
 	bGpuLiveActive = false;
 	bGpuLiveDispatchInFlight = false;
+
+	// GPU-картинку убрать (слоты GPU-Scene освобождаются под HISM) и вернуть
+	// HISM на экран - его тут же перерисует RenderCurrentGrid() или
+	// отложенное действие.
+	if (GpuCellsComponent)
+	{
+		GpuCellsComponent->ClearCells();
+	}
 
 	Grid = MoveTemp(NewGrid);
 	SelectedCells.Reset();

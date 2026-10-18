@@ -1,0 +1,156 @@
+// Какие клетки GPU-сессии рисовать - перенос BuildCellRenderData() и
+// IsCellEnclosed() (AutomataOrchestrator_Rendering.cpp) на GPU, правило в
+// правило. Общий для двух проходов, которые обязаны совпасть: счёт видимых
+// (CellVisibleCount.usf, по нему владелец задаёт ёмкость) и запись экземпляров
+// (CellGpuInstanceWriter.usf, CellsCS). Параметры заполняет
+// FCellGpuDrawParams::FillVisibilityParameters().
+//
+// Позиции - в той же системе, что у HISM-пути: GridToWorld() решётки, которая
+// для компонента клеток локальная (AddInstances(..., bWorldSpace=false)).
+
+int3 InVolumeDim;
+int3 InVolumeMin;
+float3 InStep;
+float3 InOrigin;
+
+// Соседи "по грани" (BuildFaceNeighborOffsets); 0 - "только поверхность" выключена.
+uint InFaceOffsetCount;
+int4 InFaceOffsets[26];
+
+uint InDecayPlane;
+
+// Фильтр возраста: маска на 256 возрастов, 8 слов по 32 бита.
+uint InAgeFilterActive;
+uint4 InAgeMask[2];
+
+// Куб отсечения (ARenderCullVolume), границы включительные - IsInsideOrOn().
+uint InCullActive;
+float3 InCullMin;
+float3 InCullMax;
+
+// Срез вдоль взгляда - CellVisibility::FFilter::PassesSlice().
+uint InSliceActive;
+float3 InSliceOrigin;
+float3 InSliceForward;
+float InSliceMinDepth;
+float InSliceMaxDepth;
+
+StructuredBuffer<uint> InputBits;
+StructuredBuffer<uint> InputAges;
+StructuredBuffer<uint> InputDecay;
+
+#define CELL_HIDDEN 0
+#define CELL_ALIVE 1
+#define CELL_DECAYING 2
+
+uint CellIndexOf(int3 Local)
+{
+	return (uint)((Local.z * InVolumeDim.y + Local.y) * InVolumeDim.x + Local.x);
+}
+
+bool IsAliveIndex(uint Index)
+{
+	return ((InputBits[Index >> 5] >> (Index & 31u)) & 1u) != 0;
+}
+
+uint ReadPlaneByte(StructuredBuffer<uint> Plane, uint Index)
+{
+	return (Plane[Index >> 2] >> ((Index & 3u) * 8u)) & 0xFFu;
+}
+
+float3 CellPosition(int3 Local)
+{
+	return float3(InVolumeMin + Local) * InStep + InOrigin;
+}
+
+bool PassesAge(uint Age)
+{
+	if (InAgeFilterActive == 0)
+	{
+		return true;
+	}
+	const uint4 Mask = InAgeMask[Age >> 7];
+	const uint Word = Mask[(Age >> 5) & 3u];
+	return ((Word >> (Age & 31u)) & 1u) != 0;
+}
+
+bool PassesCull(float3 Position)
+{
+	return InCullActive == 0 || (all(Position >= InCullMin) && all(Position <= InCullMax));
+}
+
+bool PassesSlice(float3 Position)
+{
+	if (InSliceActive == 0)
+	{
+		return true;
+	}
+	const float Depth = dot(Position - InSliceOrigin, InSliceForward);
+	return Depth >= InSliceMinDepth && Depth <= InSliceMaxDepth;
+}
+
+/** Закрывает ли сосед грань: жив И сам прошёл все отсечения. Срезанный
+ *  или отфильтрованный сосед открывает грань - иначе на срезе зияла бы
+ *  дыра на месте внутренних клеток (тот же довод, что в IsCellEnclosed). */
+bool CoversFace(int3 Neighbor)
+{
+	if (any(Neighbor < 0) || any(Neighbor >= InVolumeDim))
+	{
+		return false;
+	}
+	const uint Index = CellIndexOf(Neighbor);
+	if (!IsAliveIndex(Index) || !PassesAge(ReadPlaneByte(InputAges, Index)))
+	{
+		return false;
+	}
+	const float3 Position = CellPosition(Neighbor);
+	return PassesSlice(Position) && PassesCull(Position);
+}
+
+/** CELL_HIDDEN / CELL_ALIVE (ColorIndex - возраст) / CELL_DECAYING
+ *  (ColorIndex - стадия угасания). */
+uint EvaluateCell(int3 Local, out uint ColorIndex, out float3 Position)
+{
+	ColorIndex = 0;
+	Position = CellPosition(Local);
+	if (any(Local >= InVolumeDim))
+	{
+		return CELL_HIDDEN;
+	}
+
+	const uint Index = CellIndexOf(Local);
+	if (IsAliveIndex(Index))
+	{
+		const uint Age = ReadPlaneByte(InputAges, Index);
+		if (!PassesAge(Age) || !PassesCull(Position) || !PassesSlice(Position))
+		{
+			return CELL_HIDDEN;
+		}
+		if (InFaceOffsetCount > 0)
+		{
+			bool bEnclosed = true;
+			for (uint i = 0; bEnclosed && i < InFaceOffsetCount; ++i)
+			{
+				bEnclosed = CoversFace(Local + InFaceOffsets[i].xyz);
+			}
+			if (bEnclosed)
+			{
+				return CELL_HIDDEN;
+			}
+		}
+		ColorIndex = Age;
+		return CELL_ALIVE;
+	}
+
+	// Угасающие: фильтр возраста прячет их целиком (возраста у них нет).
+	if (InDecayPlane != 0 && InAgeFilterActive == 0)
+	{
+		const uint State = ReadPlaneByte(InputDecay, Index);
+		if (State != 0 && PassesCull(Position) && PassesSlice(Position))
+		{
+			ColorIndex = State;
+			return CELL_DECAYING;
+		}
+	}
+	return CELL_HIDDEN;
+}

@@ -43,6 +43,8 @@
 
 class UInstancedStaticMeshComponent;
 class UHierarchicalInstancedStaticMeshComponent;
+class UCellGpuInstancesComponent;
+struct FCellGpuDrawParams;
 class UMainHudWidget;
 class UProceduralMeshComponent;
 class UStaticMesh;
@@ -2924,12 +2926,21 @@ public:
 	 *  docs/compute-strategies.md). На CPU сетка возвращается на паузе/стопе
 	 *  и при любом отложенном действии (R, N, Ctrl+Z).
 	 *
-	 *  ШАГ 1 ИЗ 3: пока сессия идёт, картинка НЕ обновляется - рисовать прямо
-	 *  с GPU будет следующий шаг. Поэтому по умолчанию выключено. Не
-	 *  включается при автопереборе сидов, серийной съёмке и Ghost Shape - им
-	 *  нужна CPU-сетка на каждом поколении (будут подключены позже). */
+	 *  Пока сессия идёт, клетки рисуются прямо из её буферов
+	 *  (UCellGpuInstancesComponent): те же цвета, "только поверхность" и три
+	 *  отсечения, но БЕЗ Lumen, distance fields и ray tracing - GPU-only
+	 *  экземпляры их не поддерживают. На паузе возвращается HISM с полным
+	 *  светом. Не включается при автопереборе сидов, серийной съёмке и Ghost
+	 *  Shape - им нужна CPU-сетка на каждом поколении. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU")
 	bool bGpuResidentRun = false;
+
+	/** Сколько видеопамяти отдать плоскостям GPU-сессии, МБ; 0 - 40% объёма
+	 *  видеокарты. Второй потолок объёма сессии рядом с GpuVolumeCellLimit
+	 *  (действует меньший): объём в клетках не говорит, сколько это байт, а
+	 *  без потолка по памяти сессия раздвигалась до 3 ГБ. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU", meta = (ClampMin = "0"))
+	int32 GpuResidentMemoryBudgetMB = 0;
 
 	/** Верхняя граница объёма (в клетках) AABB живых клеток+halo, которую
 	 *  FGpuComputeStrategy согласна посчитать на GPU за один Step() - выше
@@ -4181,8 +4192,29 @@ private:
 		double Seconds = 0.0;
 		FString Error;
 		bool bConsumed = false;
+		/** С какими настройками считались видимые (Stats.ExtraCount) - с ними
+		 *  же и рисуем. Объём - после захода (мог раздвинуться). */
+		TSharedPtr<const FCellGpuDrawParams, ESPMode::ThreadSafe> DrawParams;
+		FIntVector VolumeMin = FIntVector::ZeroValue;
+		FIntVector VolumeDim = FIntVector::ZeroValue;
 	};
 	TSharedPtr<FGpuLiveDispatchResult, ESPMode::ThreadSafe> GpuLiveResult;
+
+	/** Потолок объёма сессии, посчитанный при её открытии: меньшее из
+	 *  GpuVolumeCellLimit и бюджета видеопамяти (GpuResidentMemoryBudgetMB). */
+	int64 GpuLiveCellLimit = 0;
+	int64 ComputeGpuLiveCellLimit(bool bWithDecay) const;
+
+	/** Клетки сессии на экране - GPU-only экземпляры, без CPU-копии. Создаётся
+	 *  лениво, живёт под компонентом клеток (та же локальная система). */
+	UPROPERTY(Transient)
+	TObjectPtr<UCellGpuInstancesComponent> GpuCellsComponent;
+	UCellGpuInstancesComponent* EnsureGpuCellsComponent();
+	/** Снимок настроек картинки для GPU-пути - то же, что читает
+	 *  BuildCellRenderData(): решётка, масштаб меша, цвета, отсечения. */
+	TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> BuildGpuDrawParams();
+	/** Показать поколение из итога захода. */
+	void ShowGpuLiveCells(const FGpuLiveDispatchResult& Result);
 
 	bool CanUseGpuLive() const;
 	bool BeginGpuLive();

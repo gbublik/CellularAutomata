@@ -1,33 +1,39 @@
 // Сводка по объёму GPU-сессии (FGpuResidentSimulation): число живых клеток и
-// их габарит. Единственное, что заход GPU-сессии читает обратно на CPU -
-// 32 байта вместо всей сетки.
+// их габарит, то же по угасающим. Единственное, что заход GPU-сессии читает
+// обратно на CPU - 64 байта вместо всей сетки.
 //
 // Поток на слово битовой плоскости. Слово может накрывать несколько строк
 // (VolumeDim.x не обязан быть кратен 32, а при узком объёме меньше 32), так
 // что координаты считаются по каждому установленному биту, а не по слову.
 //
-// OutputStats (8 uint, обнуляются перед проходом):
-//   [0]     число живых
-//   [1..3]  max(Dim - 1 - coord) по x, y, z  - то есть минимум, но через Max,
-//           чтобы весь буфер обнулялся одной очисткой
-//   [4..6]  max(coord) по x, y, z
-//   [7]     число непустых групп (диагностика; 0 - объём пуст)
+// OutputStats (16 uint, обнуляются перед проходом):
+//   [0]       число живых
+//   [1..3]    max(Dim - 1 - coord) по x, y, z  - то есть минимум, но через Max,
+//             чтобы весь буфер обнулялся одной очисткой
+//   [4..6]    max(coord) по x, y, z
+//   [7]       число непустых групп (диагностика; 0 - объём пуст)
+//   [8]       число угасающих (только при bDecayPlane)
+//   [9..11]   их "минимум" тем же приёмом, [12..14] их максимум
+//   [15]      не трогается: его заполняет дополнительный проход владельца
+//             (FGpuResidentSimulation::FExtraPass - счёт видимых клеток)
 
 #include "/Engine/Public/Platform.ush"
 
 uint3 VolumeDim;
 uint WordCount;
+uint bDecayPlane;
 StructuredBuffer<uint> InputBits;
+StructuredBuffer<uint> InputDecay;
 RWStructuredBuffer<uint> OutputStats;
 
 #define GROUP_SIZE 64
 
-groupshared uint GroupStats[8];
+groupshared uint GroupStats[15];
 
 [numthreads(GROUP_SIZE, 1, 1)]
 void MainCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-	if (GroupIndex < 8)
+	if (GroupIndex < 15)
 	{
 		GroupStats[GroupIndex] = 0;
 	}
@@ -40,12 +46,40 @@ void MainCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex, uint3 D
 	uint Count = 0;
 	uint3 InvMin = uint3(0, 0, 0);
 	uint3 Max = uint3(0, 0, 0);
+	uint DecayCount = 0;
+	uint3 DecayInvMin = uint3(0, 0, 0);
+	uint3 DecayMax = uint3(0, 0, 0);
+	const uint PlaneXY = VolumeDim.x * VolumeDim.y;
+	const uint CellCount = PlaneXY * VolumeDim.z;
 
 	if (WordIndex < WordCount)
 	{
 		uint Word = InputBits[WordIndex];
 		Count = countbits(Word);
-		const uint PlaneXY = VolumeDim.x * VolumeDim.y;
+
+		// Угасающая клетка - ненулевой байт состояния у НЕживой клетки (живая
+		// перебивает угасание, как в ForEachDecayingByte). Габарит угасающих
+		// нужен раздвиганию: угасающая клетка запрещает рождение в своей точке.
+		if (bDecayPlane != 0)
+		{
+			for (uint Bit = 0; Bit < 32u; ++Bit)
+			{
+				const uint CellIndex = WordIndex * 32u + Bit;
+				if (CellIndex >= CellCount || ((Word >> Bit) & 1u) != 0)
+				{
+					continue;
+				}
+				const uint State = (InputDecay[CellIndex >> 2] >> ((CellIndex & 3u) * 8u)) & 0xFFu;
+				if (State != 0)
+				{
+					const uint3 Coord = uint3(CellIndex % VolumeDim.x, (CellIndex / VolumeDim.x) % VolumeDim.y, CellIndex / PlaneXY);
+					DecayCount += 1u;
+					DecayInvMin = max(DecayInvMin, (VolumeDim - 1u) - Coord);
+					DecayMax = max(DecayMax, Coord);
+				}
+			}
+		}
+
 		while (Word != 0)
 		{
 			const uint Bit = firstbitlow(Word);
@@ -67,7 +101,28 @@ void MainCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex, uint3 D
 		InterlockedMax(GroupStats[5], Max.y);
 		InterlockedMax(GroupStats[6], Max.z);
 	}
+	if (DecayCount != 0)
+	{
+		InterlockedAdd(GroupStats[8], DecayCount);
+		InterlockedMax(GroupStats[9], DecayInvMin.x);
+		InterlockedMax(GroupStats[10], DecayInvMin.y);
+		InterlockedMax(GroupStats[11], DecayInvMin.z);
+		InterlockedMax(GroupStats[12], DecayMax.x);
+		InterlockedMax(GroupStats[13], DecayMax.y);
+		InterlockedMax(GroupStats[14], DecayMax.z);
+	}
 	GroupMemoryBarrierWithGroupSync();
+
+	if (GroupIndex == 0 && GroupStats[8] != 0)
+	{
+		InterlockedAdd(OutputStats[8], GroupStats[8]);
+		InterlockedMax(OutputStats[9], GroupStats[9]);
+		InterlockedMax(OutputStats[10], GroupStats[10]);
+		InterlockedMax(OutputStats[11], GroupStats[11]);
+		InterlockedMax(OutputStats[12], GroupStats[12]);
+		InterlockedMax(OutputStats[13], GroupStats[13]);
+		InterlockedMax(OutputStats[14], GroupStats[14]);
+	}
 
 	if (GroupIndex == 0 && GroupStats[0] != 0)
 	{

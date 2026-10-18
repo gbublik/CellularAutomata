@@ -31,6 +31,7 @@
 #include "Orchestration/StabilityWindow.h"
 #include "Ui/HudFormat.h"
 #include "Automata/Simulation/GpuResidentSimulation.h"
+#include "Automata/Rendering/CellGpuInstancesComponent.h"
 #include "RHI.h"
 
 /**
@@ -4170,10 +4171,30 @@ bool FGpuResidentParityTest::RunTest(const FString& Parameters)
 			continue;
 		}
 
+		// Счёт видимых тем же проходом, что у рисования: "только поверхность"
+		// по шести граням куба, без отсечений. Сверяется с CPU ниже.
+		TSharedRef<FCellGpuDrawParams, ESPMode::ThreadSafe> DrawParams = MakeShared<FCellGpuDrawParams, ESPMode::ThreadSafe>();
+		DrawParams->Step = FVector3f(CellSize);
+		DrawParams->AgeLut.SetNumZeroed(256);
+		DrawParams->DecayLut.SetNumZeroed(256);
+		const TArray<FIntVector> CubeFaces = {
+			FIntVector(1, 0, 0), FIntVector(-1, 0, 0), FIntVector(0, 1, 0),
+			FIntVector(0, -1, 0), FIntVector(0, 0, 1), FIntVector(0, 0, -1) };
+		for (const FIntVector& Face : CubeFaces)
+		{
+			DrawParams->FaceOffsets.Add(FIntVector4(Face.X, Face.Y, Face.Z, 0));
+		}
+		const FGpuResidentSimulation::FExtraPass CountVisible =
+			[DrawParams](FRDGBuilder& GraphBuilder, const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay, FRDGBufferUAV* StatsUAV)
+			{
+				CellGpuDrawing::AddCountVisiblePass(GraphBuilder, *DrawParams, Planes, Bits, Ages, Decay, StatsUAV,
+					(uint32)FGpuResidentSimulation::ExtraStatsWord);
+			};
+
 		bool bAdvanced = true;
 		for (int32 Dispatch = 0; Dispatch < Dispatches; ++Dispatch)
 		{
-			if (Session.Advance(Rule, StepsPerDispatch, VolumeLimit, Error) != StepsPerDispatch)
+			if (Session.Advance(Rule, StepsPerDispatch, VolumeLimit, Error, CountVisible) != StepsPerDispatch)
 			{
 				AddError(FString::Printf(TEXT("%s: заход %d не выполнен - %s"), Case.Name, Dispatch, *Error));
 				bAdvanced = false;
@@ -4189,6 +4210,30 @@ bool FGpuResidentParityTest::RunTest(const FString& Parameters)
 		Session.Download(Downloaded);
 
 		TestEqual(FString::Printf(TEXT("%s: сводка сессии знает число живых"), Case.Name), Session.GetStats().AliveCount, (int64)Reference->Num());
+
+		// Видимые по CPU: живые, у которых хоть одна грань открыта, плюс все
+		// угасающие (BuildCellRenderData() рисует их всегда).
+		TArray<FIntVector> ReferenceAlive;
+		Reference->GetAliveCells(ReferenceAlive);
+		int64 ExpectedVisible = 0;
+		for (const FIntVector& Cell : ReferenceAlive)
+		{
+			bool bEnclosed = true;
+			for (const FIntVector& Face : CubeFaces)
+			{
+				bEnclosed = bEnclosed && Reference->IsAlive(Cell + Face);
+			}
+			ExpectedVisible += bEnclosed ? 0 : 1;
+		}
+		TArray<FIntVector> ReferenceDecaying;
+		TArray<uint8> ReferenceDecayStates;
+		if (Rule.HasDecayStates())
+		{
+			Reference->GetDecayingCells(ReferenceDecaying, ReferenceDecayStates);
+		}
+		ExpectedVisible += ReferenceDecaying.Num();
+		TestEqual(FString::Printf(TEXT("%s: сводка знает число угасающих"), Case.Name), Session.GetStats().DecayingCount, (int64)ReferenceDecaying.Num());
+		TestEqual(FString::Printf(TEXT("%s: счёт видимых на GPU совпал с CPU"), Case.Name), Session.GetStats().ExtraCount, ExpectedVisible);
 
 		FString Mismatch;
 		if (!AutomataTestUtils::GridsMatch(*Reference, Downloaded, Mismatch))

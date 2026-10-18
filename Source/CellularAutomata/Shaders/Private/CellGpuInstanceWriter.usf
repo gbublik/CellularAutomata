@@ -1,50 +1,135 @@
-// ПРОТОТИП: пишет тестовый узор экземпляров прямо в GPU-Scene
-// (UCellGpuInstancesComponent). Повторяет PCGSceneWriter.usf движка, только
-// позиция берётся не из буфера, а из индекса: куб GridDim^3 с шагом Spacing.
+// Запись экземпляров клеток прямо в GPU-Scene (UCellGpuInstancesComponent).
+// Схема - как у PCGSceneWriter.usf движка. Три точки входа:
+//   TestPatternCS - прототип: куб GridDim^3 по индексу (сравнение FPS);
+//   CellsCS       - клетки из плоскостей GPU-сессии (FGpuResidentSimulation):
+//                   отбор видимых и запись экземпляров одним проходом;
+//   HideTailCS    - слоты сверх фактического числа видимых помечаются
+//                   скрытыми (ёмкость задаёт CPU, число решает GPU).
 
 #include "/Engine/Private/Common.ush"
 #include "/Engine/Private/ComputeShaderUtils.ush"
 #include "/Engine/Private/GPUScene/GPUSceneWriter.ush"
 
 uint InPrimitiveId;
+uint InCustomDataCount;
+uint InPayloadDataFlags;
+
+float4x4 MakeLocalToPrimitive(float3 Position, float3 Scale)
+{
+	// Строка 3 - перенос: матрицы движка умножаются как mul(float4(p, 1), M).
+	float4x4 M = (float4x4)0;
+	M[0][0] = Scale.x;
+	M[1][1] = Scale.y;
+	M[2][2] = Scale.z;
+	M[3] = float4(Position, 1.0f);
+	return M;
+}
+
+void WriteCellInstance(uint PrimitiveId, uint LocalId, float3 Position, float3 Scale, float3 Color)
+{
+	const FPrimitiveSceneData PrimitiveData = GetPrimitiveData(PrimitiveId);
+	const uint InstanceId = PrimitiveData.InstanceSceneDataOffset + LocalId;
+	InitializeInstanceSceneDataLS(InstanceId, PrimitiveId, LocalId, InPayloadDataFlags, InCustomDataCount, 0.5f, MakeLocalToPrimitive(Position, Scale));
+	if (InCustomDataCount >= 3)
+	{
+		const FInstancePayloadDataOffsets PayloadOffsets = GetInstancePayloadDataOffsets(PrimitiveId, InPayloadDataFlags, LocalId);
+		WriteInstanceCustomData(PayloadOffsets, 0, float4(Color, 1.0f));
+	}
+}
+
+// ---------------------------------------------------------------- прототип
+
 uint InNumInstances;
 uint InGridDim;
 float InSpacing;
 float InMeshScale;
-uint InCustomDataCount;
-uint InPayloadDataFlags;
 
-[numthreads(NUM_THREADS_PER_GROUP, 1, 1)]
-void MainCS(const uint3 GroupId : SV_GroupID, const uint GroupIndex : SV_GroupIndex)
+[numthreads(64, 1, 1)]
+void TestPatternCS(const uint3 GroupId : SV_GroupID, const uint GroupIndex : SV_GroupIndex)
 {
-	const uint LocalId = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, NUM_THREADS_PER_GROUP);
+	const uint LocalId = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
 	if (LocalId >= InNumInstances)
 	{
 		return;
 	}
-
-	const FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InPrimitiveId);
-	const uint InstanceId = PrimitiveData.InstanceSceneDataOffset + LocalId;
-
 	const uint D = max(InGridDim, 1u);
 	const uint3 Cell = uint3(LocalId % D, (LocalId / D) % D, LocalId / (D * D));
 	const float3 Position = (float3(Cell) - (float(D) - 1.0f) * 0.5f) * InSpacing;
+	WriteCellInstance(InPrimitiveId, LocalId, Position, InMeshScale.xxx, float3(Cell) / float(max(D - 1u, 1u)));
+}
 
-	// Строка 3 - перенос: матрицы движка умножаются как mul(float4(p, 1), M).
-	float4x4 LocalToPrimitive = (float4x4)0;
-	LocalToPrimitive[0][0] = InMeshScale;
-	LocalToPrimitive[1][1] = InMeshScale;
-	LocalToPrimitive[2][2] = InMeshScale;
-	LocalToPrimitive[3] = float4(Position, 1.0f);
+// ------------------------------------------------------------------ клетки
 
-	InitializeInstanceSceneDataLS(InstanceId, InPrimitiveId, LocalId, InPayloadDataFlags, InCustomDataCount, 0.5f, LocalToPrimitive);
+#include "CellVisibility.ush"
 
-	if (InCustomDataCount >= 3)
+uint InCapacity;
+float3 InScale;
+// Таблицы цвета - FColor, упакованный как R | G << 8 | B << 16 (256 записей).
+StructuredBuffer<uint> AgeLut;
+StructuredBuffer<uint> DecayLut;
+RWStructuredBuffer<uint> RWCounter;
+
+float3 UnpackColor(uint Packed)
+{
+	// Те же /255, что HISM-путь кладёт в custom data (InstancedMeshCellGridRenderer).
+	return float3(Packed & 0xFFu, (Packed >> 8) & 0xFFu, (Packed >> 16) & 0xFFu) / 255.0f;
+}
+
+groupshared uint GroupVisible;
+groupshared uint GroupBase;
+
+[numthreads(4, 4, 4)]
+void CellsCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupIndex : SV_GroupIndex)
+{
+	if (GroupIndex == 0)
 	{
-		// Цвет - градиент по положению в кубе, чтобы было видно, что каждый
-		// экземпляр получил свои данные.
-		const float3 Color = float3(Cell) / float(max(D - 1u, 1u));
-		const FInstancePayloadDataOffsets PayloadOffsets = GetInstancePayloadDataOffsets(InPrimitiveId, InPayloadDataFlags, LocalId);
-		WriteInstanceCustomData(PayloadOffsets, 0, float4(Color, 1.0f));
+		GroupVisible = 0;
 	}
+	GroupMemoryBarrierWithGroupSync();
+
+	// Без раннего return: дальше два барьера группы, их обязаны пройти все.
+	uint ColorIndex;
+	float3 Position;
+	const uint Kind = EvaluateCell(int3(DispatchThreadId), ColorIndex, Position);
+	const bool bVisible = Kind != CELL_HIDDEN;
+
+	// Слот раздаётся в два уровня: внутри группы - через groupshared, наружу
+	// одна атомарная операция на группу, а не на клетку.
+	uint LocalSlot = 0;
+	if (bVisible)
+	{
+		InterlockedAdd(GroupVisible, 1u, LocalSlot);
+	}
+	GroupMemoryBarrierWithGroupSync();
+	if (GroupIndex == 0 && GroupVisible > 0)
+	{
+		InterlockedAdd(RWCounter[0], GroupVisible, GroupBase);
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	if (bVisible)
+	{
+		const uint Slot = GroupBase + LocalSlot;
+		// Не влезло в ёмкость - клетка не рисуется (ёмкость задана по счёту
+		// предыдущего прохода, расхождение - это кадр между поколениями).
+		if (Slot < InCapacity)
+		{
+			const float3 Color = UnpackColor(Kind == CELL_ALIVE ? AgeLut[ColorIndex] : DecayLut[ColorIndex]);
+			WriteCellInstance(InPrimitiveId, Slot, Position, InScale, Color);
+		}
+	}
+}
+
+StructuredBuffer<uint> InCounter;
+
+[numthreads(64, 1, 1)]
+void HideTailCS(const uint3 GroupId : SV_GroupID, const uint GroupIndex : SV_GroupIndex)
+{
+	const uint LocalId = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
+	if (LocalId >= InCapacity || LocalId < InCounter[0])
+	{
+		return;
+	}
+	const FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InPrimitiveId);
+	WriteInstancePrimitiveIdAndFlags(PrimitiveData.InstanceSceneDataOffset + LocalId, InPrimitiveId, INSTANCE_SCENE_DATA_FLAG_HIDDEN);
 }

@@ -24,7 +24,9 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntVector, VolumeDim)
 		SHADER_PARAMETER(uint32, WordCount)
+		SHADER_PARAMETER(uint32, bDecayPlane)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputBits)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecay)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputStats)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -36,16 +38,39 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FCellularAutomatonStatsCS, "/Project/CellularAutomata/Private/CellularAutomatonStats.usf", "MainCS", SF_Compute);
 
-/** Буферы GPU. Трогает только render thread - вызывающий поток лишь ставит
- *  команды и ждёт их. Пары [2] - пинг-понг: Current указывает на ту, где
- *  лежит последнее посчитанное поколение. */
-struct FGpuResidentSimulation::FGpuState
+/** Перекладка плоскостей в новую раскладку (CellularAutomatonRelayout.usf). */
+class FCellularAutomatonRelayoutCS : public FGlobalShader
 {
-	TRefCountPtr<FRDGPooledBuffer> Bits[2];
-	TRefCountPtr<FRDGPooledBuffer> Ages[2];
-	TRefCountPtr<FRDGPooledBuffer> Decay[2];
-	int32 Current = 0;
+public:
+	DECLARE_GLOBAL_SHADER(FCellularAutomatonRelayoutCS);
+	SHADER_USE_PARAMETER_STRUCT(FCellularAutomatonRelayoutCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(FIntVector, NewDim)
+		SHADER_PARAMETER(FIntVector, OldDim)
+		SHADER_PARAMETER(FIntVector, OldOffsetInNew)
+		SHADER_PARAMETER(uint32, bDecayPlane)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputBits)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputAges)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecay)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputBits)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputAges)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputDecay)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
 };
+
+IMPLEMENT_GLOBAL_SHADER(FCellularAutomatonRelayoutCS, "/Project/CellularAutomata/Private/CellularAutomatonRelayout.usf", "MainCS", SF_Compute);
+
+namespace
+{
+	/** Слов в сводке (CellularAutomatonStats.usf, раскладка - в его шапке). */
+	constexpr int32 StatsWordCount = 16;
+}
 
 /** Плоскости на CPU: биты жизни (по биту), возрасты и стадии угасания (по
  *  байту, упакованы по четыре в слово) - та же раскладка, что у шейдера. */
@@ -183,7 +208,7 @@ namespace
 }
 
 FGpuResidentSimulation::FGpuResidentSimulation()
-	: GpuState(MakeShared<FGpuState, ESPMode::ThreadSafe>())
+	: GpuState(MakeShared<FGpuResidentPlanes, ESPMode::ThreadSafe>())
 {
 }
 
@@ -192,7 +217,7 @@ FGpuResidentSimulation::~FGpuResidentSimulation()
 	// Пулированные буферы освобождаются на render thread - последняя ссылка
 	// уезжает туда вместе с командой.
 	ENQUEUE_RENDER_COMMAND(GpuResidentSimulationRelease)(
-		[State = TSharedPtr<FGpuState, ESPMode::ThreadSafe>(GpuState)](FRHICommandListImmediate&) mutable
+		[State = TSharedPtr<FGpuResidentPlanes, ESPMode::ThreadSafe>(GpuState)](FRHICommandListImmediate&) mutable
 		{
 			State.Reset();
 		});
@@ -252,10 +277,17 @@ bool FGpuResidentSimulation::Upload(const FCellGrid& Grid, const FCellularAutoma
 	NewStats.AliveCount = AliveCells.Num();
 	NewStats.MinAlive = BoundsMin;
 	NewStats.MaxAlive = BoundsMax;
+	FIntVector DecayMin = FIntVector::ZeroValue;
+	FIntVector DecayMax = FIntVector::ZeroValue;
+	bool bAnyDecaying = false;
 	for (const FIntVector& Cell : DecayingCells)
 	{
 		ExpandBounds(BoundsMin, BoundsMax, bAny, Cell);
+		ExpandBounds(DecayMin, DecayMax, bAnyDecaying, Cell);
 	}
+	NewStats.DecayingCount = DecayingCells.Num();
+	NewStats.MinDecaying = DecayMin;
+	NewStats.MaxDecaying = DecayMax;
 
 	FIntVector NewMinCell;
 	FIntVector NewDim;
@@ -298,7 +330,7 @@ bool FGpuResidentSimulation::Upload(const FCellGrid& Grid, const FCellularAutoma
 void FGpuResidentSimulation::UploadPlanes(const FPlanes& Planes)
 {
 	TSharedRef<FPlanes, ESPMode::ThreadSafe> Data = MakeShared<FPlanes, ESPMode::ThreadSafe>(Planes);
-	RunOnRenderThreadAndWait([State = GpuState, Data](FRHICommandListImmediate& RHICmdList)
+	RunOnRenderThreadAndWait([State = GpuState, Data, Min = MinCell, Dim = VolumeDim, bWithDecay = bDecayPlane](FRHICommandListImmediate& RHICmdList)
 	{
 		FRDGBuilder GraphBuilder(RHICmdList);
 
@@ -318,6 +350,9 @@ void FGpuResidentSimulation::UploadPlanes(const FPlanes& Planes)
 		MakePair(TEXT("CAResidentAges"), Data->Ages, State->Ages);
 		MakePair(TEXT("CAResidentDecay"), Data->Decay, State->Decay);
 		State->Current = 0;
+		State->MinCell = Min;
+		State->VolumeDim = Dim;
+		State->bDecayPlane = bWithDecay;
 
 		GraphBuilder.Execute();
 	});
@@ -412,23 +447,19 @@ bool FGpuResidentSimulation::Regrow(int32 RequiredBand, int64 MaxVolumeCells, FS
 {
 	const double StartSeconds = FPlatformTime::Seconds();
 
-	FPlanes Old;
-	ReadPlanes(Old);
-
-	// Новый габарит - по живым и угасающим, как при заливке.
+	// Новый габарит - по живым и угасающим, как при заливке; оба уже в сводке.
 	FIntVector BoundsMin = FIntVector::ZeroValue;
 	FIntVector BoundsMax = FIntVector::ZeroValue;
 	bool bAny = false;
-	ForEachAliveBit(Old.Bits, VolumeDim, [&](const FIntVector& Local, int32)
+	if (Stats.AliveCount > 0)
 	{
-		ExpandBounds(BoundsMin, BoundsMax, bAny, MinCell + Local);
-	});
-	if (bDecayPlane)
+		ExpandBounds(BoundsMin, BoundsMax, bAny, Stats.MinAlive);
+		ExpandBounds(BoundsMin, BoundsMax, bAny, Stats.MaxAlive);
+	}
+	if (Stats.DecayingCount > 0)
 	{
-		ForEachDecayingByte(this, Old.Decay, Old.Bits, VolumeDim, [&](const FIntVector& Local, int32, uint8)
-		{
-			ExpandBounds(BoundsMin, BoundsMax, bAny, MinCell + Local);
-		});
+		ExpandBounds(BoundsMin, BoundsMax, bAny, Stats.MinDecaying);
+		ExpandBounds(BoundsMin, BoundsMax, bAny, Stats.MaxDecaying);
 	}
 	if (!bAny)
 	{
@@ -443,40 +474,77 @@ bool FGpuResidentSimulation::Regrow(int32 RequiredBand, int64 MaxVolumeCells, FS
 		return false;
 	}
 
-	FPlanes New;
-	New.Bits.SetNumZeroed(BitWords(NewCells));
-	New.Ages.SetNumZeroed(ByteWords(NewCells));
-	New.Decay.SetNumZeroed(bDecayPlane ? ByteWords(NewCells) : 1);
-
-	const FIntVector Shift = MinCell - NewMinCell;
-	ForEachAliveBit(Old.Bits, VolumeDim, [&](const FIntVector& Local, int32 OldIndex)
-	{
-		const int32 NewIndex = LinearIndex(Local + Shift, NewDim);
-		New.Bits[NewIndex >> 5] |= 1u << (NewIndex & 31);
-		SetByte(New.Ages, NewIndex, GetByte(Old.Ages, OldIndex));
-	});
-	if (bDecayPlane)
-	{
-		ForEachDecayingByte(this, Old.Decay, Old.Bits, VolumeDim, [&](const FIntVector& Local, int32, uint8 State)
-		{
-			SetByte(New.Decay, LinearIndex(Local + Shift, NewDim), State);
-		});
-	}
-
 	const FIntVector OldDim = VolumeDim;
+	const FIntVector OldOffsetInNew = MinCell - NewMinCell;
+	const int32 NewBitWords = BitWords(NewCells);
+	const int32 NewByteWords = ByteWords(NewCells);
+	const bool bWithDecay = bDecayPlane;
+
+	RunOnRenderThreadAndWait([State = GpuState, NewMinCell, NewDim, OldDim, OldOffsetInNew, NewBitWords, NewByteWords, bWithDecay](FRHICommandListImmediate& RHICmdList)
+	{
+		FRDGBuilder GraphBuilder(RHICmdList);
+		const int32 Cur = State->Current;
+
+		// Новая пара на каждую плоскость: первая половина получает перекладку,
+		// вторая просто чистая (её перезаписывает первый же шаг).
+		auto MakePair = [&GraphBuilder](const TCHAR* Name, int32 Words, FRDGBufferRef (&Out)[2])
+		{
+			for (int32 Half = 0; Half < 2; ++Half)
+			{
+				Out[Half] = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), Words), Name);
+				AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(Out[Half], PF_R32_UINT), 0u);
+			}
+		};
+		FRDGBufferRef NewBits[2];
+		FRDGBufferRef NewAges[2];
+		FRDGBufferRef NewDecay[2];
+		MakePair(TEXT("CAResidentBits"), NewBitWords, NewBits);
+		MakePair(TEXT("CAResidentAges"), NewByteWords, NewAges);
+		MakePair(TEXT("CAResidentDecay"), bWithDecay ? NewByteWords : 1, NewDecay);
+
+		FCellularAutomatonRelayoutCS::FParameters* Params = GraphBuilder.AllocParameters<FCellularAutomatonRelayoutCS::FParameters>();
+		Params->NewDim = NewDim;
+		Params->OldDim = OldDim;
+		Params->OldOffsetInNew = OldOffsetInNew;
+		Params->bDecayPlane = bWithDecay ? 1u : 0u;
+		Params->InputBits = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(State->Bits[Cur]));
+		Params->InputAges = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(State->Ages[Cur]));
+		Params->InputDecay = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(State->Decay[Cur]));
+		Params->OutputBits = GraphBuilder.CreateUAV(NewBits[0], PF_R32_UINT);
+		Params->OutputAges = GraphBuilder.CreateUAV(NewAges[0], PF_R32_UINT);
+		Params->OutputDecay = GraphBuilder.CreateUAV(NewDecay[0], PF_R32_UINT);
+
+		TShaderMapRef<FCellularAutomatonRelayoutCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("CAResidentRelayout"), Shader, Params,
+			FComputeShaderUtils::GetGroupCount(NewDim, FIntVector(4, 4, 4)));
+
+		for (int32 Half = 0; Half < 2; ++Half)
+		{
+			State->Bits[Half] = GraphBuilder.ConvertToExternalBuffer(NewBits[Half]);
+			State->Ages[Half] = GraphBuilder.ConvertToExternalBuffer(NewAges[Half]);
+			State->Decay[Half] = GraphBuilder.ConvertToExternalBuffer(NewDecay[Half]);
+		}
+		State->Current = 0;
+		State->MinCell = NewMinCell;
+		State->VolumeDim = NewDim;
+
+		GraphBuilder.Execute();
+	});
+
 	MinCell = NewMinCell;
 	VolumeDim = NewDim;
 	VolumeCells = NewCells;
-	UploadPlanes(New);
 	++RegrowCount;
 
-	UE_LOG(LogTemp, Log, TEXT("GpuResident: объём раздвинут %dx%dx%d -> %dx%dx%d (запас до края нужен %d) за %.1f мс"),
+	UE_LOG(LogTemp, Log, TEXT("GpuResident: объём раздвинут %dx%dx%d -> %dx%dx%d (запас до края нужен %d, %.1f МБ на GPU) за %.1f мс"),
 		OldDim.X, OldDim.Y, OldDim.Z, VolumeDim.X, VolumeDim.Y, VolumeDim.Z, RequiredBand,
+		double(VolumeCells) * BytesPerCell(bDecayPlane) / (1024.0 * 1024.0),
 		(FPlatformTime::Seconds() - StartSeconds) * 1000.0);
 	return true;
 }
 
-int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 NumSteps, int64 MaxVolumeCells, FString& OutError)
+int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 NumSteps, int64 MaxVolumeCells, FString& OutError,
+	const FExtraPass& ExtraPass)
 {
 	if (!IsUploaded())
 	{
@@ -551,10 +619,10 @@ int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 
 	const uint32 MaxStates = (uint32)Rule.GetStates();
 	const bool bWithDecay = bDecayPlane;
 	TSharedRef<TArray<uint32>, ESPMode::ThreadSafe> StatsWords = MakeShared<TArray<uint32>, ESPMode::ThreadSafe>();
-	StatsWords->SetNumZeroed(8);
+	StatsWords->SetNumZeroed(StatsWordCount);
 
 	RunOnRenderThreadAndWait([State = GpuState, ShaderOffsets = MoveTemp(ShaderOffsets), BirthMask, SurvivalMask, Dim, WordCount,
-		NeighborCount, MaxStates, bWithDecay, Steps, StatsWords](FRHICommandListImmediate& RHICmdList)
+		NeighborCount, MaxStates, bWithDecay, Steps, StatsWords, ExtraPass](FRHICommandListImmediate& RHICmdList)
 	{
 		FRDGBuilder GraphBuilder(RHICmdList);
 		const int32 Cur = State->Current;
@@ -612,13 +680,15 @@ int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 
 		}
 
 		// Сводка по итогу (он теперь в *In).
-		FRDGBufferRef StatsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), 8), TEXT("CAResidentStats"));
+		FRDGBufferRef StatsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), StatsWordCount), TEXT("CAResidentStats"));
 		AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(StatsBuffer, PF_R32_UINT), 0u);
 
 		FCellularAutomatonStatsCS::FParameters* StatsParams = GraphBuilder.AllocParameters<FCellularAutomatonStatsCS::FParameters>();
 		StatsParams->VolumeDim = Dim;
 		StatsParams->WordCount = (uint32)WordCount;
+		StatsParams->bDecayPlane = bWithDecay ? 1u : 0u;
 		StatsParams->InputBits = GraphBuilder.CreateSRV(BitsIn);
+		StatsParams->InputDecay = GraphBuilder.CreateSRV(DecayIn);
 		StatsParams->OutputStats = GraphBuilder.CreateUAV(StatsBuffer, PF_R32_UINT);
 		const int32 Groups = FMath::DivideAndRoundUp(WordCount, FCellularAutomatonStatsCS::GroupSize);
 		// Сетка групп раскатывается во вторую размерность, если групп больше
@@ -626,6 +696,11 @@ int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 
 		const FIntVector GroupCount(FMath::Min(Groups, 65535), FMath::DivideAndRoundUp(Groups, 65535), 1);
 		TShaderMapRef<FCellularAutomatonStatsCS> StatsShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("CAResidentStats"), StatsShader, StatsParams, GroupCount);
+
+		if (ExtraPass)
+		{
+			ExtraPass(GraphBuilder, *State, BitsIn, AgesIn, DecayIn, GraphBuilder.CreateUAV(StatsBuffer, PF_R32_UINT));
+		}
 
 		TSharedPtr<FRHIGPUBufferReadback> Readback = MakeShared<FRHIGPUBufferReadback>(TEXT("CAResidentStatsReadback"));
 		AddReadbackBufferPass(GraphBuilder, RDG_EVENT_NAME("CAResidentStatsReadback"), StatsBuffer,
@@ -640,8 +715,8 @@ int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 
 
 		FRHIGPUBufferReadback* Raw = Readback.Get();
 		WaitForReadbacks(RHICmdList, MakeArrayView(&Raw, 1));
-		const uint32* Src = (const uint32*)Readback->Lock(8 * sizeof(uint32));
-		FMemory::Memcpy(StatsWords->GetData(), Src, 8 * sizeof(uint32));
+		const uint32* Src = (const uint32*)Readback->Lock(StatsWordCount * sizeof(uint32));
+		FMemory::Memcpy(StatsWords->GetData(), Src, StatsWordCount * sizeof(uint32));
 		Readback->Unlock();
 	});
 
@@ -653,6 +728,14 @@ int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 
 		Stats.MinAlive = MinCell + (Last - FIntVector((int32)Words[1], (int32)Words[2], (int32)Words[3]));
 		Stats.MaxAlive = MinCell + FIntVector((int32)Words[4], (int32)Words[5], (int32)Words[6]);
 	}
+	Stats.DecayingCount = Words[8];
+	if (Stats.DecayingCount > 0)
+	{
+		const FIntVector Last = Dim - FIntVector(1, 1, 1);
+		Stats.MinDecaying = MinCell + (Last - FIntVector((int32)Words[9], (int32)Words[10], (int32)Words[11]));
+		Stats.MaxDecaying = MinCell + FIntVector((int32)Words[12], (int32)Words[13], (int32)Words[14]);
+	}
+	Stats.ExtraCount = Words[ExtraStatsWord];
 
 	UE_LOG(LogTemp, Log, TEXT("GpuResident: %d поколени(й) за %.2f мс%s - живых %lld, объём %dx%dx%d"),
 		Steps, (FPlatformTime::Seconds() - StartSeconds) * 1000.0, bRegrown ? TEXT(" (с раздвиганием объёма)") : TEXT(""),

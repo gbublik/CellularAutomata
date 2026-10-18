@@ -1,0 +1,35 @@
+// Сколько клеток GPU-сессии будет нарисовано (CellVisibility.ush). Идёт
+// дополнительным проходом в заходе сессии, итог уезжает назад вместе со
+// сводкой - по нему UCellGpuInstancesComponent задаёт ёмкость (её надо знать
+// на CPU: она решает, сколько слотов GPU-Scene выделить примитиву).
+
+#include "/Engine/Public/Platform.ush"
+#include "CellVisibility.ush"
+
+uint CounterIndex;
+RWStructuredBuffer<uint> OutputCounter;
+
+groupshared uint GroupCount;
+
+[numthreads(4, 4, 4)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupIndex : SV_GroupIndex)
+{
+	if (GroupIndex == 0)
+	{
+		GroupCount = 0;
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	uint ColorIndex;
+	float3 Position;
+	if (EvaluateCell(int3(DispatchThreadId), ColorIndex, Position) != CELL_HIDDEN)
+	{
+		InterlockedAdd(GroupCount, 1u);
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	if (GroupIndex == 0 && GroupCount != 0)
+	{
+		InterlockedAdd(OutputCounter[CounterIndex], GroupCount);
+	}
+}

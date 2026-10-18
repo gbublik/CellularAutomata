@@ -1,5 +1,6 @@
 #include "Automata/Rendering/CellGpuInstancesComponent.h"
 
+#include "Automata/Simulation/GpuResidentSimulation.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "Engine/StaticMesh.h"
 #include "GlobalShader.h"
@@ -14,9 +15,81 @@
 #include "SceneInterface.h"
 #include "ShaderParameterStruct.h"
 
-/** Пишет экземпляры тестового узора прямо в GPU-Scene. Повторяет
- *  FPCGSceneWriterCS (Plugins/PCG/Shaders/Private/PCGSceneWriter.usf):
- *  те же дефайны окружения и та же структура параметров записи. */
+namespace
+{
+	/** Цвет экземпляра - те же три float custom data, что HISM даёт M_Cell. */
+	constexpr int32 GpuInstanceCustomDataFloats = 3;
+	constexpr int32 MaxFaceOffsets = 26;
+	/** Меньше не заводим: каждое пересоздание прокси - пара пустых кадров. */
+	constexpr int32 MinCellsCapacity = 64 * 1024;
+}
+
+/** Параметры отбора видимых (CellVisibility.ush) - общие для счёта и записи. */
+BEGIN_SHADER_PARAMETER_STRUCT(FCellVisibilityParameters, )
+	SHADER_PARAMETER(FIntVector, InVolumeDim)
+	SHADER_PARAMETER(FIntVector, InVolumeMin)
+	SHADER_PARAMETER(FVector3f, InStep)
+	SHADER_PARAMETER(FVector3f, InOrigin)
+	SHADER_PARAMETER(uint32, InFaceOffsetCount)
+	SHADER_PARAMETER_ARRAY(FIntVector4, InFaceOffsets, [MaxFaceOffsets])
+	SHADER_PARAMETER(uint32, InDecayPlane)
+	SHADER_PARAMETER(uint32, InAgeFilterActive)
+	SHADER_PARAMETER_ARRAY(FUintVector4, InAgeMask, [2])
+	SHADER_PARAMETER(uint32, InCullActive)
+	SHADER_PARAMETER(FVector3f, InCullMin)
+	SHADER_PARAMETER(FVector3f, InCullMax)
+	SHADER_PARAMETER(uint32, InSliceActive)
+	SHADER_PARAMETER(FVector3f, InSliceOrigin)
+	SHADER_PARAMETER(FVector3f, InSliceForward)
+	SHADER_PARAMETER(float, InSliceMinDepth)
+	SHADER_PARAMETER(float, InSliceMaxDepth)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputBits)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputAges)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecay)
+END_SHADER_PARAMETER_STRUCT()
+
+namespace
+{
+	void FillVisibilityParameters(FRDGBuilder& GraphBuilder, FCellVisibilityParameters& Out, const FCellGpuDrawParams& Params,
+		const FGpuResidentPlanes& Planes, FRDGBufferRef Bits, FRDGBufferRef Ages, FRDGBufferRef Decay)
+	{
+		Out.InVolumeDim = Planes.VolumeDim;
+		Out.InVolumeMin = Planes.MinCell;
+		Out.InStep = Params.Step;
+		Out.InOrigin = Params.Origin;
+		Out.InFaceOffsetCount = (uint32)FMath::Min(Params.FaceOffsets.Num(), MaxFaceOffsets);
+		for (int32 Index = 0; Index < MaxFaceOffsets; ++Index)
+		{
+			Out.InFaceOffsets[Index] = Params.FaceOffsets.IsValidIndex(Index) ? Params.FaceOffsets[Index] : FIntVector4(0, 0, 0, 0);
+		}
+		Out.InDecayPlane = Planes.bDecayPlane ? 1u : 0u;
+		Out.InAgeFilterActive = Params.bAgeFilterActive ? 1u : 0u;
+		Out.InAgeMask[0] = FUintVector4(Params.AgeMask[0], Params.AgeMask[1], Params.AgeMask[2], Params.AgeMask[3]);
+		Out.InAgeMask[1] = FUintVector4(Params.AgeMask[4], Params.AgeMask[5], Params.AgeMask[6], Params.AgeMask[7]);
+		Out.InCullActive = Params.bCullActive ? 1u : 0u;
+		Out.InCullMin = Params.CullMin;
+		Out.InCullMax = Params.CullMax;
+		Out.InSliceActive = Params.bSliceActive ? 1u : 0u;
+		Out.InSliceOrigin = Params.SliceOrigin;
+		Out.InSliceForward = Params.SliceForward;
+		Out.InSliceMinDepth = Params.SliceMinDepth;
+		Out.InSliceMaxDepth = Params.SliceMaxDepth;
+		Out.InputBits = GraphBuilder.CreateSRV(Bits);
+		Out.InputAges = GraphBuilder.CreateSRV(Ages);
+		Out.InputDecay = GraphBuilder.CreateSRV(Decay);
+	}
+
+	/** Окружение шейдеров записи в GPU-Scene - те же дефайны, что у PCG
+	 *  (PCGSceneWriter.usf): без них шейдер не видит данных примитива. */
+	void SetGpuSceneWriterDefines(FShaderCompilerEnvironment& OutEnvironment, uint32 NumThreadsPerGroup)
+	{
+		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
+		OutEnvironment.SetDefine(TEXT("USE_GPU_SCENE_DATA_RW"), 1);
+		OutEnvironment.SetDefine(TEXT("NUM_THREADS_PER_GROUP"), NumThreadsPerGroup);
+	}
+}
+
+/** Тестовый узор прототипа (TestPatternCS). */
 class FCellGpuInstanceWriterCS : public FGlobalShader
 {
 public:
@@ -44,20 +117,114 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		// Те же три дефайна, что у PCG: без первых двух шейдер не видит
-		// данных примитива и номера кадра GPU-Scene.
-		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
-		OutEnvironment.SetDefine(TEXT("USE_GPU_SCENE_DATA_RW"), 1);
-		OutEnvironment.SetDefine(TEXT("NUM_THREADS_PER_GROUP"), NumThreadsPerGroup);
+		SetGpuSceneWriterDefines(OutEnvironment, NumThreadsPerGroup);
 	}
 };
 
-IMPLEMENT_GLOBAL_SHADER(FCellGpuInstanceWriterCS, "/Project/CellularAutomata/Private/CellGpuInstanceWriter.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FCellGpuInstanceWriterCS, "/Project/CellularAutomata/Private/CellGpuInstanceWriter.usf", "TestPatternCS", SF_Compute);
 
-namespace
+/** Клетки сессии: отбор видимых и запись экземпляров (CellsCS). */
+class FCellGpuCellsWriterCS : public FGlobalShader
 {
-	/** Цвет экземпляра - те же три float custom data, что HISM даёт M_Cell. */
-	constexpr int32 GpuInstanceCustomDataFloats = 3;
+public:
+	DECLARE_GLOBAL_SHADER(FCellGpuCellsWriterCS);
+	SHADER_USE_PARAMETER_STRUCT(FCellGpuCellsWriterCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, InPrimitiveId)
+		SHADER_PARAMETER(uint32, InCustomDataCount)
+		SHADER_PARAMETER(uint32, InPayloadDataFlags)
+		SHADER_PARAMETER(uint32, InCapacity)
+		SHADER_PARAMETER(FVector3f, InScale)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FCellVisibilityParameters, Visibility)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, AgeLut)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, DecayLut)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, RWCounter)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FGPUSceneWriterParameters, GPUSceneWriterParameters)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		SetGpuSceneWriterDefines(OutEnvironment, 64);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FCellGpuCellsWriterCS, "/Project/CellularAutomata/Private/CellGpuInstanceWriter.usf", "CellsCS", SF_Compute);
+
+/** Слоты сверх числа видимых - скрыть (HideTailCS). */
+class FCellGpuHideTailCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FCellGpuHideTailCS);
+	SHADER_USE_PARAMETER_STRUCT(FCellGpuHideTailCS, FGlobalShader);
+
+	static constexpr uint32 NumThreadsPerGroup = 64;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, InPrimitiveId)
+		SHADER_PARAMETER(uint32, InCapacity)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InCounter)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FGPUSceneWriterParameters, GPUSceneWriterParameters)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		SetGpuSceneWriterDefines(OutEnvironment, NumThreadsPerGroup);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FCellGpuHideTailCS, "/Project/CellularAutomata/Private/CellGpuInstanceWriter.usf", "HideTailCS", SF_Compute);
+
+/** Счёт видимых (CellVisibleCount.usf). */
+class FCellVisibleCountCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FCellVisibleCountCS);
+	SHADER_USE_PARAMETER_STRUCT(FCellVisibleCountCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_INCLUDE(FCellVisibilityParameters, Visibility)
+		SHADER_PARAMETER(uint32, CounterIndex)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputCounter)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FCellVisibleCountCS, "/Project/CellularAutomata/Private/CellVisibleCount.usf", "MainCS", SF_Compute);
+
+void CellGpuDrawing::AddCountVisiblePass(FRDGBuilder& GraphBuilder, const FCellGpuDrawParams& Params,
+	const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay,
+	FRDGBufferUAV* Counter, uint32 CounterIndex)
+{
+	if (Planes.VolumeDim.X <= 0 || Planes.VolumeDim.Y <= 0 || Planes.VolumeDim.Z <= 0)
+	{
+		return;
+	}
+
+	FCellVisibleCountCS::FParameters* PassParams = GraphBuilder.AllocParameters<FCellVisibleCountCS::FParameters>();
+	FillVisibilityParameters(GraphBuilder, PassParams->Visibility, Params, Planes, Bits, Ages, Decay);
+	PassParams->CounterIndex = CounterIndex;
+	PassParams->OutputCounter = Counter;
+
+	TShaderMapRef<FCellVisibleCountCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("CellVisibleCount"), Shader, PassParams,
+		FComputeShaderUtils::GetGroupCount(Planes.VolumeDim, FIntVector(4, 4, 4)));
 }
 
 UCellGpuInstancesComponent::UCellGpuInstancesComponent()
@@ -74,6 +241,9 @@ UCellGpuInstancesComponent::UCellGpuInstancesComponent()
 
 void UCellGpuInstancesComponent::ShowTestPattern(int32 InGridDim, float InSpacing, float InMeshScale)
 {
+	bCellsMode = false;
+	CellPlanes.Reset();
+	CellParams.Reset();
 	GridDim = FMath::Max(InGridDim, 0);
 	Spacing = InSpacing;
 	MeshScale = InMeshScale;
@@ -85,9 +255,84 @@ void UCellGpuInstancesComponent::ShowTestPattern(int32 InGridDim, float InSpacin
 	MarkRenderStateDirty();
 }
 
+void UCellGpuInstancesComponent::ShowResidentCells(const TSharedRef<FGpuResidentPlanes, ESPMode::ThreadSafe>& Planes,
+	const TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe>& Params,
+	int64 VisibleCount, const FBox& LocalBounds, UPrimitiveComponent* InReplacedComponent)
+{
+	const bool bEnteringCellsMode = !bCellsMode;
+	bCellsMode = true;
+	CellPlanes = Planes;
+	CellParams = Params;
+	ReplacedComponent = InReplacedComponent;
+	bCellsWritePending = true;
+
+	// Ёмкость: с запасом в полтора раза при росте, ужимается только при
+	// большом перекосе - каждое пересоздание прокси стоит пары пустых кадров.
+	const int64 Required = FMath::Max<int64>(VisibleCount, 1);
+	if (Required > CellGpuDrawing::MaxInstances && !bWarnedOverCeiling)
+	{
+		bWarnedOverCeiling = true;
+		UE_LOG(LogTemp, Warning, TEXT("UCellGpuInstancesComponent: видимых клеток %lld больше потолка %d экземпляров - лишние не рисуются"),
+			VisibleCount, CellGpuDrawing::MaxInstances);
+	}
+	int32 NewCapacity = Capacity;
+	if (bEnteringCellsMode || Required > Capacity || (Capacity > 4 * MinCellsCapacity && Required < Capacity / 4))
+	{
+		NewCapacity = (int32)FMath::Clamp<int64>(Required + Required / 2, MinCellsCapacity, CellGpuDrawing::MaxInstances);
+	}
+
+	// Границы: пересоздаём, только если новый объём вышел за прежние.
+	FBox NewBounds = CellBounds;
+	if (bEnteringCellsMode || !CellBounds.IsValid || !CellBounds.IsInsideOrOn(LocalBounds.Min) || !CellBounds.IsInsideOrOn(LocalBounds.Max))
+	{
+		NewBounds = LocalBounds;
+	}
+
+	if (NewCapacity != Capacity || !(NewBounds == CellBounds))
+	{
+		SetCapacityAndBounds(NewCapacity, NewBounds);
+	}
+}
+
+void UCellGpuInstancesComponent::SetCapacityAndBounds(int32 NewCapacity, const FBox& NewBounds)
+{
+	Capacity = NewCapacity;
+	CellBounds = NewBounds;
+	WrittenForProxy = nullptr;
+	UpdateBounds();
+	MarkRenderStateDirty();
+}
+
+void UCellGpuInstancesComponent::ClearCells()
+{
+	if (!bCellsMode)
+	{
+		return;
+	}
+	bCellsMode = false;
+	bCellsWritePending = false;
+	CellPlanes.Reset();
+	CellParams.Reset();
+	CellBounds = FBox(ForceInit);
+	Capacity = 0;
+	WrittenForProxy = nullptr;
+	MarkRenderStateDirty();
+
+	if (UPrimitiveComponent* Replaced = ReplacedComponent.Get())
+	{
+		Replaced->SetVisibility(true);
+	}
+	ReplacedComponent.Reset();
+}
+
 FBoxSphereBounds UCellGpuInstancesComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
-	// Границы не считаются по экземплярам (их нет на CPU) - задаются узором.
+	// Границы не считаются по экземплярам (их нет на CPU): у клеток сессии
+	// это её объём, у узора - куб по GridDim.
+	if (bCellsMode && CellBounds.IsValid)
+	{
+		return FBoxSphereBounds(CellBounds.TransformBy(LocalToWorld));
+	}
 	const float Half = (FMath::Max(GridDim, 1) * 0.5f + 1.0f) * Spacing;
 	const FBox LocalBox(FVector(-Half), FVector(Half));
 	return FBoxSphereBounds(LocalBox.TransformBy(LocalToWorld));
@@ -119,9 +364,8 @@ FPrimitiveSceneProxy* UCellGpuInstancesComponent::CreateStaticMeshSceneProxy(Nan
 
 	if (!bCreateNanite)
 	{
-		// Прототип проверяет именно Nanite-путь; без Nanite-меша сравнивать
-		// не с чем (HISM в проекте рисует через Nanite).
-		UE_LOG(LogTemp, Warning, TEXT("UCellGpuInstancesComponent: меш без Nanite - прототип рисует только через Nanite"));
+		// Путь рисует только через Nanite (HISM в проекте тоже Nanite).
+		UE_LOG(LogTemp, Warning, TEXT("UCellGpuInstancesComponent: меш без Nanite - GPU-экземпляры рисуются только через Nanite"));
 		return nullptr;
 	}
 
@@ -155,7 +399,7 @@ void UCellGpuInstancesComponent::TickComponent(float DeltaTime, ELevelTick TickT
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (!SceneProxy || Capacity <= 0 || SceneProxy == WrittenForProxy)
+	if (!SceneProxy || Capacity <= 0)
 	{
 		return;
 	}
@@ -166,16 +410,127 @@ void UCellGpuInstancesComponent::TickComponent(float DeltaTime, ELevelTick TickT
 		SeenProxy = SceneProxy;
 		FramesSinceProxy = 0;
 	}
-	if (++FramesSinceProxy < 3)
+	if (FramesSinceProxy < 3)
+	{
+		++FramesSinceProxy;
+		return;
+	}
+
+	if (bCellsMode)
+	{
+		// Прокси пересоздан (ёмкость, границы, материал) - данные потеряны,
+		// пишем заново даже без нового поколения.
+		if (SceneProxy != WrittenForProxy)
+		{
+			bCellsWritePending = true;
+		}
+		if (!bCellsWritePending)
+		{
+			return;
+		}
+		EnqueueCellsWrite();
+		bCellsWritePending = false;
+		WrittenForProxy = SceneProxy;
+
+		// Картинка на месте - прежний рендер больше не нужен на экране.
+		if (UPrimitiveComponent* Replaced = ReplacedComponent.Get())
+		{
+			if (Replaced->IsVisible())
+			{
+				Replaced->SetVisibility(false);
+			}
+		}
+		return;
+	}
+
+	if (SceneProxy == WrittenForProxy)
+	{
+		return;
+	}
+	EnqueueTestPatternWrite();
+	WrittenForProxy = SceneProxy;
+}
+
+void UCellGpuInstancesComponent::EnqueueCellsWrite()
+{
+	FSceneInterface* Scene = GetScene();
+	if (!Scene || !SceneProxy || !CellPlanes.IsValid() || !CellParams.IsValid())
 	{
 		return;
 	}
 
-	EnqueueWrite();
-	WrittenForProxy = SceneProxy;
+	FPrimitiveSceneDesc PrimitiveSceneDesc;
+	PrimitiveSceneDesc.SceneProxy = SceneProxy;
+
+	TSharedRef<FGpuResidentPlanes, ESPMode::ThreadSafe> Planes = CellPlanes.ToSharedRef();
+	TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> Params = CellParams.ToSharedRef();
+	const uint32 InCapacity = (uint32)Capacity;
+
+	PRAGMA_DISABLE_EXPERIMENTAL_WARNINGS
+	Scene->UpdatePrimitiveInstancesFromCompute(&PrimitiveSceneDesc, FGPUSceneWriteDelegate::CreateLambda(
+		[Planes, Params, InCapacity](FRDGBuilder& GraphBuilder, const FGPUSceneWriteDelegateParams& WriteParams)
+		{
+			check(WriteParams.PersistentPrimitiveId != (uint32)INDEX_NONE);
+
+			// Буферы читаются здесь, на render thread, - самое свежее поколение
+			// сессии на момент кадра (см. FGpuResidentPlanes).
+			const FGpuResidentPlanes& State = *Planes;
+			const int32 Cur = State.Current;
+			if (!State.Bits[Cur].IsValid() || State.VolumeDim.X <= 0)
+			{
+				return;
+			}
+
+			FRDGBufferRef Bits = GraphBuilder.RegisterExternalBuffer(State.Bits[Cur]);
+			FRDGBufferRef Ages = GraphBuilder.RegisterExternalBuffer(State.Ages[Cur]);
+			FRDGBufferRef Decay = GraphBuilder.RegisterExternalBuffer(State.Decay[Cur]);
+
+			FRDGBufferRef Counter = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), 1), TEXT("CellGpuVisibleCounter"));
+			AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(Counter, PF_R32_UINT), 0u);
+
+			FRDGBufferRef AgeLut = CreateStructuredBuffer(GraphBuilder, TEXT("CellGpuAgeLut"), sizeof(uint32), Params->AgeLut.Num(),
+				Params->AgeLut.GetData(), Params->AgeLut.Num() * sizeof(uint32));
+			FRDGBufferRef DecayLut = CreateStructuredBuffer(GraphBuilder, TEXT("CellGpuDecayLut"), sizeof(uint32), Params->DecayLut.Num(),
+				Params->DecayLut.GetData(), Params->DecayLut.Num() * sizeof(uint32));
+
+			FCellGpuCellsWriterCS::FParameters* CellsParams = GraphBuilder.AllocParameters<FCellGpuCellsWriterCS::FParameters>();
+			CellsParams->InPrimitiveId = WriteParams.PersistentPrimitiveId;
+			CellsParams->InCustomDataCount = WriteParams.NumCustomDataFloats;
+			CellsParams->InPayloadDataFlags = WriteParams.PackedInstanceSceneDataFlags;
+			CellsParams->InCapacity = InCapacity;
+			CellsParams->InScale = Params->Scale;
+			FillVisibilityParameters(GraphBuilder, CellsParams->Visibility, *Params, State, Bits, Ages, Decay);
+			CellsParams->AgeLut = GraphBuilder.CreateSRV(AgeLut);
+			CellsParams->DecayLut = GraphBuilder.CreateSRV(DecayLut);
+			CellsParams->RWCounter = GraphBuilder.CreateUAV(Counter, PF_R32_UINT);
+			// PCG в 5.7 пишет через ту же (помеченную устаревшей) структуру -
+			// повторяем проверенный путь, а не новый UB без примера.
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			CellsParams->GPUSceneWriterParameters = WriteParams.GPUWriteParams;
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			TShaderMapRef<FCellGpuCellsWriterCS> CellsShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+			FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("CellGpuCellsWriter"),
+				ERDGPassFlags::Compute | ERDGPassFlags::NeverCull, CellsShader, CellsParams,
+				FComputeShaderUtils::GetGroupCount(State.VolumeDim, FIntVector(4, 4, 4)));
+
+			FCellGpuHideTailCS::FParameters* TailParams = GraphBuilder.AllocParameters<FCellGpuHideTailCS::FParameters>();
+			TailParams->InPrimitiveId = WriteParams.PersistentPrimitiveId;
+			TailParams->InCapacity = InCapacity;
+			TailParams->InCounter = GraphBuilder.CreateSRV(Counter);
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			TailParams->GPUSceneWriterParameters = WriteParams.GPUWriteParams;
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			TShaderMapRef<FCellGpuHideTailCS> TailShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+			FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("CellGpuHideTail"),
+				ERDGPassFlags::Compute | ERDGPassFlags::NeverCull, TailShader, TailParams,
+				FComputeShaderUtils::GetGroupCountWrapped(FMath::DivideAndRoundUp<int32>((int32)InCapacity, FCellGpuHideTailCS::NumThreadsPerGroup)));
+		}));
+	PRAGMA_ENABLE_EXPERIMENTAL_WARNINGS
 }
 
-void UCellGpuInstancesComponent::EnqueueWrite()
+void UCellGpuInstancesComponent::EnqueueTestPatternWrite()
 {
 	FSceneInterface* Scene = GetScene();
 	if (!Scene || !SceneProxy)
@@ -205,8 +560,6 @@ void UCellGpuInstancesComponent::EnqueueWrite()
 			Parameters->InMeshScale = InMeshScale;
 			Parameters->InCustomDataCount = Params.NumCustomDataFloats;
 			Parameters->InPayloadDataFlags = Params.PackedInstanceSceneDataFlags;
-			// PCG в 5.7 пишет через ту же (помеченную устаревшей) структуру -
-			// повторяем проверенный путь, а не новый UB без примера.
 			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			Parameters->GPUSceneWriterParameters = Params.GPUWriteParams;
 			PRAGMA_ENABLE_DEPRECATION_WARNINGS

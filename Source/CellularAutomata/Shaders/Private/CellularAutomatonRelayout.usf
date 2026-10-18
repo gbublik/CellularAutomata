@@ -1,0 +1,63 @@
+// Раздвигание объёма GPU-сессии (FGpuResidentSimulation::Regrow): плоскости
+// перекладываются из старой раскладки в новую прямо на видеокарте. Раньше они
+// ездили на CPU и обратно - секунды на сотнях миллионов ячеек.
+//
+// Поток на ячейку НОВОГО объёма; выходы обнулены перед проходом, поэтому
+// запись - InterlockedOr (в одном слове соседствуют 32 бита / 4 байта разных
+// потоков). Ячейка, которой нет в старом объёме, остаётся пустой.
+
+#include "/Engine/Public/Platform.ush"
+
+int3 NewDim;
+int3 OldDim;
+// Где начало старого объёма в координатах нового (OldMinCell - NewMinCell).
+int3 OldOffsetInNew;
+uint bDecayPlane;
+
+StructuredBuffer<uint> InputBits;
+StructuredBuffer<uint> InputAges;
+StructuredBuffer<uint> InputDecay;
+RWStructuredBuffer<uint> OutputBits;
+RWStructuredBuffer<uint> OutputAges;
+RWStructuredBuffer<uint> OutputDecay;
+
+uint ReadByte(StructuredBuffer<uint> Plane, uint Index)
+{
+	return (Plane[Index >> 2] >> ((Index & 3u) * 8u)) & 0xFFu;
+}
+
+[numthreads(4, 4, 4)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int3 NewLocal = int3(DispatchThreadId);
+	if (any(NewLocal >= NewDim))
+	{
+		return;
+	}
+	const int3 OldLocal = NewLocal - OldOffsetInNew;
+	if (any(OldLocal < 0) || any(OldLocal >= OldDim))
+	{
+		return;
+	}
+
+	const uint OldIndex = (uint)((OldLocal.z * OldDim.y + OldLocal.y) * OldDim.x + OldLocal.x);
+	const uint NewIndex = (uint)((NewLocal.z * NewDim.y + NewLocal.y) * NewDim.x + NewLocal.x);
+
+	if (((InputBits[OldIndex >> 5] >> (OldIndex & 31u)) & 1u) != 0)
+	{
+		InterlockedOr(OutputBits[NewIndex >> 5], 1u << (NewIndex & 31u));
+	}
+	const uint Age = ReadByte(InputAges, OldIndex);
+	if (Age != 0)
+	{
+		InterlockedOr(OutputAges[NewIndex >> 2], Age << ((NewIndex & 3u) * 8u));
+	}
+	if (bDecayPlane != 0)
+	{
+		const uint State = ReadByte(InputDecay, OldIndex);
+		if (State != 0)
+		{
+			InterlockedOr(OutputDecay[NewIndex >> 2], State << ((NewIndex & 3u) * 8u));
+		}
+	}
+}
