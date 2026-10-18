@@ -165,6 +165,13 @@ public:
 	 *  лететь", а не "ничего". */
 	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
+private:
+	/** Клавиатурный фокус Slate сейчас у текстового поля (SEditableText и
+	 *  родня) - см. начало InputKey(). Проверяется по типу Slate-виджета, а не
+	 *  по конкретному UMG-полю: так защищено любое поле, которое появится в
+	 *  HUD потом, без регистрации каждого. */
+	static bool IsTextInputFocused();
+
 protected:
 	bool bCanLookAround = false;
 

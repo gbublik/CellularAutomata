@@ -21,6 +21,7 @@
 // файла, поэтому пропажа всплывала только при отдельной компиляции этого файла.
 #include "Engine/GameViewportClient.h"
 #include "SceneView.h"
+#include "Framework/Application/SlateApplication.h"
 
 AGamePlayerController::AGamePlayerController()
 {
@@ -271,8 +272,36 @@ void AGamePlayerController::SetupInputComponent()
 	}
 }
 
+bool AGamePlayerController::IsTextInputFocused()
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	const TSharedPtr<SWidget> Focused = FSlateApplication::Get().GetKeyboardFocusedWidget();
+	if (!Focused.IsValid())
+	{
+		return false;
+	}
+	// UEditableTextBox/UEditableText/UMultiLineEditableText в итоге держат
+	// фокус на одном из этих двух Slate-классов.
+	const FName Type = Focused->GetType();
+	return Type == TEXT("SEditableText") || Type == TEXT("SMultiLineEditableText");
+}
+
 bool AGamePlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
+	// Пока в HUD набирают текст (поле правила, UHudRuleInput), клавиатура
+	// принадлежит полю: иначе R в "5-7/6/2/E" сбросила бы симуляцию, N
+	// перекатила сид, а цифры переключили бы что-то своё. Выход без Super -
+	// осознанно: Super::InputKey() кормит и Enhanced Input, так что глушится
+	// весь ввод игры, а не только сырые хоткеи ниже. Мышь (кнопки и колесо)
+	// пропускается - клик мимо поля должен снимать с него фокус как обычно.
+	if (!Params.Key.IsMouseButton() && IsTextInputFocused())
+	{
+		return false;
+	}
+
 	// Пауза/продолжение - на пробеле, а не на P: это самая частая клавиша
 	// проекта, и ей место под большим пальцем. Пробел был занят подъёмом камеры
 	// и освобождён в RebindPawnVerticalMovement() - вертикаль осталась на E
