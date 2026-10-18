@@ -107,9 +107,9 @@ bool IsExteriorAir(int3 Local)
 }
 
 /** Смотрит ли хоть одна грань во внешний воздух. Без режима - всегда да. */
-bool TouchesExterior(int3 Local)
+bool TouchesExterior(int3 Local, bool bUseExterior)
 {
-	if (InExteriorOnly == 0 || InFaceOffsetCount == 0)
+	if (!bUseExterior || InExteriorOnly == 0 || InFaceOffsetCount == 0)
 	{
 		return true;
 	}
@@ -142,8 +142,10 @@ bool CoversFace(int3 Neighbor)
 }
 
 /** CELL_HIDDEN / CELL_ALIVE (ColorIndex - возраст) / CELL_DECAYING
- *  (ColorIndex - стадия угасания). */
-uint EvaluateCell(int3 Local, out uint ColorIndex, out float3 Position)
+ *  (ColorIndex - стадия угасания). bUseExterior == false - правило HISM-пути
+ *  (только поверхность, без внешнего воздуха): по нему счёт решает, влезет
+ *  ли пауза в HISM. */
+uint EvaluateCellWith(int3 Local, bool bUseExterior, out uint ColorIndex, out float3 Position)
 {
 	ColorIndex = 0;
 	Position = CellPosition(Local);
@@ -172,7 +174,7 @@ uint EvaluateCell(int3 Local, out uint ColorIndex, out float3 Position)
 				return CELL_HIDDEN;
 			}
 		}
-		if (!TouchesExterior(Local))
+		if (!TouchesExterior(Local, bUseExterior))
 		{
 			return CELL_HIDDEN;
 		}
@@ -184,11 +186,16 @@ uint EvaluateCell(int3 Local, out uint ColorIndex, out float3 Position)
 	if (InDecayPlane != 0 && InAgeFilterActive == 0)
 	{
 		const uint State = ReadPlaneByte(InputDecay, Index);
-		if (State != 0 && PassesCull(Position) && PassesSlice(Position) && TouchesExterior(Local))
+		if (State != 0 && PassesCull(Position) && PassesSlice(Position) && TouchesExterior(Local, bUseExterior))
 		{
 			ColorIndex = State;
 			return CELL_DECAYING;
 		}
 	}
 	return CELL_HIDDEN;
+}
+
+uint EvaluateCell(int3 Local, out uint ColorIndex, out float3 Position)
+{
+	return EvaluateCellWith(Local, true, ColorIndex, Position);
 }

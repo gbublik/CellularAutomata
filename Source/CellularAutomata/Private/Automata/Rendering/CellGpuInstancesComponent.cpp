@@ -217,6 +217,7 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FCellVisibilityParameters, Visibility)
 		SHADER_PARAMETER(uint32, CounterIndex)
+		SHADER_PARAMETER(uint32, HismCounterIndex)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputCounter)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -250,6 +251,7 @@ void CellGpuDrawing::AddCountVisiblePass(FRDGBuilder& GraphBuilder, const FCellG
 	FillVisibilityParameters(GraphBuilder, PassParams->Visibility, Params, Planes, Bits, Ages, Decay,
 		Air, DrawState ? DrawState->AirRowWords : 0);
 	PassParams->CounterIndex = CounterIndex;
+	PassParams->HismCounterIndex = CounterIndex + HismVisibleWordOffset;
 	PassParams->OutputCounter = Counter;
 
 	TShaderMapRef<FCellVisibleCountCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));

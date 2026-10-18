@@ -1,4 +1,5 @@
-// Сколько клеток GPU-сессии будет нарисовано (CellVisibility.ush). Идёт
+// Сколько клеток GPU-сессии будет нарисовано (CellVisibility.ush), и сколько
+// нарисовал бы HISM на паузе (его правило - без внешнего воздуха). Идёт
 // дополнительным проходом в заходе сессии, итог уезжает назад вместе со
 // сводкой - по нему UCellGpuInstancesComponent задаёт ёмкость (её надо знать
 // на CPU: она решает, сколько слотов GPU-Scene выделить примитиву).
@@ -7,9 +8,11 @@
 #include "CellVisibility.ush"
 
 uint CounterIndex;
+uint HismCounterIndex;
 RWStructuredBuffer<uint> OutputCounter;
 
 groupshared uint GroupCount;
+groupshared uint GroupHismCount;
 
 [numthreads(4, 4, 4)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupIndex : SV_GroupIndex)
@@ -17,19 +20,28 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupIndex : SV_G
 	if (GroupIndex == 0)
 	{
 		GroupCount = 0;
+		GroupHismCount = 0;
 	}
 	GroupMemoryBarrierWithGroupSync();
 
 	uint ColorIndex;
 	float3 Position;
-	if (EvaluateCell(int3(DispatchThreadId), ColorIndex, Position) != CELL_HIDDEN)
+	if (EvaluateCellWith(int3(DispatchThreadId), true, ColorIndex, Position) != CELL_HIDDEN)
 	{
 		InterlockedAdd(GroupCount, 1u);
+	}
+	if (EvaluateCellWith(int3(DispatchThreadId), false, ColorIndex, Position) != CELL_HIDDEN)
+	{
+		InterlockedAdd(GroupHismCount, 1u);
 	}
 	GroupMemoryBarrierWithGroupSync();
 
 	if (GroupIndex == 0 && GroupCount != 0)
 	{
 		InterlockedAdd(OutputCounter[CounterIndex], GroupCount);
+	}
+	if (GroupIndex == 0 && GroupHismCount != 0)
+	{
+		InterlockedAdd(OutputCounter[HismCounterIndex], GroupHismCount);
 	}
 }

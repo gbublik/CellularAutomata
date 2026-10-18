@@ -76,6 +76,9 @@ namespace CellGpuDrawing
 	 *  заливки внешнего воздуха и флаг "не сошлась за потолок раундов". */
 	constexpr uint32 AirRoundsWordOffset = 1;
 	constexpr uint32 AirUnconvergedWordOffset = 2;
+	/** ...и сколько клеток нарисовал бы HISM на паузе (его правило - без
+	 *  внешнего воздуха): по этому числу решается, влезет ли пауза в HISM. */
+	constexpr uint32 HismVisibleWordOffset = 3;
 
 	/** Построить плоскость внешнего воздуха текущего поколения в
 	 *  DrawState.Air (render thread). nullptr - объём пуст или слишком велик. */

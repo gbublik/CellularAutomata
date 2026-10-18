@@ -136,6 +136,14 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		RefreshRenderCullVolume();
 	}
 
+	// Пауза "на GPU" (см. Stop()): R/N/Ctrl+Z откладываются, как при любом
+	// идущем шаге, но захода, который бы их подхватил, на паузе нет. Закрываем
+	// сессию без чтения сетки - действие всё равно заменит её целиком.
+	if (bGpuLiveActive && !bGpuLiveDispatchInFlight && !bSimulationRunning && HasPendingGridReplacement())
+	{
+		EndGpuLive(true, /*bDownload=*/false);
+	}
+
 	// Автошаг Shift+F (см. StartFastStep()) - взаимоисключающ с
 	// bSimulationRunning (Start() отказывает, пока это активно, и наоборот),
 	// поэтому безопасно делить TimeSinceLastStep с обычным Play.
@@ -166,7 +174,7 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 		TimeSinceLastStep += DeltaTime;
 		const float StepInterval = GenerationsPerDispatch / FMath::Max(Speed, KINDA_SMALL_NUMBER);
 
-		if ((bSeriesRush || TimeSinceLastStep >= StepInterval) && !bStepInProgress && !bBlockedByChunkedRender)
+		if ((bSeriesRush || TimeSinceLastStep >= StepInterval) && IsReadyForNextDispatch() && !bBlockedByChunkedRender)
 		{
 			TimeSinceLastStep = 0.0f;
 			StepAsync();

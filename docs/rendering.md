@@ -146,7 +146,13 @@ Measured live (amoeba `9-26/5-7,12-13,15/2/M` from 4.7M noise, Speed 4, RTX-clas
 Measured on the same amoeba: **51M alive → 1.34M drawn at 100 FPS** (Speed 4); at Speed 100, **9 generations/s averaged over 30 s while it grew to 272M alive with 3.6M drawn**; dispatch 16 ms at 30M alive, ~150–200 ms at 430M in a 1166×1158×1172 volume. The picture is whole again — no slab cut. The test is `Render.GpuExteriorAir`.
 
 Open problems, in order of value:
-1. *Pause over the ceiling.* `Stop()` downloads the grid and rebuilds HISM with the CPU surface rule (no exterior air) — at hundreds of millions of cells that cannot work. Keep the GPU picture on pause when HISM would not fit (step 3 of the plan); it is why the measurements above were stopped by leaving PIE.
+1. ~~*Pause over the ceiling.*~~ Done, see below.
 2. *The first four generations of a run cost ~2 s each* (seen before exterior air too, 1.2–1.5 s): HISM still on screen next to the new primitive, plus capacity growth recreating the proxy. Not yet profiled.
 3. *Fine noise defeats the flood once*: at generation 3 from 30% noise the air did not converge in 64 rounds (deep tortuous crevices); one generation, then never again. Raise the budget only if it shows in the picture.
 
+**Pause on the GPU — step 3 (2026-10-18).** `Stop()` with an open session now decides where the pause goes. The session's counting pass already evaluates every cell, so it also counts what **HISM would draw** — the CPU rule, surface-only without exterior air (`EvaluateCellWith(..., bUseExterior=false)`, stats word 18). If alive+decaying ≤ `GpuPauseCpuAliveLimit` (30M) and that count ≤ `GpuPauseHismInstanceLimit` (12M), the pause is the old one: download, HISM, full light, picking and editing. Otherwise the **session stays open** (`bGpuLivePaused`), the GPU picture stays, and a status line says why:
+- Space resumes the same session; Next and Shift+F step it on the GPU (`CanUseGpuLive()` keeps an open session for any stepping mode — closing it for a manual step would mean downloading exactly what did not fit);
+- R / N / Ctrl+Z are deferred as during any step and picked up by `Tick()`, which closes the session **without downloading** (`EndGpuLive(..., bDownload=false)`): the action replaces the grid wholesale anyway. The same shortcut now applies while running — an R pressed mid-run no longer pays for a readback it throws away;
+- everything that needs the CPU grid (selection, editing, save, Y) refuses through the existing `bStepInProgress` guards.
+
+Checked in PIE: 6.4M alive → HISM pause (5.0M instances, session closed in 62 ms); 148M alive → GPU pause (HISM would have needed 112M instances), **120 FPS while paused with 2.3M drawn**, Next advanced 404 → 405 on the GPU, R reset to the 532k seed at once with no download.

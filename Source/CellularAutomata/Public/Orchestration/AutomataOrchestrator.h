@@ -235,6 +235,7 @@ public:
 		StatusKey_Panorama = 1013,
 		StatusKey_QuickSave = 1014,
 		StatusKey_Lighting = 1015,
+		StatusKey_GpuPause = 1016,
 	};
 
 	/** Выполнить ручной шаг симуляции (хоткей F): считает StepsPerRender
@@ -2953,6 +2954,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU")
 	bool bGpuExteriorOnly = true;
 
+	/** Пауза при открытой GPU-сессии обычно возвращает сетку на CPU и рисует
+	 *  её HISM (полный свет, выделение, правка). Сверх этих порогов это
+	 *  невозможно: HISM упирается в потолок экземпляров, а CPU-сетка и сборка
+	 *  экземпляров на сотнях миллионов клеток не помещаются в память. Тогда
+	 *  пауза остаётся "на GPU": сессия не закрывается, картинка та же, работают
+	 *  Пробел/Next/F и R/N/Ctrl+Z, а то, чему нужна CPU-сетка (выделение,
+	 *  правка, сохранение), отказывает. Число экземпляров HISM меряется прямо
+	 *  в заходе сессии - его правилом (только поверхность, без воздуха). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU", meta = (ClampMin = "0"))
+	int64 GpuPauseCpuAliveLimit = 30000000;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU", meta = (ClampMin = "0"))
+	int64 GpuPauseHismInstanceLimit = 12000000;
+
 	/** Верхняя граница объёма (в клетках) AABB живых клеток+halo, которую
 	 *  FGpuComputeStrategy согласна посчитать на GPU за один Step() - выше
 	 *  неё шаг откатывается на CPU с предупреждением в лог (см.
@@ -4192,6 +4207,16 @@ private:
 	/** Число живых по последней сводке сессии - HUD и график, пока CPU-сетка
 	 *  стоит на поколении начала сессии. */
 	int64 GpuLiveAliveCount = 0;
+	/** Последняя сводка сессии целиком - по ней Stop() решает, куда ставить
+	 *  паузу (см. GpuPauseCpuAliveLimit). */
+	FGpuResidentStats GpuLiveLastStats;
+	/** Пауза идёт "на GPU": сессия открыта, прогон стоит (см. Stop()). */
+	bool bGpuLivePaused = false;
+	/** Влезет ли пауза в CPU-сетку и HISM (пороги GpuPause*). */
+	bool CanPauseOnCpu() const;
+	/** Закрыть сессию без чтения сетки назад: отложенное R/N/Ctrl+Z всё
+	 *  равно заменит её целиком, а читать сотни миллионов клеток незачем. */
+	bool HasPendingGridReplacement() const { return bResetToInitialStatePending || bNewSeedPending || bStepBackwardPending; }
 
 	/** Итог фонового захода сессии. Заполняет воркер; забирает игровой поток
 	 *  в ApplyGpuLiveResult() - либо EndGpuLive(), если сессию закрыли, пока
@@ -4235,9 +4260,14 @@ private:
 	void DispatchGpuLive();
 	void ApplyGpuLiveResult();
 	void ConsumeGpuLiveResult(FGpuLiveDispatchResult& Result);
-	/** Закрыть сессию: дождаться захода в полёте, прочитать сетку назад в Grid,
-	 *  снять bStepInProgress, отработать отложенные R/N/Ctrl+Z. */
-	void EndGpuLive(bool bRenderAfter);
+	/** Закрыть сессию: дождаться захода в полёте, прочитать сетку назад в Grid
+	 *  (bDownload == false - не читать: CPU-сетка остаётся с начала сессии, её
+	 *  тут же заменит отложенное действие), снять bStepInProgress, отработать
+	 *  отложенные R/N/Ctrl+Z. */
+	void EndGpuLive(bool bRenderAfter, bool bDownload = true);
+	/** Дождаться захода в полёте и учесть его итог (общая часть EndGpuLive()
+	 *  и Stop()). */
+	void FinishGpuLiveDispatch();
 	/** Готов ли тик запускать следующий заход: обычный путь ждёт конца шага,
 	 *  сессия - конца своего захода (bStepInProgress у неё истинен всегда). */
 	bool IsReadyForNextDispatch() const { return bGpuLiveActive ? !bGpuLiveDispatchInFlight : !bStepInProgress; }

@@ -11,6 +11,7 @@
 #include "Automata/Simulation/ComputeStrategy/CellularAutomatonComputeStrategy.h"
 #include "Automata/Sonification/SonificationCurve.h"
 #include "Async/Async.h"
+#include "Automata/Rendering/CellGpuInstancesComponent.h"
 
 
 void AAutomataOrchestrator::NewSeed()
@@ -329,6 +330,16 @@ void AAutomataOrchestrator::ScaleStepsPerRender(bool bDouble)
 
 void AAutomataOrchestrator::Next()
 {
+	// Пауза "на GPU": шаг делает сессия, сетка остаётся там.
+	if (bGpuLivePaused && bGpuLiveActive)
+	{
+		if (!bGpuLiveDispatchInFlight)
+		{
+			DispatchGpuLive();
+		}
+		return;
+	}
+
 	if (bStepInProgress)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Next: фоновый шаг StepAsync() ещё считается - подождите его завершения"));
@@ -928,7 +939,9 @@ void AAutomataOrchestrator::Start()
 	TimeSinceLastStep = 0.0f;
 	StepsSinceLastRender = 0;
 	// Новый прогон - новая попытка открыть GPU-сессию (см. bGpuLiveRefused).
+	// С паузы "на GPU" сессия просто продолжается: следующий тик даст заход.
 	bGpuLiveRefused = false;
+	bGpuLivePaused = false;
 	bSimulationRunning = true;
 	SetActorTickEnabled(true);
 }
@@ -954,11 +967,32 @@ void AAutomataOrchestrator::Resume()
 
 void AAutomataOrchestrator::Stop()
 {
-	// GPU-сессия возвращает сетку на CPU и рисует её HISM: пауза - это когда
-	// структуру разглядывают, выделяют и правят.
-	EndGpuLive(true);
-
 	bSimulationRunning = false;
+
+	// GPU-сессия возвращает сетку на CPU и рисует её HISM: пауза - это когда
+	// структуру разглядывают, выделяют и правят. Если не влезает - пауза
+	// остаётся на GPU (см. GpuPauseCpuAliveLimit).
+	if (bGpuLiveActive)
+	{
+		FinishGpuLiveDispatch();
+		if (CanPauseOnCpu())
+		{
+			EndGpuLive(true);
+		}
+		else
+		{
+			bGpuLivePaused = true;
+			const int64 HismInstances = GpuLiveLastStats.ExtraAux[CellGpuDrawing::HismVisibleWordOffset - 1];
+			ShowStatusMessage(StatusKey_GpuPause, FString::Printf(
+				TEXT("Пауза на GPU: %s живых (HISM нарисовал бы %s) - больше, чем помещается в паузу на CPU. Картинка остаётся; Пробел, Next, F, R, N, Ctrl+Z работают; выделение, правка и сохранение - нет."),
+				*FText::AsNumber(GpuLiveLastStats.AliveCount).ToString(), *FText::AsNumber(HismInstances).ToString()));
+			UE_LOG(LogTemp, Log, TEXT("Stop: пауза на GPU - %lld живых, HISM-экземпляров было бы %lld (пороги %lld / %lld)"),
+				GpuLiveLastStats.AliveCount, HismInstances, GpuPauseCpuAliveLimit, GpuPauseHismInstanceLimit);
+			// Тик нужен и на паузе: он подхватывает отложенные R/N/Ctrl+Z.
+			SetActorTickEnabled(true);
+			return;
+		}
+	}
 
 	// Если чанковый рендер ещё не доехал по кадрам - досыпаем его одним
 	// разом сейчас, а не оставляем недорисованным: SetActorTickEnabled(false)

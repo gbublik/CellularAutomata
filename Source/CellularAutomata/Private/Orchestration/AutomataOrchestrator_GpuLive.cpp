@@ -207,6 +207,19 @@ void AAutomataOrchestrator::ShowGpuLiveCells(const FGpuLiveDispatchResult& Resul
 
 bool AAutomataOrchestrator::CanUseGpuLive() const
 {
+	// Открытая сессия обслуживает любой шаг - Play, Next и F на паузе "на GPU"
+	// (см. Stop()): закрыть её ради ручного шага значило бы читать назад сетку,
+	// которая потому и осталась на GPU, что на CPU не помещается.
+	if (bGpuLiveActive)
+	{
+		return bGpuResidentRun
+			&& ComputeMethod == EComputeMethod::Gpu
+			&& !bAutoReseedOnExtinction
+			&& !bSeriesCaptureActive
+			&& !bEnableGhostShape
+			&& Grid.IsValid();
+	}
+
 	// Только Play: автошаг по F и ручной шаг живут своим ритмом и остаются на
 	// прежнем пути. Исключения - режимы, которым CPU-сетка нужна на каждом
 	// поколении: автоперебор (проверки вымирания/застоя/взрыва), серийная
@@ -355,6 +368,7 @@ void AAutomataOrchestrator::ConsumeGpuLiveResult(FGpuLiveDispatchResult& Result)
 	// трогается - она вернётся при закрытии сессии.
 	LastDispatchGenerations = Result.Generations;
 	GpuLiveAliveCount = Result.Stats.AliveCount;
+	GpuLiveLastStats = Result.Stats;
 	GenerationCount += Result.Generations;
 	EditRedoStack.Reset();
 	SelectedCells.Reset();
@@ -391,16 +405,44 @@ void AAutomataOrchestrator::ApplyGpuLiveResult()
 	// R, N или Ctrl+Z, нажатые во время сессии, ждут CPU-сетки - закрываем
 	// сессию, и они отработают в EndGpuLive() обычным путём. Если прогон
 	// продолжается, следующий тик откроет сессию заново.
-	if (bResetToInitialStatePending || bNewSeedPending || bStepBackwardPending)
+	if (HasPendingGridReplacement())
 	{
-		EndGpuLive(true);
+		EndGpuLive(true, /*bDownload=*/false);
 		return;
 	}
 
 	ShowGpuLiveCells(*Result);
 }
 
-void AAutomataOrchestrator::EndGpuLive(bool bRenderAfter)
+bool AAutomataOrchestrator::CanPauseOnCpu() const
+{
+	const int64 HismInstances = GpuLiveLastStats.ExtraAux[CellGpuDrawing::HismVisibleWordOffset - 1];
+	return GpuLiveLastStats.AliveCount + GpuLiveLastStats.DecayingCount <= GpuPauseCpuAliveLimit
+		&& HismInstances <= GpuPauseHismInstanceLimit;
+}
+
+void AAutomataOrchestrator::FinishGpuLiveDispatch()
+{
+	// Заход в полёте держит сырой указатель на сессию - дождаться его.
+	if (PendingStepFuture.IsValid())
+	{
+		PendingStepFuture.Wait();
+	}
+	// Его итог мог ещё не дойти до игрового потока - учесть сейчас, иначе
+	// поколения, уже лежащие в сессии, не попали бы в счётчик и на экран.
+	if (GpuLiveResult.IsValid() && !GpuLiveResult->bConsumed)
+	{
+		const bool bOk = GpuLiveResult->Generations > 0;
+		ConsumeGpuLiveResult(*GpuLiveResult);
+		if (bOk && bGpuLiveActive)
+		{
+			ShowGpuLiveCells(*GpuLiveResult);
+		}
+	}
+	bGpuLiveDispatchInFlight = false;
+}
+
+void AAutomataOrchestrator::EndGpuLive(bool bRenderAfter, bool bDownload)
 {
 	if (!bGpuLiveActive)
 	{
@@ -409,23 +451,21 @@ void AAutomataOrchestrator::EndGpuLive(bool bRenderAfter)
 
 	const double StartSeconds = FPlatformTime::Seconds();
 
-	// Заход в полёте держит сырой указатель на сессию - дождаться его.
-	if (PendingStepFuture.IsValid())
-	{
-		PendingStepFuture.Wait();
-	}
-	// Его итог мог ещё не дойти до игрового потока - учесть сейчас, иначе
-	// поколения, уже лежащие в читаемой назад сетке, не попали бы в счётчик.
-	if (GpuLiveResult.IsValid())
-	{
-		ConsumeGpuLiveResult(*GpuLiveResult);
-	}
+	FinishGpuLiveDispatch();
 
-	TUniquePtr<FCellGrid> NewGrid = CreateGrid();
-	GpuLive->Download(*NewGrid);
-
-	UE_LOG(LogTemp, Log, TEXT("GPU-сессия закрыта: сетка на CPU, %d живых, раздвиганий объёма %d (%.1f мс)"),
-		NewGrid->Num(), GpuLive->GetRegrowCount(), (FPlatformTime::Seconds() - StartSeconds) * 1000.0);
+	TUniquePtr<FCellGrid> NewGrid;
+	if (bDownload)
+	{
+		NewGrid = CreateGrid();
+		GpuLive->Download(*NewGrid);
+		UE_LOG(LogTemp, Log, TEXT("GPU-сессия закрыта: сетка на CPU, %d живых, раздвиганий объёма %d (%.1f мс)"),
+			NewGrid->Num(), GpuLive->GetRegrowCount(), (FPlatformTime::Seconds() - StartSeconds) * 1000.0);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("GPU-сессия закрыта без чтения сетки назад (%lld живых на GPU) - её заменит отложенное действие"),
+			GpuLiveAliveCount);
+	}
 
 	GpuLive.Reset();
 	GpuLiveResult.Reset();
@@ -442,9 +482,13 @@ void AAutomataOrchestrator::EndGpuLive(bool bRenderAfter)
 	// Буфер воздуха уходит вместе с последней ссылкой (у компонента её уже нет).
 	GpuLiveDrawState.Reset();
 
-	Grid = MoveTemp(NewGrid);
+	if (NewGrid)
+	{
+		Grid = MoveTemp(NewGrid);
+	}
 	SelectedCells.Reset();
 	bStepInProgress = false;
+	bGpuLivePaused = false;
 
 	// Отложенное действие само перестроит и перерисует сетку.
 	if (RunPendingGridActions())
