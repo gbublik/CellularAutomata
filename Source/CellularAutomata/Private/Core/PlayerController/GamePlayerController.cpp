@@ -817,6 +817,50 @@ void AGamePlayerController::OnToggleBackground()
 	Orchestrator->SetBackgroundVisible(!Orchestrator->IsBackgroundVisible());
 }
 
+void AGamePlayerController::ToggleHudChip(EHudChip Chip)
+{
+	switch (Chip)
+	{
+	case EHudChip::Culling:    OnToggleCellCulling(); return;
+	case EHudChip::Volume:     OnToggleRenderCullVolume(); return;
+	case EHudChip::Slab:       OnToggleViewSlice(); return;
+	case EHudChip::Ghost:      OnToggleGhostShape(); return;
+	case EHudChip::Background: OnToggleBackground(); return;
+	case EHudChip::Sound:      OnToggleSonification(); return;
+	case EHudChip::Selection:  OnToggleSelectionMode(); return;
+	case EHudChip::Ortho:      OnToggleOrthographic(); return;
+	case EHudChip::Chunked:    OnToggleChunkedRender(); return;
+	case EHudChip::Headlight:  SetHeadlightEnabled(!bHeadlightEnabled); return;
+	case EHudChip::ComputeFallback: return;
+	default: break;
+	}
+
+	// У остальных отдельного обработчика клавиши нет (или он делает больше,
+	// чем переключение) - зовём сам оркестратор.
+	AAutomataOrchestrator* Orchestrator = FindOrchestrator();
+	if (!Orchestrator)
+	{
+		return;
+	}
+	switch (Chip)
+	{
+	case EHudChip::AgeFilter:
+		if (Orchestrator->IsAgeFilterActive())
+		{
+			Orchestrator->SetAgeFilter(-1);
+		}
+		return;
+	case EHudChip::Shadows:
+		Orchestrator->SetCellShadowsEnabled(!Orchestrator->AreCellShadowsEnabled());
+		return;
+	case EHudChip::AutoReseed:
+		Orchestrator->SetAutoReseedOnExtinction(!Orchestrator->IsAutoReseedOnExtinction());
+		return;
+	default:
+		return;
+	}
+}
+
 void AGamePlayerController::SetHeadlightEnabled(bool bEnable)
 {
 	bHeadlightEnabled = bEnable;

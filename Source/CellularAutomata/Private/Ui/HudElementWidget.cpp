@@ -1,4 +1,5 @@
 #include "Ui/HudElementWidget.h"
+#include "Core/PlayerController/GamePlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Orchestration/AutomataOrchestrator.h"
 #include "Ui/HudFormat.h"
@@ -88,11 +89,59 @@ FLinearColor UHudElementWidget::GetChipFill()
 	const EHudChipState State = GetChipState();
 	if (State != EHudChipState::Active && State != EHudChipState::Warning)
 	{
+		// Под мышью выключенный чип чуть проявляется - видно, что он кнопка.
+		if (bHovered)
+		{
+			FLinearColor Hint = ColorFor(EHudChipState::Active);
+			Hint.A *= FillOpacity * 0.35f;
+			return Hint;
+		}
 		return FLinearColor::Transparent;
 	}
 	FLinearColor Fill = ColorFor(State);
-	Fill.A *= FillOpacity;
+	Fill.A *= FillOpacity * (bHovered ? 1.6f : 1.0f);
 	return Fill;
+}
+
+bool UHudElementWidget::IsClickableChip() const
+{
+	return bIsChip && AGamePlayerController::IsHudChipClickable(Chip);
+}
+
+void UHudElementWidget::NativeConstruct()
+{
+	Super::NativeConstruct();
+	if (IsClickableChip())
+	{
+		SetVisibility(ESlateVisibility::Visible);
+		SetCursor(EMouseCursor::Hand);
+	}
+}
+
+FReply UHudElementWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (IsClickableChip() && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		if (AGamePlayerController* PC = Cast<AGamePlayerController>(GetOwningPlayer()))
+		{
+			PC->ToggleHudChip(Chip);
+		}
+		// Поглотить клик: иначе он ушёл бы в игру - выделение, рисование клеток.
+		return FReply::Handled();
+	}
+	return Super::NativeOnMouseButtonDown(InGeometry, InMouseEvent);
+}
+
+void UHudElementWidget::NativeOnMouseEnter(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	Super::NativeOnMouseEnter(InGeometry, InMouseEvent);
+	bHovered = IsClickableChip();
+}
+
+void UHudElementWidget::NativeOnMouseLeave(const FPointerEvent& InMouseEvent)
+{
+	Super::NativeOnMouseLeave(InMouseEvent);
+	bHovered = false;
 }
 
 ESlateVisibility UHudElementWidget::GetBusyVisibility()

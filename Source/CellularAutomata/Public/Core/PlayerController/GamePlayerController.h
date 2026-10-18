@@ -6,6 +6,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Automata/Selection/SelectionCombineMode.h"
 #include "Core/PlayerController/HotkeyRegistry.h"
+#include "Ui/HudChip.h"
 #include "GamePlayerController.generated.h"
 
 class AAutomataOrchestrator;
@@ -135,6 +136,16 @@ public:
 	 *  см. HeadlightIntensity и соседние. */
 	UFUNCTION(BlueprintCallable, Category = "Camera")
 	void SetHeadlightEnabled(bool bEnable);
+
+	/** Клик по чипу HUD - то же действие, что горячая клавиша этого режима,
+	 *  через тот же обработчик (поведение не может разойтись с клавишей).
+	 *  AGE только сбрасывает фильтр: включается он цифрами, выбором возрастов,
+	 *  и "включить вообще" ему не значит ничего. */
+	UFUNCTION(BlueprintCallable, Category = "Automata|HUD")
+	void ToggleHudChip(EHudChip Chip);
+
+	/** Есть ли у чипа действие. Нет у чистых предупреждений (откат GPU на CPU). */
+	static bool IsHudChipClickable(EHudChip Chip) { return Chip != EHudChip::ComputeFallback; }
 
 	UFUNCTION(BlueprintPure, Category = "Camera")
 	bool IsHeadlightEnabled() const { return bHeadlightEnabled; }

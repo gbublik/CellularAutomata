@@ -97,8 +97,22 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Automata|HUD")
 	ESlateVisibility GetBusyVisibility();
 
+protected:
+	/** Чип кликабелен: клик - действие его горячей клавиши (AGamePlayerController::
+	 *  ToggleHudChip()), курсор-рука и подсветка под мышью. Корень чипа делается
+	 *  Visible, иначе UUserWidget по умолчанию (SelfHitTestInvisible) клик не
+	 *  ловит сам и надеется на детей вёрстки. */
+	virtual void NativeConstruct() override;
+	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual void NativeOnMouseEnter(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual void NativeOnMouseLeave(const FPointerEvent& InMouseEvent) override;
+
 private:
 	FLinearColor ColorFor(EHudChipState State) const;
+	bool IsClickableChip() const;
+
+	/** Мышь над кликабельным чипом - подсветка в GetChipFill(). */
+	bool bHovered = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<AAutomataOrchestrator> CachedOrchestrator = nullptr;
