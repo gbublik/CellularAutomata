@@ -88,10 +88,10 @@ A 27-test automation suite covers the actor-free logic (grid math, rule parsing,
 
 ## Optional: editor automation via MCP
 
-`Plugins/McpAutomationBridge` (third-party, MIT) exposes the running editor over HTTP for AI-assisted workflows — spawning actors, screenshots, console commands. Entirely optional at runtime; see [docs/tooling.md](docs/tooling.md).
+`Plugins/EngineWire` (third-party, MIT) exposes the running editor over HTTP for AI-assisted workflows — spawning actors, screenshots, console commands. Entirely optional at runtime; see [docs/tooling.md](docs/tooling.md).
 
 ## License
 
 The project is licensed under **[AGPL-3.0](LICENSE)**.
 
-Third-party components keep their own licenses: `Plugins/McpAutomationBridge` — [MIT](Plugins/McpAutomationBridge/LICENSE) (by [ChiR24](https://github.com/ChiR24/Unreal_mcp)); the Exo 2 font — SIL OFL 1.1. The music tracks in `Content/music` are by the project author. Unreal Engine itself is governed by the [Epic Games EULA](https://www.unrealengine.com/eula) — this repository contains no engine code.
+Third-party components keep their own licenses: `Plugins/EngineWire` — [MIT](Plugins/EngineWire/LICENSE) (by [ChiR24](https://github.com/ChiR24/Unreal_mcp)); the Exo 2 font — SIL OFL 1.1. The music tracks in `Content/music` are by the project author. Unreal Engine itself is governed by the [Epic Games EULA](https://www.unrealengine.com/eula) — this repository contains no engine code.

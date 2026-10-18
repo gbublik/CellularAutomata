@@ -96,7 +96,7 @@ A class whose implementation outgrows one file is split by **responsibility into
 
 ### MCP / AI-editor integration
 
-`Plugins/McpAutomationBridge` gives Claude Code direct control of the running Editor over HTTP (native MCP mode, port 3000) — spawning/inspecting actors, screenshots, console commands. Setup, the hot-patch loop and its failure modes are in **`docs/tooling.md`**.
+`Plugins/EngineWire` gives Claude Code direct control of the running Editor over HTTP (native MCP mode, port 3000) — spawning/inspecting actors, screenshots, console commands. Setup, the hot-patch loop and its failure modes are in **`docs/tooling.md`**.
 
 **The one thing to know before hot-patching**: treat a **cold rebuild with the Editor closed as the default** for this project's orchestrator and controller classes. `LiveCoding.Compile` reinstances the *whole* class whenever its `.cpp` is patched, regardless of whether reflection data changed — so even a comments-and-bodies-only edit can kill the Editor process outright when that class has a live instance in the open level. Measured, not assumed; an earlier claim in this file that body-only edits were safe was wrong. Hot-patching is a gamble worth taking only with unsaved work already saved.
 

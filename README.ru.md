@@ -88,10 +88,10 @@ git clone <этот репозиторий>
 
 ## Опционально: автоматизация редактора через MCP
 
-`Plugins/McpAutomationBridge` (сторонний, MIT) открывает работающий редактор по HTTP для AI-инструментов — спавн акторов, скриншоты, консольные команды. В рантайме полностью опционален; см. [docs/tooling.md](docs/tooling.md).
+`Plugins/EngineWire` (сторонний, MIT) открывает работающий редактор по HTTP для AI-инструментов — спавн акторов, скриншоты, консольные команды. В рантайме полностью опционален; см. [docs/tooling.md](docs/tooling.md).
 
 ## Лицензия
 
 Проект распространяется под **[AGPL-3.0](LICENSE)**.
 
-Сторонние компоненты сохраняют свои лицензии: `Plugins/McpAutomationBridge` — [MIT](Plugins/McpAutomationBridge/LICENSE) (автор — [ChiR24](https://github.com/ChiR24/Unreal_mcp)); шрифт Exo 2 — SIL OFL 1.1. Музыка в `Content/music` — авторская. Сам Unreal Engine регулируется [Epic Games EULA](https://www.unrealengine.com/eula) — кода движка в этом репозитории нет.
+Сторонние компоненты сохраняют свои лицензии: `Plugins/EngineWire` — [MIT](Plugins/EngineWire/LICENSE) (автор — [ChiR24](https://github.com/ChiR24/Unreal_mcp)); шрифт Exo 2 — SIL OFL 1.1. Музыка в `Content/music` — авторская. Сам Unreal Engine регулируется [Epic Games EULA](https://www.unrealengine.com/eula) — кода движка в этом репозитории нет.
