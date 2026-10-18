@@ -29,6 +29,7 @@
 #include "Math/RandomStream.h"
 #include "Orchestration/GenerationHistory.h"
 #include "Orchestration/StabilityWindow.h"
+#include "Ui/HudFormat.h"
 #include "RHI.h"
 
 /**
@@ -4035,6 +4036,65 @@ bool FSaveCenteringOffsetTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("пустой набор - нулевой сдвиг"),
 			AutomatonStateSerializer::ComputeCenteringOffset(Empty), FIntVector::ZeroValue);
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHudFormatTest,
+	"CellularAutomata.Ui.HudFormat",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FHudFormatTest::RunTest(const FString& Parameters)
+{
+	// Компактная запись счётчиков - то, что HUD показывает чаще всего. Главные
+	// случаи - границы единиц: единица выбирается ПОСЛЕ округления, иначе
+	// 999 950 печатается как "1000K".
+	TestEqual(TEXT("small"), HudFormat::CompactCount(0), FString(TEXT("0")));
+	TestEqual(TEXT("grouped below 10k"), HudFormat::CompactCount(9876), FString(TEXT("9 876")));
+	TestEqual(TEXT("first K"), HudFormat::CompactCount(10000), FString(TEXT("10.0K")));
+	TestEqual(TEXT("hundreds of K"), HudFormat::CompactCount(456789), FString(TEXT("457K")));
+	TestEqual(TEXT("K rolls over to M"), HudFormat::CompactCount(999950), FString(TEXT("1.00M")));
+	TestEqual(TEXT("M"), HudFormat::CompactCount(7234567), FString(TEXT("7.23M")));
+	TestEqual(TEXT("negative"), HudFormat::CompactCount(-12345), FString(TEXT("-12.3K")));
+	TestEqual(TEXT("grouping"), HudFormat::GroupedInteger(1234567), FString(TEXT("1 234 567")));
+	TestEqual(TEXT("grouping negative"), HudFormat::GroupedInteger(-1000), FString(TEXT("-1 000")));
+	TestEqual(TEXT("grouping int64 min"), HudFormat::GroupedInteger(MIN_int64), FString(TEXT("-9 223 372 036 854 775 808")));
+
+	// Состояния чипов: отсечение "включено, но не режет" - это Armed, а не
+	// Active. Именно ради этого различия чипов три состояния, а не два.
+	FHudSimulationStats Simulation;
+	FHudRenderStats Render;
+	FHudCutStats Cuts;
+	FHudPerformanceStats Performance;
+	FHudCameraStats Camera;
+	FHudGeneratorStats Generator;
+	FHudSonificationStats Sonification;
+	FCellRenderStats RenderCounts;
+	const FHudStatsView View{ Simulation, Render, Cuts, Performance, Camera, Generator, Sonification, RenderCounts };
+
+	Cuts.bCellCullingEnabled = false;
+	Cuts.bCellCullingActive = false;
+	TestEqual(TEXT("culling off"), HudFormat::ChipState(EHudChip::Culling, View), EHudChipState::Off);
+	Cuts.bCellCullingEnabled = true;
+	TestEqual(TEXT("culling armed"), HudFormat::ChipState(EHudChip::Culling, View), EHudChipState::Armed);
+	Cuts.bCellCullingActive = true;
+	TestEqual(TEXT("culling active"), HudFormat::ChipState(EHudChip::Culling, View), EHudChipState::Active);
+
+	Performance.bComputeFellBackToCpu = true;
+	TestEqual(TEXT("fallback warns"), HudFormat::ChipState(EHudChip::ComputeFallback, View), EHudChipState::Warning);
+
+	// Доля для полоски: нет знаменателя - нет полоски, а не деление на ноль.
+	float Fraction = -1.0f;
+	TestFalse(TEXT("no vram total, no bar"), HudFormat::MetricFraction(EHudMetric::Vram, View, Fraction));
+	RenderCounts.RenderedCellCount = 350000;
+	RenderCounts.TotalCellCount = 1400000;
+	TestTrue(TEXT("drawn has bar"), HudFormat::MetricFraction(EHudMetric::DrawnCells, View, Fraction));
+	TestEqual(TEXT("drawn fraction"), Fraction, 0.25f, 1e-6f);
+	TestEqual(TEXT("drawn text"), HudFormat::MetricValue(EHudMetric::DrawnCells, View).ToString(), FString(TEXT("350K / 1.40M")));
+
+	Render.RenderPresetName = TEXT("Quality");
+	Render.bRenderPresetModified = true;
+	TestEqual(TEXT("modified profile has star"), HudFormat::MetricValue(EHudMetric::RenderProfile, View).ToString(), FString(TEXT("Quality*")));
 
 	return true;
 }

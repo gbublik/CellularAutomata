@@ -16,7 +16,7 @@ No lint config — it's a standard UE C++ project built through the Unreal toolc
 
 `"C:\Program Files\Epic Games\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "<repo>\CellularAutomata.uproject" -ExecCmds="Automation RunTests CellularAutomata" -testexit="Automation Test Queue Empty" -unattended -nopause -nosplash -abslog=<file>`
 
-Twenty-seven tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
+Twenty-eight tests, deliberately covering only what needs no actor, tick or render — that is where UE tests get expensive and brittle, and it is checked by hand in PIE instead. What each one guards, and why it exists, is in **`docs/testing.md`**. Note the whole run costs an editor startup (tens of seconds); there is no fast inner loop for UE automation tests.
 
 - Engine install: `C:\Program Files\Epic Games\UE_5.7`
 - Regenerate Visual Studio project files after adding/removing source files:
@@ -64,7 +64,7 @@ Actor/controller composition, not a monolithic GameMode:
 
 - **`Automata/Sonification/`** — the simulation is **sonified**, not scored: sound is another instrument alongside the generation graph, and the ear catches periodicity and collapse before the eye does. Everything is measured in `y = ln(1 + AliveCount)` against the **generation number** — that one change of coordinates makes the slope a *relative* growth rate (identical for 100 cells and 7M), keeps a dead grid inside the domain, and survives the holes that `StepsPerRender` and GPU batching punch into the sample series. Curvature is dimensionless on purpose: it scales as the *square* of the slope, so any absolute threshold either always fires or never does. C++ ships parameters and triggers; **the MetaSound graph is built by hand in the editor and is not mine to write** — the same split as the UMG HUD. Events are detected by **edges, with no hooks in the orchestrator at all**. → **`docs/sonification.md`**
 
-- **`Ui/`** — the HUD. C++ supplies data (seven per-subsystem summaries in `Ui/HudStats.h` — simulation, render, cuts, performance, camera, generator, sonification — plus `FCellRenderStats`) and actions as Blueprint API; **the layout is built by hand in UMG and is not mine to write**. A UMG widget never sees a keypress, so anything the HUD must react to needs a `BlueprintImplementableEvent` bridge. → **`docs/hud.md`**
+- **`Ui/`** — the HUD. C++ supplies data (seven per-subsystem summaries in `Ui/HudStats.h` — simulation, render, cuts, performance, camera, generator, sonification — plus `FCellRenderStats`) and actions as Blueprint API; the layout lives in UMG. Since 2026-10-18 the active HUD is **`WBP_MainHudV2`**, assembled through the MCP plugin from two brick widgets whose binding getters sit on `UHudElementWidget` — one widget per *kind* of element, the shown value picked by an enum on the instance, formatting in testable `HudFormat`; the old `WBP_MainHud` is kept, not deleted. A UMG widget never sees a keypress, so anything the HUD must react to needs a `BlueprintImplementableEvent` bridge. → **`docs/hud.md`**
 
 ### Conventions that apply everywhere
 
