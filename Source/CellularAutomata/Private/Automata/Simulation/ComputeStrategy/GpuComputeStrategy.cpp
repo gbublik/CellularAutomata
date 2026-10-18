@@ -413,14 +413,29 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 
 	const uint32 MaxStates = (uint32)Rule.GetStates();
 
+	// Разбивка GpuRoundTrip на части - замер перед GPU-резидентным рендером
+	// (docs/compute-strategies.md, "Где уходит GpuRoundTrip"). Метки ставит
+	// Render Thread, читает вызывающий поток после Event->Wait(), так что
+	// гонки нет: та же схема, что у OutputWords.
+	struct FRoundTripMarks
+	{
+		double Picked = 0.0;     // Render Thread взял команду в работу
+		double GraphBuilt = 0.0; // граф собран, входные данные скопированы в RDG
+		double Submitted = 0.0;  // Execute() + flush до RHI thread
+		double GpuReady = 0.0;   // все readback'и готовы (GPU досчитал и скопировал)
+		double Copied = 0.0;     // результат скопирован из staging в память CPU
+	};
+	TSharedRef<FRoundTripMarks> Marks = MakeShared<FRoundTripMarks>();
+
 	FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	ENQUEUE_RENDER_COMMAND(CellularAutomatonStepCommand)(
 		[InputWords = MoveTemp(InputWords), InputDecayWords = MoveTemp(InputDecayWords), InputAgeWords = MoveTemp(InputAgeWords),
 		 InputDecayStateWords = MoveTemp(InputDecayStateWords), ShaderOffsets = MoveTemp(ShaderOffsets),
 		 WordCount, AgeWordCount, DecayStateWordCount, VolumeDim, NeighborOffsetCount, BirthMask, SurvivalMask, MaxStates,
 		 bDecayActive, bTrackAges, bTrackDecayStates, EffectiveSteps, OutputWords, OutputAgeWords, OutputDecayStateWords,
-		 CompletionEvent](FRHICommandListImmediate& RHICmdList) mutable
+		 CompletionEvent, Marks](FRHICommandListImmediate& RHICmdList) mutable
 		{
+			Marks->Picked = FPlatformTime::Seconds();
 			FRDGBuilder GraphBuilder(RHICmdList);
 
 			// Ping-pong: состояние живёт в GPU-памяти всю пачку, между
@@ -555,6 +570,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 					});
 			}
 
+			Marks->GraphBuilt = FPlatformTime::Seconds();
 			GraphBuilder.Execute();
 
 			// Лёгкий flush - проталкивает записанные команды до RHI thread (и тем
@@ -568,6 +584,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 			// (детектор зависания потока, ~6с на тривиальном диспатче). FlushRHIThread
 			// только отправляет команды, не блокируясь на их выполнении GPU.
 			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+			Marks->Submitted = FPlatformTime::Seconds();
 
 			// Опрос готовности - здесь безопасно, мы уже на Render Thread (см.
 			// комментарий выше про причину переноса всего блока сюда). Ждём оба
@@ -579,6 +596,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 			{
 				FPlatformProcess::Sleep(0.0f);
 			}
+			Marks->GpuReady = FPlatformTime::Seconds();
 
 			const uint32* ResultData = (const uint32*)Readback->Lock(WordCount * sizeof(uint32));
 			FMemory::Memcpy(OutputWords->GetData(), ResultData, WordCount * sizeof(uint32));
@@ -598,6 +616,7 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 				DecayStateReadback->Unlock();
 			}
 
+			Marks->Copied = FPlatformTime::Seconds();
 			CompletionEvent->Trigger();
 		});
 
@@ -739,6 +758,35 @@ int32 FGpuComputeStrategy::StepBatch(const FCellGrid& CurrentGrid, FCellGrid& Ne
 		NeighborExtent, NeighborOffsets.Num(), NeighborExtent * EffectiveSteps,
 		EffectiveSteps, RequestedSteps, TotalSeconds * 1000.0,
 		GetAliveSeconds * 1000.0, PackSeconds * 1000.0, GpuRoundTripSeconds * 1000.0, UnpackSeconds * 1000.0);
+
+	// Куда уходит GpuRoundTrip. Отдельной строкой, чтобы не ломать формат
+	// прежней (по ней сделаны все замеры в docs/compute-strategies.md).
+	//  Queue  - от ENQUEUE до того, как Render Thread взял команду: ждали
+	//           предыдущий кадр рендера, к GPU это отношения не имеет;
+	//  Build  - сборка графа, сюда входит копирование входных плоскостей в
+	//           RDG (CreateStructuredBuffer с начальными данными);
+	//  Submit - Execute() и проталкивание команд до RHI thread;
+	//  Gpu    - ожидание GPU: загрузка входа, все проходы, копия результата
+	//           в staging. По CPU-часам их не разделить, отсюда байты рядом:
+	//           если Gpu растёт с объёмом передачи, а не с числом поколений,
+	//           время уходит на шину, а не на счёт;
+	//  Copy   - Memcpy результата из staging в память CPU.
+	const double UpMB = (double(WordCount)
+		+ ((bDecayActive && !bTrackDecayStates) ? WordCount : 0)
+		+ (bTrackAges ? AgeWordCount : 0)
+		+ (bTrackDecayStates ? DecayStateWordCount : 0)) * sizeof(uint32) / (1024.0 * 1024.0);
+	const double DownMB = (double(WordCount)
+		+ (bTrackAges ? AgeWordCount : 0)
+		+ (bTrackDecayStates ? DecayStateWordCount : 0)) * sizeof(uint32) / (1024.0 * 1024.0);
+	UE_LOG(LogTemp, Log, TEXT("GpuRoundTripSplit: %.2f мс = Queue %.2f + Build %.2f + Submit %.2f + Gpu %.2f + Copy %.2f + Tail %.2f | вверх %.1f МБ, вниз %.1f МБ, поколений %d, объём %lld"),
+		GpuRoundTripSeconds * 1000.0,
+		(Marks->Picked - GpuRoundTripStart) * 1000.0,
+		(Marks->GraphBuilt - Marks->Picked) * 1000.0,
+		(Marks->Submitted - Marks->GraphBuilt) * 1000.0,
+		(Marks->GpuReady - Marks->Submitted) * 1000.0,
+		(Marks->Copied - Marks->GpuReady) * 1000.0,
+		(GpuRoundTripStart + GpuRoundTripSeconds - Marks->Copied) * 1000.0,
+		UpMB, DownMB, EffectiveSteps, VolumeCells);
 
 	return EffectiveSteps;
 }

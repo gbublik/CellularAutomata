@@ -52,3 +52,27 @@ Caught on a live run rather than by reading: live cells occupied a side of 1277,
 `FCpuComputeStrategy::CanStep()` now answers both questions before anything is allocated, checking the memory side against the actual `FPlatformMemory::GetStats().AvailablePhysical` rather than a compiled-in guess, and keeping a quarter in reserve — running the machine to zero would mean swapping and a hung editor rather than a refusal.
 
 Refusal travels as **`StepBatch()` returning 0**, meaning "`NextGrid` was not filled, do not use it". That distinction matters: the grid handed back on refusal is *empty*, so a caller that swapped it in would erase the structure instead of declining the step. All three callers now stop on zero — `Next()` and `StepAsync()` keep whatever generations they had already computed and leave `Grid` untouched if that is none, and `StepBackward()` cuts the replay short and keeps the last honestly computed generation. `StepAsync()` additionally stops the run, since the next tick would hit the same refusal and fill the log with one repeated line. The GPU strategy's three fallbacks route through `StepBatch()` rather than calling `Step()` directly, so a fallback into an impossible CPU step is a refusal too rather than a crash.
+
+## Где уходит GpuRoundTrip (замер 2026-10-18, перед GPU-резидентным рендером)
+
+Вопрос был такой: стоит ли держать сетку на GPU, чтобы она не ходила CPU→GPU→CPU. `GpuRoundTrip` разложен строкой `GpuRoundTripSplit` (Queue / Build / Submit / Gpu / Copy + мегабайты в обе стороны), а `BuildCellRenderData` теперь пишет своё время. Прогон в PIE, ГЦК-решётка, 12 соседей, сплошной шар (`SolidSphere`) для шага и равномерный шум с плотностью 0.3 для рендера:
+
+| клеток | поколений | шаг | GetAliveCells | Pack | **GpuRoundTrip** | из них Gpu | вверх/вниз | Unpack |
+|---|---|---|---|---|---|---|---|---|
+| 5.0M | 1 | 50 мс | 25.5 | 16.5 | **6.4** | 2.3 | 1.2 / 1.2 МБ | 1.7 |
+| 15.0M | 1 | 136 мс | 82.0 | 46.5 | **3.3** | 1.1 | 3.5 / 3.5 МБ | 4.5 |
+| 23.6M | 1 | 201 мс | 120.0 | 69.4 | **5.6** | 2.9 | 5.5 / 5.5 МБ | 5.7 |
+| 15.0M | 8 | 296 мс | 77.2 | 190.9 | **26.5** | 7.7 | 36.2 / 36.2 МБ | 1.6 |
+
+| видимых клеток | BuildCellRenderData | разлив в HISM | из него AddInstances | Clear | итого на обновление | выгрузка |
+|---|---|---|---|---|---|---|
+| 4.7M | 255 мс | 287 мс | 255 мс | 26 мс | **~570 мс** | 488 МБ |
+| 9.9M | 491 мс | 542 мс | 477 мс | 53 мс | **~1085 мс** | 1021 МБ |
+
+Выводы:
+
+1. **Сама передача по шине почти ничего не стоит.** 36 МБ туда и обратно — 26 мс, и даже это не всё шина: Submit и Queue — ожидание render thread. Счёт на GPU — единицы миллисекунд на десятки миллионов ячеек объёма. Цифра `GpuRoundTrip 778 мс на 19M` из прошлых замеров на этой разбивке не воспроизвелась; если она встретится снова, первым делом смотреть `GpuRoundTripSplit`.
+2. **Шаг упирается в CPU-подготовку плотного объёма из разреженной сетки:** `GetAliveCells` + `Pack` = 90–95% шага. Это лечится не GPU-рендером, а тем, чтобы плотный объём вообще не собирать заново: сетка, живущая на GPU между шагами, убирает обе строки целиком.
+3. **Обновление картинки дороже шага в 4–20 раз** и растёт линейно (~0.11 мкс на клетку: половина — `BuildCellRenderData`, половина — `AddInstances`). Вот где выигрыш от того, чтобы клетки рисовались прямо из GPU-буфера: обе половины исчезают.
+
+Следовательно, порядок работ — не «убрать readback», а «убрать CPU из цикла шаг → картинка»: состояние живёт на GPU, видимые клетки отбираются compute-шейдером, рисуются из того же буфера; на CPU сетка дочитывается лениво (пауза, выделение, правка, сохранение). Риск — Nanite (см. docs/rendering.md): рисование без него по прежним замерам кратно медленнее, это и проверяется прототипом рисования.

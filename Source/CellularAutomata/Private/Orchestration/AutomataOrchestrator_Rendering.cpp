@@ -283,6 +283,7 @@ bool AAutomataOrchestrator::IsCellEnclosed(const FIntVector& Cell, const TArray<
 
 void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& OutInstances)
 {
+	const double BuildStartSeconds = FPlatformTime::Seconds();
 	OutInstances.Reset();
 
 	// Таблица цвета считается один раз на весь рендер, а не на клетку: при
@@ -403,8 +404,9 @@ void AAutomataOrchestrator::BuildCellRenderData(TArray<FCellRenderInstance>& Out
 	LastRenderStats.BytesPerInstance = (int32)(sizeof(FTransform) + CellCustomDataFloats * sizeof(float));
 	LastRenderStats.EstimatedUploadMB = (double(LastRenderStats.RenderedCellCount) * LastRenderStats.BytesPerInstance) / (1024.0 * 1024.0);
 
-	UE_LOG(LogTemp, Log, TEXT("BuildCellRenderData: %d/%d клеток (отрисовано/живых в сетке) - выгрузка в AddInstances ~%.2f МБ (%d байт/инстанс: FTransform + %d float per-instance цвета, без учёта оверхеда HISM/драйвера)"),
+	UE_LOG(LogTemp, Log, TEXT("BuildCellRenderData: %d/%d клеток (отрисовано/живых в сетке) за %.2f мс - выгрузка в AddInstances ~%.2f МБ (%d байт/инстанс: FTransform + %d float per-instance цвета, без учёта оверхеда HISM/драйвера)"),
 		LastRenderStats.RenderedCellCount, LastRenderStats.TotalCellCount,
+		(FPlatformTime::Seconds() - BuildStartSeconds) * 1000.0,
 		LastRenderStats.EstimatedUploadMB, LastRenderStats.BytesPerInstance, CellCustomDataFloats);
 }
 
