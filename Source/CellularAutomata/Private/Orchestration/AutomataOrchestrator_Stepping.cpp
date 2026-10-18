@@ -497,6 +497,19 @@ void AAutomataOrchestrator::Next()
 
 void AAutomataOrchestrator::StepAsync()
 {
+	// GPU-сессия (bGpuResidentRun): сетка остаётся на видеокарте между
+	// заходами. Если условия сессии перестали выполняться посреди прогона
+	// (сменили метод, включили автоперебор) - закрываем её и идём прежним путём.
+	if (CanUseGpuLive() && BeginGpuLive())
+	{
+		DispatchGpuLive();
+		return;
+	}
+	if (bGpuLiveActive)
+	{
+		EndGpuLive(false);
+	}
+
 	if (!Grid)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("StepAsync: сетка не инициализирована - сначала постройте состояние (хоткей Y / GenerateState)"));
@@ -685,36 +698,8 @@ bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewG
 	// может стартовать независимо от того, что происходит с рендером.
 	bStepInProgress = false;
 
-	// R, нажатый пока этот шаг ещё считался, был отложен (см. doc-comment
-	// bResetToInitialStatePending) - гонка на Grid позади, выполняем его сейчас
-	// вместо обычного применения только что посчитанного поколения (которое всё
-	// равно тут же было бы перезаписано сбросом).
-	if (bResetToInitialStatePending)
+	if (RunPendingGridActions())
 	{
-		bResetToInitialStatePending = false;
-		ResetToInitialState();
-		return false;
-	}
-
-	// То же для N, нажатой во время этого шага - реролл вместо применения
-	// только что посчитанного поколения (оно всё равно было бы перезаписано
-	// новой случайной сеткой). См. doc-comment bNewSeedPending.
-	if (bNewSeedPending)
-	{
-		bNewSeedPending = false;
-		NewSeed();
-		return false;
-	}
-
-	// То же для Ctrl+Z (см. doc-comment bStepBackwardPending). Стоит ДО
-	// увеличения GenerationCount ниже, и это принципиально: StepBackward()
-	// отсчитывает от него, а поколение, только что посчитанное этим самым
-	// заходом, на экране ещё не было. Учтя его, откат вернул бы ровно то, что
-	// сейчас в Grid, и нажатие не изменило бы ничего видимого.
-	if (bStepBackwardPending)
-	{
-		bStepBackwardPending = false;
-		StepBackward();
 		return false;
 	}
 
@@ -761,6 +746,44 @@ bool AAutomataOrchestrator::CommitComputedGenerations(TUniquePtr<FCellGrid> NewG
 	AppendGenerationSample();
 
 	return true;
+}
+
+bool AAutomataOrchestrator::RunPendingGridActions()
+{
+	// R, нажатый пока этот шаг ещё считался, был отложен (см. doc-comment
+	// bResetToInitialStatePending) - гонка на Grid позади, выполняем его сейчас
+	// вместо обычного применения только что посчитанного поколения (которое всё
+	// равно тут же было бы перезаписано сбросом).
+	if (bResetToInitialStatePending)
+	{
+		bResetToInitialStatePending = false;
+		ResetToInitialState();
+		return true;
+	}
+
+	// То же для N, нажатой во время этого шага - реролл вместо применения
+	// только что посчитанного поколения (оно всё равно было бы перезаписано
+	// новой случайной сеткой). См. doc-comment bNewSeedPending.
+	if (bNewSeedPending)
+	{
+		bNewSeedPending = false;
+		NewSeed();
+		return true;
+	}
+
+	// То же для Ctrl+Z (см. doc-comment bStepBackwardPending). Стоит ДО
+	// увеличения GenerationCount ниже, и это принципиально: StepBackward()
+	// отсчитывает от него, а поколение, только что посчитанное этим самым
+	// заходом, на экране ещё не было. Учтя его, откат вернул бы ровно то, что
+	// сейчас в Grid, и нажатие не изменило бы ничего видимого.
+	if (bStepBackwardPending)
+	{
+		bStepBackwardPending = false;
+		StepBackward();
+		return true;
+	}
+
+	return false;
 }
 
 void AAutomataOrchestrator::ApplyStepResult(TUniquePtr<FCellGrid> NewGrid, double StepSeconds, int64 ComputeUploadBytes, bool bFellBackToCpu, int32 GenerationsAdvanced)
@@ -904,6 +927,8 @@ void AAutomataOrchestrator::Start()
 
 	TimeSinceLastStep = 0.0f;
 	StepsSinceLastRender = 0;
+	// Новый прогон - новая попытка открыть GPU-сессию (см. bGpuLiveRefused).
+	bGpuLiveRefused = false;
 	bSimulationRunning = true;
 	SetActorTickEnabled(true);
 }
@@ -929,6 +954,10 @@ void AAutomataOrchestrator::Resume()
 
 void AAutomataOrchestrator::Stop()
 {
+	// GPU-сессия возвращает сетку на CPU и рисует её HISM: пауза - это когда
+	// структуру разглядывают, выделяют и правят.
+	EndGpuLive(true);
+
 	bSimulationRunning = false;
 
 	// Если чанковый рендер ещё не доехал по кадрам - досыпаем его одним

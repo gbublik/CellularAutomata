@@ -2,6 +2,7 @@
 #include "Automata/Simulation/ComputeStrategy/CpuComputeStrategy.h"
 #include "Automata/Grid/CellGrid.h"
 #include "Automata/Simulation/CellularAutomatonRule.h"
+#include "CellularAutomatonStepCS.h"
 
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
@@ -13,9 +14,8 @@
 
 namespace
 {
-	// Moore - максимум соседей (полный куб 3x3x3 без центра), см.
-	// CellularAutomatonRule.cpp::BuildNeighborOffsets.
-	constexpr int32 MaxShaderNeighborOffsets = 26;
+	// См. CellularAutomatonStepCS.h - тот же потолок, общий с GPU-сессией.
+	constexpr int32 MaxShaderNeighborOffsets = CellularAutomatonStepShader::MaxNeighborOffsets;
 
 	/** Размеры AABB живых клеток, расширенного на Halo клеток в каждую
 	 *  сторону. Вынесено в функцию, потому что StepBatch() считает это в
@@ -29,50 +29,6 @@ namespace
 		OutVolumeCells = int64(OutVolumeDim.X) * int64(OutVolumeDim.Y) * int64(OutVolumeDim.Z);
 	}
 }
-
-class FCellularAutomatonStepCS : public FGlobalShader
-{
-public:
-	DECLARE_GLOBAL_SHADER(FCellularAutomatonStepCS);
-	SHADER_USE_PARAMETER_STRUCT(FCellularAutomatonStepCS, FGlobalShader);
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER(FIntVector, VolumeDim)
-		SHADER_PARAMETER(uint32, NeighborOffsetCount)
-		SHADER_PARAMETER_ARRAY(FIntVector4, NeighborOffsets, [MaxShaderNeighborOffsets])
-		SHADER_PARAMETER(uint32, BirthMask)
-		SHADER_PARAMETER(uint32, SurvivalMask)
-		// bDecayActive==0 (States==2, подавляющее большинство правил) -
-		// InputDecayBits привязывается на тот же RDG-буфер, что InputBits
-		// (см. Step() ниже) - шейдер его не разыменовывает под этой веткой,
-		// так что лишнего аллоцирования не происходит.
-		SHADER_PARAMETER(uint32, bDecayActive)
-		// bTrackAges==0 - возрасты после шага считает CPU, как и раньше;
-		// InputAges/OutputAges привязаны к заглушкам в одно слово (см.
-		// StepBatch()). ==1 - шаг внутри пачки, промежуточных поколений на
-		// CPU не будет, возраст ведёт шейдер.
-		SHADER_PARAMETER(uint32, bTrackAges)
-		// bTrackDecayStates==1 - шаг внутри пачки при States > 2: угасание
-		// ведёт шейдер по байтовой плоскости состояний, потому что
-		// CellDecay::AdvanceDecayStates() между поколениями пачки не
-		// выполняется. ==0 - прежний путь с битовой плоскостью InputDecayBits
-		// (см. .usf).
-		SHADER_PARAMETER(uint32, bTrackDecayStates)
-		SHADER_PARAMETER(uint32, MaxStates)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputBits)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecayBits)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputAges)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecayStates)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputBits)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputAges)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, OutputDecayStates)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-	}
-};
 
 IMPLEMENT_GLOBAL_SHADER(FCellularAutomatonStepCS, "/Project/CellularAutomata/Private/CellularAutomatonStep.usf", "MainCS", SF_Compute);
 

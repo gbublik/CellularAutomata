@@ -36,7 +36,7 @@ void AAutomataOrchestrator::UpdateHudStats()
 
 	LastSimulationStats.bSimulationRunning = bSimulationRunning;
 	LastSimulationStats.bFastStepActive = bFastStepActive;
-	LastSimulationStats.bIsComputing = bStepInProgress;
+	LastSimulationStats.bIsComputing = bGpuLiveActive ? bGpuLiveDispatchInFlight : bStepInProgress;
 	LastSimulationStats.GenerationCount = GenerationCount;
 
 	// Заданные настройки - просто зеркалим, чтобы HUD читал ровно то же, что
@@ -47,7 +47,7 @@ void AAutomataOrchestrator::UpdateHudStats()
 
 	// Grid->Num() - готовый счётчик в чанках, не скан сетки (см. FDenseCellGrid),
 	// так что читать его дёшево даже на миллионах клеток.
-	LastSimulationStats.AliveCellCount = Grid.IsValid() ? Grid->Num() : 0;
+	LastSimulationStats.AliveCellCount = (int32)GetAliveCountForStats();
 
 	// Действующее правило текстом. Через GetActiveRuleString(), т.е. из живых
 	// массивов, а не из UPROPERTY RuleString - см. doc-comment поля. Собирается
@@ -234,7 +234,7 @@ void AAutomataOrchestrator::AppendGenerationSample()
 {
 	// Grid может не быть вовсе - BakeCellsToMesh() его освобождает.
 	GenerationHistory::Append(GenerationSamples, GenerationCount,
-		Grid.IsValid() ? Grid->Num() : 0, GenerationHistoryCapacity);
+		(int32)GetAliveCountForStats(), GenerationHistoryCapacity);
 }
 
 void AAutomataOrchestrator::NoteRenderedCells(int32 RenderedCount)

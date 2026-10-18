@@ -202,7 +202,9 @@ void AAutomataOrchestrator::Tick(float DeltaTime)
 	// bChunkedRenderInProgress истинным. Оставшееся время не копится "про
 	// запас" - реальная скорость сама упрётся в то, сколько Step() занимает
 	// на этой сетке (плюс, в режиме ожидания, во сколько занимает разлив).
-	if ((bSeriesRush || TimeSinceLastStep >= StepInterval) && !bStepInProgress && !bBlockedByChunkedRender)
+	// IsReadyForNextDispatch(): у GPU-сессии bStepInProgress истинен всё время,
+	// и ждать надо конца её захода, а не шага (см. doc-comment GpuLive).
+	if ((bSeriesRush || TimeSinceLastStep >= StepInterval) && IsReadyForNextDispatch() && !bBlockedByChunkedRender)
 	{
 		TimeSinceLastStep = 0.0f;
 		StepAsync();

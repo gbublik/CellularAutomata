@@ -30,6 +30,7 @@
 #include "Orchestration/GenerationHistory.h"
 #include "Orchestration/StabilityWindow.h"
 #include "Ui/HudFormat.h"
+#include "Automata/Simulation/GpuResidentSimulation.h"
 #include "RHI.h"
 
 /**
@@ -4096,6 +4097,115 @@ bool FHudFormatTest::RunTest(const FString& Parameters)
 	Render.bRenderPresetModified = true;
 	TestEqual(TEXT("modified profile has star"), HudFormat::MetricValue(EHudMetric::RenderProfile, View).ToString(), FString(TEXT("Quality*")));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGpuResidentParityTest,
+	"CellularAutomata.Compute.GpuResidentParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::NonNullRHI)
+
+bool FGpuResidentParityTest::RunTest(const FString& Parameters)
+{
+	if (!AutomataTestUtils::IsGpuComputeAvailable())
+	{
+		AddInfo(TEXT("GPU-compute недоступен (нет RHI либо compute-шейдеров) - тест пропущен"));
+		return true;
+	}
+
+	constexpr float CellSize = 100.0f;
+	constexpr int32 ChunkSize = 16;
+	constexpr int64 VolumeLimit = 512LL * 512LL * 512LL;
+	constexpr int32 StepsPerDispatch = 4;
+	constexpr int32 Dispatches = 3;
+
+	// GPU-сессия держит состояние на видеокарте между заходами - и обязана
+	// дать ровно то же, что CPU-стратегия по одному поколению: живые, возрасты
+	// (их всё время ведёт шейдер) и стадии угасания. Запас вокруг структуры
+	// нарочно минимальный, чтобы за 12 поколений сработало раздвигание объёма -
+	// единственное место, где сессия переносит данные между раскладками и
+	// может потерять клетку молча.
+	struct FRuleCase
+	{
+		const TCHAR* Name;
+		TArray<int32> Birth;
+		TArray<int32> Survival;
+		int32 States;
+		ENeighborhood Neighborhood = ENeighborhood::Moore;
+	};
+
+	const TArray<FRuleCase> Cases = {
+		{ TEXT("бинарное 4/4/2/M"), { 4 }, { 4 }, 2 },
+		{ TEXT("Generations 4/4/5/M"), { 4 }, { 4 }, 5 },
+		{ TEXT("бинарное 6-16/12-13/2/VN2"), { 12, 13 }, { 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }, 2, ENeighborhood::VonNeumann2 },
+		// Размах 2 при радиусе 1: запас до края обязан считаться от размаха,
+		// иначе сессия теряет пограничные клетки без единой строчки в логе.
+		{ TEXT("бинарное 0-6/1,3/2/FA"), { 1, 3 }, { 0, 1, 2, 3, 4, 5, 6 }, 2, ENeighborhood::FarAxes },
+	};
+
+	int32 TotalRegrows = 0;
+	for (const FRuleCase& Case : Cases)
+	{
+		const FCellularAutomatonRule Rule(Case.Birth, Case.Survival, Case.Neighborhood, Case.States);
+		const FCpuComputeStrategy CpuStrategy;
+
+		FDenseCellGrid Source(CellSize, ChunkSize, Rule.HasDecayStates());
+		AutomataTestUtils::SeedSphere(Source, /*Seed=*/2024, /*Radius=*/12, /*Amount=*/4000);
+
+		// Эталон: все поколения по одному, CPU.
+		TUniquePtr<FCellGrid> Reference;
+		const FCellGrid* StepSource = &Source;
+		for (int32 Generation = 0; Generation < StepsPerDispatch * Dispatches; ++Generation)
+		{
+			TUniquePtr<FCellGrid> Next = AutomataTestUtils::AdvanceOneGeneration(*StepSource, CpuStrategy, Rule, CellSize, ChunkSize);
+			Reference = MoveTemp(Next);
+			StepSource = Reference.Get();
+		}
+
+		FGpuResidentSimulation Session;
+		FString Error;
+		const int32 MinHalo = FMath::Max(1, Rule.GetNeighborExtent()) * StepsPerDispatch;
+		if (!TestTrue(FString::Printf(TEXT("%s: сессия залита"), Case.Name), Session.Upload(Source, Rule, MinHalo, VolumeLimit, Error)))
+		{
+			AddError(Error);
+			continue;
+		}
+
+		bool bAdvanced = true;
+		for (int32 Dispatch = 0; Dispatch < Dispatches; ++Dispatch)
+		{
+			if (Session.Advance(Rule, StepsPerDispatch, VolumeLimit, Error) != StepsPerDispatch)
+			{
+				AddError(FString::Printf(TEXT("%s: заход %d не выполнен - %s"), Case.Name, Dispatch, *Error));
+				bAdvanced = false;
+				break;
+			}
+		}
+		if (!bAdvanced)
+		{
+			continue;
+		}
+
+		FDenseCellGrid Downloaded(CellSize, ChunkSize, Rule.HasDecayStates());
+		Session.Download(Downloaded);
+
+		TestEqual(FString::Printf(TEXT("%s: сводка сессии знает число живых"), Case.Name), Session.GetStats().AliveCount, (int64)Reference->Num());
+
+		FString Mismatch;
+		if (!AutomataTestUtils::GridsMatch(*Reference, Downloaded, Mismatch))
+		{
+			AddError(FString::Printf(TEXT("%s: GPU-сессия разошлась с CPU - %s"), Case.Name, *Mismatch));
+			continue;
+		}
+
+		TotalRegrows += Session.GetRegrowCount();
+		AddInfo(FString::Printf(TEXT("%s: %d живых после %d поколений, совпало; раздвиганий объёма %d"),
+			Case.Name, Downloaded.Num(), StepsPerDispatch * Dispatches, Session.GetRegrowCount()));
+		TestTrue(FString::Printf(TEXT("%s: сетка не вымерла (иначе сравнение пустое)"), Case.Name), Downloaded.Num() > 0);
+	}
+
+	// Без единого раздвигания тест не проверил бы перенос между раскладками -
+	// а это самая хрупкая часть сессии.
+	TestTrue(TEXT("хотя бы в одном случае объём раздвигался"), TotalRegrows > 0);
 	return true;
 }
 

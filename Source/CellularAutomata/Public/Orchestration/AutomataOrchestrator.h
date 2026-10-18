@@ -37,6 +37,7 @@
 #include "Automata/Sonification/SonificationPresets.h"
 #include "Orchestration/GenerationHistory.h"
 #include "Orchestration/StabilityWindow.h"
+#include "Automata/Simulation/GpuResidentSimulation.h"
 #include "GameFramework/PlayerController.h"
 #include "AutomataOrchestrator.generated.h"
 
@@ -2916,6 +2917,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|Rules")
 	EComputeMethod ComputeMethod = EComputeMethod::Cpu;
 
+	/** GPU-сессия при Play (только с ComputeMethod == Gpu): сетка заливается на
+	 *  видеокарту один раз на старте прогона и живёт там между заходами -
+	 *  каждый заход читает назад 32 байта сводки вместо того, чтобы заново
+	 *  собирать на CPU плотный объём (это 90-95% прежнего шага, см.
+	 *  docs/compute-strategies.md). На CPU сетка возвращается на паузе/стопе
+	 *  и при любом отложенном действии (R, N, Ctrl+Z).
+	 *
+	 *  ШАГ 1 ИЗ 3: пока сессия идёт, картинка НЕ обновляется - рисовать прямо
+	 *  с GPU будет следующий шаг. Поэтому по умолчанию выключено. Не
+	 *  включается при автопереборе сидов, серийной съёмке и Ghost Shape - им
+	 *  нужна CPU-сетка на каждом поколении (будут подключены позже). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU")
+	bool bGpuResidentRun = false;
+
 	/** Верхняя граница объёма (в клетках) AABB живых клеток+halo, которую
 	 *  FGpuComputeStrategy согласна посчитать на GPU за один Step() - выше
 	 *  неё шаг откатывается на CPU с предупреждением в лог (см.
@@ -4138,6 +4153,53 @@ private:
 	 *  Всегда максимум один шаг в полёте одновременно (см. bStepInProgress),
 	 *  так что перезапись этого поля на каждый StepAsync() безопасна. */
 	TFuture<void> PendingStepFuture;
+
+	/** GPU-сессия (см. bGpuResidentRun). Пока она открыта, bStepInProgress
+	 *  держится истинным ВСЁ время - сессия для остального кода выглядит одним
+	 *  длинным шагом, и все ~50 существующих защит Grid (R/N/Ctrl+Z
+	 *  откладываются, правка и сохранение отказывают) работают без изменений.
+	 *  Между заходами следит отдельный bGpuLiveDispatchInFlight. Сырой
+	 *  указатель на сессию уходит в фоновый заход, поэтому сессию разрушают
+	 *  только после PendingStepFuture.Wait() (EndGpuLive(), EndPlay()). */
+	TUniquePtr<FGpuResidentSimulation> GpuLive;
+	bool bGpuLiveActive = false;
+	bool bGpuLiveDispatchInFlight = false;
+	/** Сессию не удалось открыть (объём не влез в лимит) - не пробовать на
+	 *  каждом тике до следующего Start(). */
+	bool bGpuLiveRefused = false;
+	/** Число живых по последней сводке сессии - HUD и график, пока CPU-сетка
+	 *  стоит на поколении начала сессии. */
+	int64 GpuLiveAliveCount = 0;
+
+	/** Итог фонового захода сессии. Заполняет воркер; забирает игровой поток
+	 *  в ApplyGpuLiveResult() - либо EndGpuLive(), если сессию закрыли, пока
+	 *  заход был в полёте (иначе его поколения потерялись бы в счётчике). */
+	struct FGpuLiveDispatchResult
+	{
+		int32 Generations = 0;
+		FGpuResidentStats Stats;
+		double Seconds = 0.0;
+		FString Error;
+		bool bConsumed = false;
+	};
+	TSharedPtr<FGpuLiveDispatchResult, ESPMode::ThreadSafe> GpuLiveResult;
+
+	bool CanUseGpuLive() const;
+	bool BeginGpuLive();
+	void DispatchGpuLive();
+	void ApplyGpuLiveResult();
+	void ConsumeGpuLiveResult(FGpuLiveDispatchResult& Result);
+	/** Закрыть сессию: дождаться захода в полёте, прочитать сетку назад в Grid,
+	 *  снять bStepInProgress, отработать отложенные R/N/Ctrl+Z. */
+	void EndGpuLive(bool bRenderAfter);
+	/** Готов ли тик запускать следующий заход: обычный путь ждёт конца шага,
+	 *  сессия - конца своего захода (bStepInProgress у неё истинен всегда). */
+	bool IsReadyForNextDispatch() const { return bGpuLiveActive ? !bGpuLiveDispatchInFlight : !bStepInProgress; }
+	/** Число живых для HUD и графика - из сессии, пока она открыта. */
+	int64 GetAliveCountForStats() const;
+	/** Отработать отложенные R/N/Ctrl+Z (общий хвост CommitComputedGenerations()
+	 *  и закрытия сессии). true - одно из них сработало и само перерисовало. */
+	bool RunPendingGridActions();
 
 	/** true, пока рендер текущего поколения "разлит" по кадрам (см.
 	 *  bEnableChunkedRender) - Tick() вызывает AdvanceChunkedRender()
