@@ -300,9 +300,25 @@ void UCellGpuInstancesComponent::ShowResidentCells(const TSharedRef<FGpuResident
 	ReplacedComponent = InReplacedComponent;
 	bCellsWritePending = true;
 
-	// Ёмкость: вдвое при росте, ужимается только при большом перекосе -
-	// пересоздание прокси на миллионах слотов стоит 1-3 с застывших кадров
-	// (замер 2026-10-18), так что пересоздавать надо как можно реже.
+	// Прежняя картинка уходит сразу, а не после первой записи: пока на экране
+	// оба примитива, в сцене висят и экземпляры HISM, и все слоты GPU-пути.
+	// Замер разгона (2026-10-18): 4.7M HISM + 13.1M слотов выбрали видеопамять
+	// до предела - кадр на 20 с и несколько по 1-2 с. Пустых кадров выходит
+	// три (ожидание слотов в TickComponent), по 8 мс каждый.
+	if (bEnteringCellsMode)
+	{
+		if (UPrimitiveComponent* Replaced = ReplacedComponent.Get())
+		{
+			Replaced->SetVisibility(false);
+		}
+	}
+
+	// Ёмкость: впритык с небольшим запасом. Пересоздание прокси стоит
+	// пропорционально числу слотов (движок разбирает и собирает их заново в
+	// SceneCulling и GPU-Scene), а лишние миллионы слотов - это видеопамять.
+	// Вход - x1.25 (первое поколение из шума пористое насквозь и тут же
+	// "схлопывается" до поверхности, запас на рост там не нужен), рост - x1.5,
+	// ужатие - когда занято меньше трети.
 	const int64 Required = FMath::Max<int64>(VisibleCount, 1);
 	if (Required > CellGpuDrawing::MaxInstances && !bWarnedOverCeiling)
 	{
@@ -311,9 +327,13 @@ void UCellGpuInstancesComponent::ShowResidentCells(const TSharedRef<FGpuResident
 			VisibleCount, CellGpuDrawing::MaxInstances);
 	}
 	int32 NewCapacity = Capacity;
-	if (bEnteringCellsMode || Required > Capacity || (Capacity > 4 * MinCellsCapacity && Required < Capacity / 4))
+	if (bEnteringCellsMode)
 	{
-		NewCapacity = (int32)FMath::Clamp<int64>(Required * 2, MinCellsCapacity, CellGpuDrawing::MaxInstances);
+		NewCapacity = (int32)FMath::Clamp<int64>(Required + Required / 4, MinCellsCapacity, CellGpuDrawing::MaxInstances);
+	}
+	else if (Required > Capacity || (Capacity > 3 * MinCellsCapacity && Required < Capacity / 3))
+	{
+		NewCapacity = (int32)FMath::Clamp<int64>(Required + Required / 2, MinCellsCapacity, CellGpuDrawing::MaxInstances);
 	}
 
 	// Границы: пересоздаём, только если новый объём вышел за прежние.
@@ -331,6 +351,10 @@ void UCellGpuInstancesComponent::ShowResidentCells(const TSharedRef<FGpuResident
 
 void UCellGpuInstancesComponent::SetCapacityAndBounds(int32 NewCapacity, const FBox& NewBounds)
 {
+	if (NewCapacity != Capacity)
+	{
+		UE_LOG(LogTemp, Log, TEXT("UCellGpuInstancesComponent: ёмкость %d -> %d слотов (прокси пересоздаётся)"), Capacity, NewCapacity);
+	}
 	Capacity = NewCapacity;
 	CellBounds = NewBounds;
 	WrittenForProxy = nullptr;

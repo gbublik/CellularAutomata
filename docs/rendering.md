@@ -147,7 +147,7 @@ Measured on the same amoeba: **51M alive → 1.34M drawn at 100 FPS** (Speed 4);
 
 Open problems, in order of value:
 1. ~~*Pause over the ceiling.*~~ Done, see below.
-2. *The first four generations of a run cost ~2 s each* (seen before exterior air too, 1.2–1.5 s): HISM still on screen next to the new primitive, plus capacity growth recreating the proxy. Not yet profiled.
+2. ~~*The first four generations of a run cost ~2 s each.*~~ Profiled with the engine's CSV profiler (`csvprofile start/stop` → `Saved/Profiling/CSV`, per-frame game/render/GPU time plus `SceneCulling/*` and `GPUMem/*` counters) and fixed, see "Ramp-up" below.
 3. *Fine noise defeats the flood once*: at generation 3 from 30% noise the air did not converge in 64 rounds (deep tortuous crevices); one generation, then never again. Raise the budget only if it shows in the picture.
 
 **Pause on the GPU — step 3 (2026-10-18).** `Stop()` with an open session now decides where the pause goes. The session's counting pass already evaluates every cell, so it also counts what **HISM would draw** — the CPU rule, surface-only without exterior air (`EvaluateCellWith(..., bUseExterior=false)`, stats word 18). If alive+decaying ≤ `GpuPauseCpuAliveLimit` (30M) and that count ≤ `GpuPauseHismInstanceLimit` (12M), the pause is the old one: download, HISM, full light, picking and editing. Otherwise the **session stays open** (`bGpuLivePaused`), the GPU picture stays, and a status line says why:
@@ -156,3 +156,5 @@ Open problems, in order of value:
 - everything that needs the CPU grid (selection, editing, save, Y) refuses through the existing `bStepInProgress` guards.
 
 Checked in PIE: 6.4M alive → HISM pause (5.0M instances, session closed in 62 ms); 148M alive → GPU pause (HISM would have needed 112M instances), **120 FPS while paused with 2.3M drawn**, Next advanced 404 → 405 on the GPU, R reset to the 532k seed at once with no download.
+
+**Ramp-up — why the first generations froze (2026-10-18).** It was never the compute: the session's dispatch only *waited* for a render thread busy with something else. The profile showed `SceneCulling/NumDynamicInstances` at **17.8M** in the first frames — the 4.7M HISM instances still on screen (it was hidden only after the first GPU write, three frames later) plus **13.1M GPU slots**, because the first generation from 30% noise is porous through and through (≈6.5M visible) and capacity was doubled on top. `GPUMem/LocalUsedMB` hit the budget (14.8 of 14.8 GB): one 20 s frame of paging and several of 1–2 s while the engine added and then removed those instances (proportional to slot count). Fix: hide the replaced HISM the moment the GPU primitive is created (three ~8 ms blank frames), and size capacity tightly — ×1.25 on entry, ×1.5 on growth, shrink below a third; every capacity change is now logged. Result: frames over 100 ms 6 → 4, the worst 20 s → 1.8 s (adding 8.2M slots once), ~29 s of stalls → ~2.5 s.
