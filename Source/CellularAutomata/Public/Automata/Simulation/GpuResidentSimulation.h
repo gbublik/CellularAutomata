@@ -26,6 +26,8 @@ struct FGpuResidentStats
 
 	/** Что насчитал дополнительный проход владельца (FExtraPass), 0 без него. */
 	int64 ExtraCount = 0;
+	/** Ещё четыре слова владельца (16..19) - диагностика его проходов. */
+	uint32 ExtraAux[4] = {};
 };
 
 /**
@@ -76,8 +78,8 @@ public:
 	~FGpuResidentSimulation();
 
 	/** Дополнительный проход по итогу захода, в том же графе и до чтения
-	 *  сводки. Может прибавить число в слово 15 сводки (FGpuResidentStats::
-	 *  ExtraCount) - так рисование узнаёт число видимых клеток без отдельного
+	 *  сводки. Может писать в слова 15..19 сводки (FGpuResidentStats::
+	 *  ExtraCount и ExtraAux) - так рисование узнаёт число видимых клеток без отдельного
 	 *  ожидания GPU. Зовётся на render thread; буферы - итоговое поколение. */
 	using FExtraPass = TFunction<void(FRDGBuilder& GraphBuilder, const FGpuResidentPlanes& Planes,
 		FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay, FRDGBufferUAV* StatsUAV)>;

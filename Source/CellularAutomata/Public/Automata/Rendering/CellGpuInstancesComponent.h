@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/Actor.h"
+#include "RenderGraphResources.h"
 #include "CellGpuInstancesComponent.generated.h"
 
 struct FGpuResidentPlanes;
@@ -25,6 +26,13 @@ struct CELLULARAUTOMATA_API FCellGpuDrawParams
 	/** Соседи "по грани"; пусто - "только поверхность" выключена. */
 	TArray<FIntVector4> FaceOffsets;
 
+	/** Рисовать только то, что видно снаружи: клетку, хоть одна грань
+	 *  которой смотрит во внешний воздух (CellExteriorAir.usf). Режет поры
+	 *  пористой структуры, которые "только поверхность" считает открытыми.
+	 *  Ставится только для кубической решётки и без отсечений (у других
+	 *  решёток 6-связный воздух течёт сквозь всё, а срез и так вскрывает нутро). */
+	bool bExteriorOnly = false;
+
 	/** FColor, упакованный как R | G << 8 | B << 16; по 256 записей. */
 	TArray<uint32> AgeLut;
 	TArray<uint32> DecayLut;
@@ -43,15 +51,45 @@ struct CELLULARAUTOMATA_API FCellGpuDrawParams
 	float SliceMaxDepth = 0.0f;
 };
 
+/**
+ * Состояние рисования, которое живёт между кадрами на render thread:
+ * плоскость внешнего воздуха. Её строит заход сессии (в счёте видимых), а
+ * читает запись экземпляров в графе сцены - поэтому она не может быть
+ * временным буфером одного графа. Один объект на сессию.
+ */
+struct CELLULARAUTOMATA_API FCellGpuDrawState
+{
+	FCellGpuDrawState() = default;
+	/** Пулированный буфер отпускается на render thread, где бы ни умерла
+	 *  последняя ссылка (так же поступает FGpuResidentSimulation). */
+	~FCellGpuDrawState();
+
+	TRefCountPtr<FRDGPooledBuffer> Air;
+	/** Под какой объём построен воздух; не совпал с плоскостями - не годен. */
+	FIntVector AirDim = FIntVector::ZeroValue;
+	int32 AirRowWords = 0;
+};
+
 namespace CellGpuDrawing
 {
+	/** Слова сводки сессии после счёта видимых (CounterIndex + ...): раунды
+	 *  заливки внешнего воздуха и флаг "не сошлась за потолок раундов". */
+	constexpr uint32 AirRoundsWordOffset = 1;
+	constexpr uint32 AirUnconvergedWordOffset = 2;
+
+	/** Построить плоскость внешнего воздуха текущего поколения в
+	 *  DrawState.Air (render thread). nullptr - объём пуст или слишком велик. */
+	CELLULARAUTOMATA_API FRDGBuffer* AddExteriorAirPasses(FRDGBuilder& GraphBuilder, const FGpuResidentPlanes& Planes,
+		FRDGBuffer* Bits, FRDGBuffer* Decay, FCellGpuDrawState& DrawState,
+		FRDGBufferUAV* Stats, uint32 RoundsWord, uint32 UnconvergedWord);
+
 	/** Счёт клеток, которые будут нарисованы (CellVisibility.ush), с
 	 *  прибавлением в слово CounterIndex буфера Counter. Для
 	 *  FGpuResidentSimulation::FExtraPass: ёмкость компонента надо знать на CPU
 	 *  до записи, а сводка захода и так читается назад. Render thread. */
 	CELLULARAUTOMATA_API void AddCountVisiblePass(FRDGBuilder& GraphBuilder, const FCellGpuDrawParams& Params,
 		const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay,
-		FRDGBufferUAV* Counter, uint32 CounterIndex);
+		FRDGBufferUAV* Counter, uint32 CounterIndex, FCellGpuDrawState* DrawState = nullptr);
 
 	/** Потолок экземпляров на сцену - 24-битный InstanceId (docs/rendering.md). */
 	constexpr int32 MaxInstances = 15 * 1024 * 1024;
@@ -72,8 +110,8 @@ namespace CellGpuDrawing
  * Ограничения пути:
  *  - ёмкость (Capacity) задаётся на CPU; смена ёмкости или границ пересоздаёт
  *    прокси и ТЕРЯЕТ записанные данные - запись повторяется, как только у
- *    нового прокси появятся слоты в GPU-Scene (TickComponent). Поэтому ёмкость
- *    растёт с запасом в полтора раза, а не впритык;
+ *    нового прокси появятся слоты в GPU-Scene (TickComponent). Пересоздание
+ *    стоит секунды на миллионах слотов, поэтому ёмкость растёт вдвое;
  *  - Lumen surface cache, distance fields и ray tracing для GPU-only
  *    экземпляров не поддерживаются (в движке там check) - отключаются в
  *    ValidateSetup(). Полноценный свет - у HISM на паузе.
@@ -101,6 +139,7 @@ public:
 	 */
 	void ShowResidentCells(const TSharedRef<FGpuResidentPlanes, ESPMode::ThreadSafe>& Planes,
 		const TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe>& Params,
+		const TSharedRef<FCellGpuDrawState, ESPMode::ThreadSafe>& DrawState,
 		int64 VisibleCount, const FBox& LocalBounds, UPrimitiveComponent* ReplacedComponent);
 
 	/** Убрать клетки (прокси уничтожается, слоты GPU-Scene освобождаются) и
@@ -147,6 +186,7 @@ private:
 	bool bCellsWritePending = false;
 	TSharedPtr<FGpuResidentPlanes, ESPMode::ThreadSafe> CellPlanes;
 	TSharedPtr<const FCellGpuDrawParams, ESPMode::ThreadSafe> CellParams;
+	TSharedPtr<FCellGpuDrawState, ESPMode::ThreadSafe> CellDrawState;
 	FBox CellBounds = FBox(ForceInit);
 	bool bWarnedOverCeiling = false;
 

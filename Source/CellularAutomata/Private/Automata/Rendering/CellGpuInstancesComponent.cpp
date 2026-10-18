@@ -46,13 +46,33 @@ BEGIN_SHADER_PARAMETER_STRUCT(FCellVisibilityParameters, )
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputBits)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputAges)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputDecay)
+	SHADER_PARAMETER(uint32, InExteriorOnly)
+	SHADER_PARAMETER(uint32, InAirRowWords)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, InputAir)
 END_SHADER_PARAMETER_STRUCT()
 
 namespace
 {
+	/** Air - плоскость внешнего воздуха этого поколения или nullptr (режим выкл.). */
 	void FillVisibilityParameters(FRDGBuilder& GraphBuilder, FCellVisibilityParameters& Out, const FCellGpuDrawParams& Params,
-		const FGpuResidentPlanes& Planes, FRDGBufferRef Bits, FRDGBufferRef Ages, FRDGBufferRef Decay)
+		const FGpuResidentPlanes& Planes, FRDGBufferRef Bits, FRDGBufferRef Ages, FRDGBufferRef Decay,
+		FRDGBufferRef Air = nullptr, int32 AirRowWords = 0)
 	{
+		const bool bExterior = Params.bExteriorOnly && Air != nullptr && AirRowWords > 0;
+		Out.InExteriorOnly = bExterior ? 1u : 0u;
+		Out.InAirRowWords = bExterior ? (uint32)AirRowWords : 0u;
+		if (bExterior)
+		{
+			Out.InputAir = GraphBuilder.CreateSRV(Air);
+		}
+		else
+		{
+			// Заглушка: шейдер её не читает, но SRV привязан всегда.
+			const uint32 Zero = 0;
+			Out.InputAir = GraphBuilder.CreateSRV(CreateStructuredBuffer(GraphBuilder, TEXT("CellExteriorAirDummy"),
+				sizeof(uint32), 1, &Zero, sizeof(uint32)));
+		}
+
 		Out.InVolumeDim = Planes.VolumeDim;
 		Out.InVolumeMin = Planes.MinCell;
 		Out.InStep = Params.Step;
@@ -210,15 +230,25 @@ IMPLEMENT_GLOBAL_SHADER(FCellVisibleCountCS, "/Project/CellularAutomata/Private/
 
 void CellGpuDrawing::AddCountVisiblePass(FRDGBuilder& GraphBuilder, const FCellGpuDrawParams& Params,
 	const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay,
-	FRDGBufferUAV* Counter, uint32 CounterIndex)
+	FRDGBufferUAV* Counter, uint32 CounterIndex, FCellGpuDrawState* DrawState)
 {
 	if (Planes.VolumeDim.X <= 0 || Planes.VolumeDim.Y <= 0 || Planes.VolumeDim.Z <= 0)
 	{
 		return;
 	}
 
+	// Воздух строится здесь, в заходе сессии, и остаётся в DrawState для
+	// записи экземпляров - один раз на поколение, а не на кадр.
+	FRDGBufferRef Air = nullptr;
+	if (Params.bExteriorOnly && DrawState)
+	{
+		Air = AddExteriorAirPasses(GraphBuilder, Planes, Bits, Decay, *DrawState, Counter,
+			CounterIndex + AirRoundsWordOffset, CounterIndex + AirUnconvergedWordOffset);
+	}
+
 	FCellVisibleCountCS::FParameters* PassParams = GraphBuilder.AllocParameters<FCellVisibleCountCS::FParameters>();
-	FillVisibilityParameters(GraphBuilder, PassParams->Visibility, Params, Planes, Bits, Ages, Decay);
+	FillVisibilityParameters(GraphBuilder, PassParams->Visibility, Params, Planes, Bits, Ages, Decay,
+		Air, DrawState ? DrawState->AirRowWords : 0);
 	PassParams->CounterIndex = CounterIndex;
 	PassParams->OutputCounter = Counter;
 
@@ -257,17 +287,20 @@ void UCellGpuInstancesComponent::ShowTestPattern(int32 InGridDim, float InSpacin
 
 void UCellGpuInstancesComponent::ShowResidentCells(const TSharedRef<FGpuResidentPlanes, ESPMode::ThreadSafe>& Planes,
 	const TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe>& Params,
+	const TSharedRef<FCellGpuDrawState, ESPMode::ThreadSafe>& DrawState,
 	int64 VisibleCount, const FBox& LocalBounds, UPrimitiveComponent* InReplacedComponent)
 {
 	const bool bEnteringCellsMode = !bCellsMode;
 	bCellsMode = true;
 	CellPlanes = Planes;
 	CellParams = Params;
+	CellDrawState = DrawState;
 	ReplacedComponent = InReplacedComponent;
 	bCellsWritePending = true;
 
-	// Ёмкость: с запасом в полтора раза при росте, ужимается только при
-	// большом перекосе - каждое пересоздание прокси стоит пары пустых кадров.
+	// Ёмкость: вдвое при росте, ужимается только при большом перекосе -
+	// пересоздание прокси на миллионах слотов стоит 1-3 с застывших кадров
+	// (замер 2026-10-18), так что пересоздавать надо как можно реже.
 	const int64 Required = FMath::Max<int64>(VisibleCount, 1);
 	if (Required > CellGpuDrawing::MaxInstances && !bWarnedOverCeiling)
 	{
@@ -278,7 +311,7 @@ void UCellGpuInstancesComponent::ShowResidentCells(const TSharedRef<FGpuResident
 	int32 NewCapacity = Capacity;
 	if (bEnteringCellsMode || Required > Capacity || (Capacity > 4 * MinCellsCapacity && Required < Capacity / 4))
 	{
-		NewCapacity = (int32)FMath::Clamp<int64>(Required + Required / 2, MinCellsCapacity, CellGpuDrawing::MaxInstances);
+		NewCapacity = (int32)FMath::Clamp<int64>(Required * 2, MinCellsCapacity, CellGpuDrawing::MaxInstances);
 	}
 
 	// Границы: пересоздаём, только если новый объём вышел за прежние.
@@ -313,6 +346,7 @@ void UCellGpuInstancesComponent::ClearCells()
 	bCellsWritePending = false;
 	CellPlanes.Reset();
 	CellParams.Reset();
+	CellDrawState.Reset();
 	CellBounds = FBox(ForceInit);
 	Capacity = 0;
 	WrittenForProxy = nullptr;
@@ -454,7 +488,7 @@ void UCellGpuInstancesComponent::TickComponent(float DeltaTime, ELevelTick TickT
 void UCellGpuInstancesComponent::EnqueueCellsWrite()
 {
 	FSceneInterface* Scene = GetScene();
-	if (!Scene || !SceneProxy || !CellPlanes.IsValid() || !CellParams.IsValid())
+	if (!Scene || !SceneProxy || !CellPlanes.IsValid() || !CellParams.IsValid() || !CellDrawState.IsValid())
 	{
 		return;
 	}
@@ -464,11 +498,12 @@ void UCellGpuInstancesComponent::EnqueueCellsWrite()
 
 	TSharedRef<FGpuResidentPlanes, ESPMode::ThreadSafe> Planes = CellPlanes.ToSharedRef();
 	TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> Params = CellParams.ToSharedRef();
+	TSharedRef<FCellGpuDrawState, ESPMode::ThreadSafe> DrawState = CellDrawState.ToSharedRef();
 	const uint32 InCapacity = (uint32)Capacity;
 
 	PRAGMA_DISABLE_EXPERIMENTAL_WARNINGS
 	Scene->UpdatePrimitiveInstancesFromCompute(&PrimitiveSceneDesc, FGPUSceneWriteDelegate::CreateLambda(
-		[Planes, Params, InCapacity](FRDGBuilder& GraphBuilder, const FGPUSceneWriteDelegateParams& WriteParams)
+		[Planes, Params, DrawState, InCapacity](FRDGBuilder& GraphBuilder, const FGPUSceneWriteDelegateParams& WriteParams)
 		{
 			check(WriteParams.PersistentPrimitiveId != (uint32)INDEX_NONE);
 
@@ -499,7 +534,15 @@ void UCellGpuInstancesComponent::EnqueueCellsWrite()
 			CellsParams->InPayloadDataFlags = WriteParams.PackedInstanceSceneDataFlags;
 			CellsParams->InCapacity = InCapacity;
 			CellsParams->InScale = Params->Scale;
-			FillVisibilityParameters(GraphBuilder, CellsParams->Visibility, *Params, State, Bits, Ages, Decay);
+			// Воздух - тот, что построил заход для этих же плоскостей; объём не
+			// совпал (заход ещё не доехал) - рисуем по "только поверхности".
+			FRDGBufferRef Air = nullptr;
+			if (Params->bExteriorOnly && DrawState->Air.IsValid() && DrawState->AirDim == State.VolumeDim)
+			{
+				Air = GraphBuilder.RegisterExternalBuffer(DrawState->Air);
+			}
+			FillVisibilityParameters(GraphBuilder, CellsParams->Visibility, *Params, State, Bits, Ages, Decay,
+				Air, DrawState->AirRowWords);
 			CellsParams->AgeLut = GraphBuilder.CreateSRV(AgeLut);
 			CellsParams->DecayLut = GraphBuilder.CreateSRV(DecayLut);
 			CellsParams->RWCounter = GraphBuilder.CreateUAV(Counter, PF_R32_UINT);

@@ -113,6 +113,7 @@ TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> AAutomataOrchestrator:
 	}
 	Pack(Lut, Params->DecayLut);
 
+	bool bCubicFaces = false;
 	if (bRenderSurfaceOnly)
 	{
 		TArray<FIntVector> FaceOffsets;
@@ -120,6 +121,14 @@ TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> AAutomataOrchestrator:
 		for (const FIntVector& Offset : FaceOffsets)
 		{
 			Params->FaceOffsets.Add(FIntVector4(Offset.X, Offset.Y, Offset.Z, 0));
+		}
+		// Заливка воздуха 6-связна, как грани куба; у других решёток (FCC,
+		// BCC через фильтр чётности) пустые клетки чужой подрешётки связали бы
+		// воздухом всё нутро - режим там ничего бы не дал, только время.
+		bCubicFaces = FaceOffsets.Num() == 6;
+		for (const FIntVector& Offset : FaceOffsets)
+		{
+			bCubicFaces = bCubicFaces && (FMath::Abs(Offset.X) + FMath::Abs(Offset.Y) + FMath::Abs(Offset.Z) == 1);
 		}
 	}
 
@@ -150,6 +159,10 @@ TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> AAutomataOrchestrator:
 		Params->CullMax = FVector3f(CullBounds.Max);
 	}
 
+	// Отсечения вскрывают нутро сами - "видно снаружи" с ними не сочетается.
+	Params->bExteriorOnly = bGpuExteriorOnly && bCubicFaces
+		&& !Params->bCullActive && !Params->bSliceActive && !Params->bAgeFilterActive;
+
 	return Params;
 }
 
@@ -173,8 +186,18 @@ void AAutomataOrchestrator::ShowGpuLiveCells(const FGpuLiveDispatchResult& Resul
 	const FVector B = FVector(Result.VolumeMin + Result.VolumeDim) * Step + Origin + Step;
 	const FBox Bounds(A.ComponentMin(B), A.ComponentMax(B));
 
-	Comp->ShowResidentCells(GpuLive->GetGpuPlanes(), Result.DrawParams.ToSharedRef(), Result.Stats.ExtraCount, Bounds,
-		GetActiveCellsMeshComponent());
+	if (!GpuLiveDrawState.IsValid())
+	{
+		GpuLiveDrawState = MakeShared<FCellGpuDrawState, ESPMode::ThreadSafe>();
+	}
+	Comp->ShowResidentCells(GpuLive->GetGpuPlanes(), Result.DrawParams.ToSharedRef(), GpuLiveDrawState.ToSharedRef(),
+		Result.Stats.ExtraCount, Bounds, GetActiveCellsMeshComponent());
+
+	if (Params.bExteriorOnly && Result.Stats.ExtraAux[CellGpuDrawing::AirUnconvergedWordOffset - 1] != 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("GPU-картинка: заливка внешнего воздуха не сошлась за %u раундов - часть глубоких щелей может не рисоваться"),
+			Result.Stats.ExtraAux[CellGpuDrawing::AirRoundsWordOffset - 1]);
+	}
 
 	// Те же числа, что HUD берёт у HISM-пути; выгрузки через CPU нет вовсе.
 	LastRenderStats.RenderedCellCount = (int32)FMath::Min<int64>(Result.Stats.ExtraCount, MAX_int32);
@@ -268,11 +291,16 @@ void AAutomataOrchestrator::DispatchGpuLive()
 	// Видимые считаются в том же заходе, по настройкам этого кадра, - число
 	// приезжает со сводкой и задаёт ёмкость экземпляров до записи.
 	TSharedRef<const FCellGpuDrawParams, ESPMode::ThreadSafe> DrawParams = BuildGpuDrawParams();
+	if (!GpuLiveDrawState.IsValid())
+	{
+		GpuLiveDrawState = MakeShared<FCellGpuDrawState, ESPMode::ThreadSafe>();
+	}
+	TSharedRef<FCellGpuDrawState, ESPMode::ThreadSafe> DrawState = GpuLiveDrawState.ToSharedRef();
 	FGpuResidentSimulation::FExtraPass CountVisible =
-		[DrawParams](FRDGBuilder& GraphBuilder, const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay, FRDGBufferUAV* StatsUAV)
+		[DrawParams, DrawState](FRDGBuilder& GraphBuilder, const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay, FRDGBufferUAV* StatsUAV)
 		{
 			CellGpuDrawing::AddCountVisiblePass(GraphBuilder, *DrawParams, Planes, Bits, Ages, Decay, StatsUAV,
-				(uint32)FGpuResidentSimulation::ExtraStatsWord);
+				(uint32)FGpuResidentSimulation::ExtraStatsWord, &DrawState.Get());
 		};
 
 	bGpuLiveDispatchInFlight = true;
@@ -411,6 +439,8 @@ void AAutomataOrchestrator::EndGpuLive(bool bRenderAfter)
 	{
 		GpuCellsComponent->ClearCells();
 	}
+	// Буфер воздуха уходит вместе с последней ссылкой (у компонента её уже нет).
+	GpuLiveDrawState.Reset();
 
 	Grid = MoveTemp(NewGrid);
 	SelectedCells.Reset();

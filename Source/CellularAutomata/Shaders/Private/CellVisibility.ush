@@ -39,6 +39,13 @@ StructuredBuffer<uint> InputBits;
 StructuredBuffer<uint> InputAges;
 StructuredBuffer<uint> InputDecay;
 
+// "Видно снаружи" (CellExteriorAir.usf): клетка рисуется, только если хоть
+// одна её грань смотрит во внешний воздух. Плоскость воздуха выровнена по
+// строкам X (InAirRowWords слов на строку); за объёмом - воздух.
+uint InExteriorOnly;
+uint InAirRowWords;
+StructuredBuffer<uint> InputAir;
+
 #define CELL_HIDDEN 0
 #define CELL_ALIVE 1
 #define CELL_DECAYING 2
@@ -87,6 +94,33 @@ bool PassesSlice(float3 Position)
 	}
 	const float Depth = dot(Position - InSliceOrigin, InSliceForward);
 	return Depth >= InSliceMinDepth && Depth <= InSliceMaxDepth;
+}
+
+bool IsExteriorAir(int3 Local)
+{
+	if (any(Local < 0) || any(Local >= InVolumeDim))
+	{
+		return true;
+	}
+	const uint Word = ((uint)Local.z * (uint)InVolumeDim.y + (uint)Local.y) * InAirRowWords + ((uint)Local.x >> 5);
+	return ((InputAir[Word] >> ((uint)Local.x & 31u)) & 1u) != 0;
+}
+
+/** Смотрит ли хоть одна грань во внешний воздух. Без режима - всегда да. */
+bool TouchesExterior(int3 Local)
+{
+	if (InExteriorOnly == 0 || InFaceOffsetCount == 0)
+	{
+		return true;
+	}
+	for (uint i = 0; i < InFaceOffsetCount; ++i)
+	{
+		if (IsExteriorAir(Local + InFaceOffsets[i].xyz))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 /** Закрывает ли сосед грань: жив И сам прошёл все отсечения. Срезанный
@@ -138,6 +172,10 @@ uint EvaluateCell(int3 Local, out uint ColorIndex, out float3 Position)
 				return CELL_HIDDEN;
 			}
 		}
+		if (!TouchesExterior(Local))
+		{
+			return CELL_HIDDEN;
+		}
 		ColorIndex = Age;
 		return CELL_ALIVE;
 	}
@@ -146,7 +184,7 @@ uint EvaluateCell(int3 Local, out uint ColorIndex, out float3 Position)
 	if (InDecayPlane != 0 && InAgeFilterActive == 0)
 	{
 		const uint State = ReadPlaneByte(InputDecay, Index);
-		if (State != 0 && PassesCull(Position) && PassesSlice(Position))
+		if (State != 0 && PassesCull(Position) && PassesSlice(Position) && TouchesExterior(Local))
 		{
 			ColorIndex = State;
 			return CELL_DECAYING;

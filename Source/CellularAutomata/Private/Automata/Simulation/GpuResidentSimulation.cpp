@@ -69,7 +69,7 @@ IMPLEMENT_GLOBAL_SHADER(FCellularAutomatonRelayoutCS, "/Project/CellularAutomata
 namespace
 {
 	/** Слов в сводке (CellularAutomatonStats.usf, раскладка - в его шапке). */
-	constexpr int32 StatsWordCount = 16;
+	constexpr int32 StatsWordCount = 20;
 }
 
 /** Плоскости на CPU: биты жизни (по биту), возрасты и стадии угасания (по
@@ -736,6 +736,10 @@ int32 FGpuResidentSimulation::Advance(const FCellularAutomatonRule& Rule, int32 
 		Stats.MaxDecaying = MinCell + FIntVector((int32)Words[12], (int32)Words[13], (int32)Words[14]);
 	}
 	Stats.ExtraCount = Words[ExtraStatsWord];
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		Stats.ExtraAux[Index] = Words[ExtraStatsWord + 1 + Index];
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("GpuResident: %d поколени(й) за %.2f мс%s - живых %lld, объём %dx%dx%d"),
 		Steps, (FPlatformTime::Seconds() - StartSeconds) * 1000.0, bRegrown ? TEXT(" (с раздвиганием объёма)") : TEXT(""),

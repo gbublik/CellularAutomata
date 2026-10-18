@@ -1,0 +1,246 @@
+// "Внешний воздух" GPU-сессии: пустые клетки, до которых можно дойти от
+// границы объёма через пустые клетки по граням (6-связность куба). Клетка,
+// ни одна грань которой не смотрит в такой воздух, не видна снаружи ни с
+// какой точки - даже если рядом с ней пустота: это замкнутая пора. Режим
+// "только поверхность" (CellVisibility.ush) считает такие поры открытыми, и у
+// пористой структуры (амёба 9-26/5-7,12-13,15) оставляет ~80% клеток.
+//
+// Плоскость воздуха - битовая, но, в отличие от плоскостей сессии,
+// выровнена по строкам X: слово = 32 соседние клетки одной строки
+// (RowWords слов на строку). Так соседи по Y и Z - это целые слова, и шаг
+// заливки по ним - одно OR на 32 клетки сразу. Хвост последнего слова строки
+// (x >= Dim.x) считается пустым и воздушным: это и есть граница объёма.
+//
+// Порядок проходов (CellExteriorAir.cpp):
+//   BuildEmptyCS          - маска пустых (не живая и не угасающая)
+//   SweepXCS/Y/Z          - прострел от каждой грани объёма вдоль оси до первой
+//                           занятой клетки: почти весь наружный воздух сразу
+//   (PropagateCS x4, GateCS) x N - дотекание в извилистые щели; GateCS
+//                           обнуляет аргументы косвенного запуска, как только
+//                           проход ничего не изменил, и оставшиеся раунды
+//                           стоят почти ничего - без ожидания CPU
+
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/ComputeShaderUtils.ush"
+
+int3 VolumeDim;
+uint RowWords;
+uint AirWordCount;
+
+// Плоскости сессии (раскладка FGpuResidentSimulation - сплошная, не по строкам).
+StructuredBuffer<uint> InputBits;
+StructuredBuffer<uint> InputDecay;
+uint bDecayPlane;
+
+RWStructuredBuffer<uint> RWEmpty;
+RWStructuredBuffer<uint> RWAir;
+StructuredBuffer<uint> EmptyPlane;
+
+RWStructuredBuffer<uint> RWChanged;
+RWBuffer<uint> RWIndirectArgs;
+RWStructuredBuffer<uint> RWStats;
+uint2 PropagateGroups;
+uint StatsRoundsWord;
+uint StatsUnconvergedWord;
+uint bLastGate;
+
+uint3 AirWordCoord(uint Word)
+{
+	const uint XWord = Word % RowWords;
+	const uint Row = Word / RowWords;
+	return uint3(XWord, Row % (uint)VolumeDim.y, Row / (uint)VolumeDim.y);
+}
+
+[numthreads(64, 1, 1)]
+void BuildEmptyCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint Word = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
+	if (Word >= AirWordCount)
+	{
+		return;
+	}
+	const uint3 C = AirWordCoord(Word);
+	const uint RowStart = (C.z * (uint)VolumeDim.y + C.y) * (uint)VolumeDim.x;
+
+	uint Empty = 0;
+	for (uint Bit = 0; Bit < 32u; ++Bit)
+	{
+		const uint X = C.x * 32u + Bit;
+		bool bEmpty = true;
+		if (X < (uint)VolumeDim.x)
+		{
+			const uint Index = RowStart + X;
+			const bool bAlive = ((InputBits[Index >> 5] >> (Index & 31u)) & 1u) != 0;
+			const bool bDecaying = bDecayPlane != 0 && ((InputDecay[Index >> 2] >> ((Index & 3u) * 8u)) & 0xFFu) != 0;
+			bEmpty = !bAlive && !bDecaying;
+		}
+		Empty |= (bEmpty ? 1u : 0u) << Bit;
+	}
+	RWEmpty[Word] = Empty;
+	// Хвост строки (за Dim.x) - сразу воздух: это внешняя сторона грани X.
+	const uint ValidBits = (uint)VolumeDim.x - min((uint)VolumeDim.x, C.x * 32u);
+	RWAir[Word] = ValidBits >= 32u ? 0u : (0xFFFFFFFFu << ValidBits);
+}
+
+// Прострел вдоль X: поток на строку, от обоих концов до первой занятой.
+[numthreads(64, 1, 1)]
+void SweepXCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint Row = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
+	if (Row >= (uint)(VolumeDim.y * VolumeDim.z))
+	{
+		return;
+	}
+	const uint First = Row * RowWords;
+
+	for (uint XWord = 0; XWord < RowWords; ++XWord)
+	{
+		const uint Solid = ~EmptyPlane[First + XWord];
+		if (Solid == 0)
+		{
+			RWAir[First + XWord] = 0xFFFFFFFFu;
+			continue;
+		}
+		const uint Low = firstbitlow(Solid);
+		RWAir[First + XWord] |= (Low == 0) ? 0u : ((1u << Low) - 1u);
+		break;
+	}
+	for (int XWord = (int)RowWords - 1; XWord >= 0; --XWord)
+	{
+		const uint Solid = ~EmptyPlane[First + XWord];
+		if (Solid == 0)
+		{
+			RWAir[First + XWord] = 0xFFFFFFFFu;
+			continue;
+		}
+		const uint High = firstbithigh(Solid);
+		RWAir[First + XWord] |= (High >= 31u) ? 0u : (0xFFFFFFFFu << (High + 1u));
+		break;
+	}
+}
+
+// Прострел вдоль Y и Z: поток на столбец из 32 клеток (одно слово X), 32
+// луча сразу - бегущая маска "ещё не встретили занятую".
+[numthreads(64, 1, 1)]
+void SweepYCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint Column = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
+	if (Column >= RowWords * (uint)VolumeDim.z)
+	{
+		return;
+	}
+	const uint XWord = Column % RowWords;
+	const uint Z = Column / RowWords;
+	const uint Stride = RowWords;
+	const uint Base = Z * (uint)VolumeDim.y * RowWords + XWord;
+
+	uint Open = 0xFFFFFFFFu;
+	for (uint Y = 0; Y < (uint)VolumeDim.y && Open != 0; ++Y)
+	{
+		Open &= EmptyPlane[Base + Y * Stride];
+		RWAir[Base + Y * Stride] |= Open;
+	}
+	Open = 0xFFFFFFFFu;
+	for (int Y = VolumeDim.y - 1; Y >= 0 && Open != 0; --Y)
+	{
+		Open &= EmptyPlane[Base + (uint)Y * Stride];
+		RWAir[Base + (uint)Y * Stride] |= Open;
+	}
+}
+
+[numthreads(64, 1, 1)]
+void SweepZCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint Column = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
+	if (Column >= RowWords * (uint)VolumeDim.y)
+	{
+		return;
+	}
+	const uint Stride = RowWords * (uint)VolumeDim.y;
+	const uint Base = Column;
+
+	uint Open = 0xFFFFFFFFu;
+	for (uint Z = 0; Z < (uint)VolumeDim.z && Open != 0; ++Z)
+	{
+		Open &= EmptyPlane[Base + Z * Stride];
+		RWAir[Base + Z * Stride] |= Open;
+	}
+	Open = 0xFFFFFFFFu;
+	for (int Z = VolumeDim.z - 1; Z >= 0 && Open != 0; --Z)
+	{
+		Open &= EmptyPlane[Base + (uint)Z * Stride];
+		RWAir[Base + (uint)Z * Stride] |= Open;
+	}
+}
+
+// Шаг заливки на месте: слово берёт воздух у соседей по Y/Z (целыми словами)
+// и по X (крайние биты соседних слов), затем разливает его вдоль своих 32
+// клеток до упора. Воздух только растёт, поэтому гонки чтения соседей
+// безвредны - недочитанное доберёт следующий проход.
+[numthreads(64, 1, 1)]
+void PropagateCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint Word = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, 64);
+	if (Word >= AirWordCount)
+	{
+		return;
+	}
+	const uint Empty = EmptyPlane[Word];
+	const uint Air = RWAir[Word];
+	if (Empty == 0 || Air == Empty)
+	{
+		return;
+	}
+
+	const uint3 C = AirWordCoord(Word);
+	const uint RowStride = RowWords;
+	const uint PlaneStride = RowWords * (uint)VolumeDim.y;
+
+	// За гранью объёма - воздух.
+	uint Next = Air;
+	Next |= (C.y > 0) ? RWAir[Word - RowStride] : 0xFFFFFFFFu;
+	Next |= (C.y + 1 < (uint)VolumeDim.y) ? RWAir[Word + RowStride] : 0xFFFFFFFFu;
+	Next |= (C.z > 0) ? RWAir[Word - PlaneStride] : 0xFFFFFFFFu;
+	Next |= (C.z + 1 < (uint)VolumeDim.z) ? RWAir[Word + PlaneStride] : 0xFFFFFFFFu;
+	const uint Left = (C.x > 0) ? (RWAir[Word - 1] >> 31) : 1u;
+	const uint Right = (C.x + 1 < RowWords) ? (RWAir[Word + 1] & 1u) : 1u;
+	Next |= (Air << 1) | (Air >> 1) | Left | (Right << 31);
+	Next &= Empty;
+
+	for (uint Iteration = 0; Iteration < 32u; ++Iteration)
+	{
+		const uint Spread = (Next | (Next << 1) | (Next >> 1)) & Empty;
+		if (Spread == Next)
+		{
+			break;
+		}
+		Next = Spread;
+	}
+
+	if (Next != Air)
+	{
+		RWAir[Word] = Next;
+		InterlockedOr(RWChanged[0], 1u);
+	}
+}
+
+// Раздача аргументов следующему раунду: был сдвиг - работаем дальше, нет -
+// ноль групп. Первый вызов (bLastGate == 0 и RWChanged ещё не тронут)
+// ставит полные аргументы - см. InitGate в .cpp.
+[numthreads(1, 1, 1)]
+void GateCS()
+{
+	const bool bChanged = RWChanged[0] != 0;
+	RWChanged[0] = 0;
+	RWIndirectArgs[0] = bChanged ? PropagateGroups.x : 0u;
+	RWIndirectArgs[1] = bChanged ? PropagateGroups.y : 1u;
+	RWIndirectArgs[2] = 1u;
+	if (bChanged)
+	{
+		RWStats[StatsRoundsWord] += 1u;
+	}
+	if (bLastGate != 0 && bChanged)
+	{
+		RWStats[StatsUnconvergedWord] = 1u;
+	}
+}

@@ -45,6 +45,7 @@ class UInstancedStaticMeshComponent;
 class UHierarchicalInstancedStaticMeshComponent;
 class UCellGpuInstancesComponent;
 struct FCellGpuDrawParams;
+struct FCellGpuDrawState;
 class UMainHudWidget;
 class UProceduralMeshComponent;
 class UStaticMesh;
@@ -2942,6 +2943,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU", meta = (ClampMin = "0"))
 	int32 GpuResidentMemoryBudgetMB = 0;
 
+	/** GPU-картинка рисует только то, что видно снаружи: клетку, хоть одна
+	 *  грань которой смотрит в воздух, связный с внешним пространством.
+	 *  Замкнутые поры пористой структуры отсекаются - "только поверхность"
+	 *  считает их открытыми и у амёбы 9-26/5-7,12-13,15 оставляет ~80% клеток,
+	 *  упираясь в потолок экземпляров уже на ~20M живых. Действует вместе с
+	 *  bRenderSurfaceOnly, только на кубической решётке и без отсечений
+	 *  (куб, срез, фильтр возраста) - срез и так вскрывает нутро. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Automata|GPU")
+	bool bGpuExteriorOnly = true;
+
 	/** Верхняя граница объёма (в клетках) AABB живых клеток+halo, которую
 	 *  FGpuComputeStrategy согласна посчитать на GPU за один Step() - выше
 	 *  неё шаг откатывается на CPU с предупреждением в лог (см.
@@ -4209,6 +4220,9 @@ private:
 	 *  лениво, живёт под компонентом клеток (та же локальная система). */
 	UPROPERTY(Transient)
 	TObjectPtr<UCellGpuInstancesComponent> GpuCellsComponent;
+	/** Плоскость внешнего воздуха сессии (render thread) - общая для счёта
+	 *  видимых в заходе и записи экземпляров в кадре. */
+	TSharedPtr<FCellGpuDrawState, ESPMode::ThreadSafe> GpuLiveDrawState;
 	UCellGpuInstancesComponent* EnsureGpuCellsComponent();
 	/** Снимок настроек картинки для GPU-пути - то же, что читает
 	 *  BuildCellRenderData(): решётка, масштаб меша, цвета, отсечения. */

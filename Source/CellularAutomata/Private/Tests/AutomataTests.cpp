@@ -4254,4 +4254,171 @@ bool FGpuResidentParityTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGpuExteriorAirTest,
+	"CellularAutomata.Render.GpuExteriorAir",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::NonNullRHI)
+
+bool FGpuExteriorAirTest::RunTest(const FString& Parameters)
+{
+	if (!AutomataTestUtils::IsGpuComputeAvailable())
+	{
+		AddInfo(TEXT("GPU-compute недоступен (нет RHI либо compute-шейдеров) - тест пропущен"));
+		return true;
+	}
+
+	// "Видно снаружи" (CellExteriorAir.usf) против обхода в ширину на CPU.
+	// Сплошной куб 12^3 с тремя полостями, каждая ловит свой путь заливки:
+	//  - замкнутая пора в центре: стенки НЕ видны (ради неё режим и есть);
+	//  - сквозной туннель вдоль X: виден прострелом SweepX;
+	//  - тупиковый Г-образный туннель: вход вдоль X, колено вверх по Y - до
+	//    колена прострел не достаёт, его заливает только PropagateCS.
+	// Правило "выживают все, не рождается никто" держит картинку неподвижной.
+	constexpr float CellSize = 100.0f;
+	constexpr int32 ChunkSize = 16;
+	constexpr int32 Size = 12;
+	TArray<int32> SurviveAll;
+	for (int32 Count = 0; Count <= 26; ++Count)
+	{
+		SurviveAll.Add(Count);
+	}
+	const FCellularAutomatonRule Rule(TArray<int32>(), SurviveAll, ENeighborhood::Moore, 2);
+
+	TSet<FIntVector> Holes;
+	Holes.Add(FIntVector(6, 6, 6));
+	for (int32 X = 0; X < Size; ++X)
+	{
+		Holes.Add(FIntVector(X, 2, 2));
+	}
+	for (int32 X = 0; X <= 8; ++X)
+	{
+		Holes.Add(FIntVector(X, 3, 9));
+	}
+	for (int32 Y = 3; Y <= 9; ++Y)
+	{
+		Holes.Add(FIntVector(8, Y, 9));
+	}
+
+	FDenseCellGrid Grid(CellSize, ChunkSize, false);
+	for (int32 Z = 0; Z < Size; ++Z)
+	{
+		for (int32 Y = 0; Y < Size; ++Y)
+		{
+			for (int32 X = 0; X < Size; ++X)
+			{
+				if (!Holes.Contains(FIntVector(X, Y, Z)))
+				{
+					Grid.SetAliveWithAge(FIntVector(X, Y, Z), 1);
+				}
+			}
+		}
+	}
+
+	const TArray<FIntVector> CubeFaces = {
+		FIntVector(1, 0, 0), FIntVector(-1, 0, 0), FIntVector(0, 1, 0),
+		FIntVector(0, -1, 0), FIntVector(0, 0, 1), FIntVector(0, 0, -1) };
+
+	// Ожидание: воздух - пустые клетки, связные по граням с внешней рамкой.
+	TSet<FIntVector> Air;
+	TArray<FIntVector> Queue;
+	const int32 Lo = -1;
+	const int32 Hi = Size;
+	auto InBox = [&](const FIntVector& C) { return C.X >= Lo && C.Y >= Lo && C.Z >= Lo && C.X <= Hi && C.Y <= Hi && C.Z <= Hi; };
+	for (int32 Z = Lo; Z <= Hi; ++Z)
+	{
+		for (int32 Y = Lo; Y <= Hi; ++Y)
+		{
+			for (int32 X = Lo; X <= Hi; ++X)
+			{
+				const bool bBorder = X == Lo || Y == Lo || Z == Lo || X == Hi || Y == Hi || Z == Hi;
+				if (bBorder)
+				{
+					Air.Add(FIntVector(X, Y, Z));
+					Queue.Add(FIntVector(X, Y, Z));
+				}
+			}
+		}
+	}
+	for (int32 Head = 0; Head < Queue.Num(); ++Head)
+	{
+		for (const FIntVector& Face : CubeFaces)
+		{
+			const FIntVector Next = Queue[Head] + Face;
+			if (InBox(Next) && !Air.Contains(Next) && !Grid.IsAlive(Next))
+			{
+				Air.Add(Next);
+				Queue.Add(Next);
+			}
+		}
+	}
+
+	TArray<FIntVector> AliveCells;
+	Grid.GetAliveCells(AliveCells);
+	int64 ExpectedSurface = 0;
+	int64 ExpectedExterior = 0;
+	for (const FIntVector& Cell : AliveCells)
+	{
+		bool bOpen = false;
+		bool bTouchesAir = false;
+		for (const FIntVector& Face : CubeFaces)
+		{
+			bOpen = bOpen || !Grid.IsAlive(Cell + Face);
+			bTouchesAir = bTouchesAir || Air.Contains(Cell + Face);
+		}
+		ExpectedSurface += bOpen ? 1 : 0;
+		ExpectedExterior += bTouchesAir ? 1 : 0;
+	}
+
+	for (const bool bExterior : { false, true })
+	{
+		FGpuResidentSimulation Session;
+		FString Error;
+		if (!TestTrue(TEXT("сессия залита"), Session.Upload(Grid, Rule, /*MinHalo=*/2, 512LL * 512LL * 512LL, Error)))
+		{
+			AddError(Error);
+			return true;
+		}
+
+		TSharedRef<FCellGpuDrawParams, ESPMode::ThreadSafe> DrawParams = MakeShared<FCellGpuDrawParams, ESPMode::ThreadSafe>();
+		DrawParams->Step = FVector3f(CellSize);
+		DrawParams->AgeLut.SetNumZeroed(256);
+		DrawParams->DecayLut.SetNumZeroed(256);
+		DrawParams->bExteriorOnly = bExterior;
+		for (const FIntVector& Face : CubeFaces)
+		{
+			DrawParams->FaceOffsets.Add(FIntVector4(Face.X, Face.Y, Face.Z, 0));
+		}
+		TSharedRef<FCellGpuDrawState, ESPMode::ThreadSafe> DrawState = MakeShared<FCellGpuDrawState, ESPMode::ThreadSafe>();
+		const FGpuResidentSimulation::FExtraPass CountVisible =
+			[DrawParams, DrawState](FRDGBuilder& GraphBuilder, const FGpuResidentPlanes& Planes, FRDGBuffer* Bits, FRDGBuffer* Ages, FRDGBuffer* Decay, FRDGBufferUAV* StatsUAV)
+			{
+				CellGpuDrawing::AddCountVisiblePass(GraphBuilder, *DrawParams, Planes, Bits, Ages, Decay, StatsUAV,
+					(uint32)FGpuResidentSimulation::ExtraStatsWord, &DrawState.Get());
+			};
+
+		if (Session.Advance(Rule, 1, 512LL * 512LL * 512LL, Error, CountVisible) != 1)
+		{
+			AddError(FString::Printf(TEXT("заход не выполнен - %s"), *Error));
+			return true;
+		}
+		TestEqual(TEXT("правило-заморозка ничего не поменяло"), Session.GetStats().AliveCount, (int64)AliveCells.Num());
+
+		const int64 Got = Session.GetStats().ExtraCount;
+		if (bExterior)
+		{
+			TestEqual(TEXT("видно снаружи: GPU совпал с обходом на CPU"), Got, ExpectedExterior);
+			TestEqual(TEXT("заливка воздуха сошлась"), Session.GetStats().ExtraAux[CellGpuDrawing::AirUnconvergedWordOffset - 1], 0u);
+			AddInfo(FString::Printf(TEXT("снаружи видно %lld из %lld открытых, раундов заливки %u"),
+				Got, ExpectedSurface, Session.GetStats().ExtraAux[CellGpuDrawing::AirRoundsWordOffset - 1]));
+		}
+		else
+		{
+			TestEqual(TEXT("только поверхность: GPU совпал с CPU"), Got, ExpectedSurface);
+		}
+	}
+
+	// Иначе тест ничего не проверил бы: пора обязана срезать хоть что-то.
+	TestTrue(TEXT("замкнутая пора срезана: снаружи видно меньше, чем открыто"), ExpectedExterior < ExpectedSurface);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
